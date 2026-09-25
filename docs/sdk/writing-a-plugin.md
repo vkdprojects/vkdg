@@ -49,7 +49,7 @@ world provider {
 }
 ```
 
-Auth headers are **not** included in the `prepared-request` record in the WIT interface — the host injects them separately. Plugins receive the raw bearer `token` string and must embed it in the body or a header field as their protocol requires.
+Auth headers are **not** included in the `prepared-request` record in the WIT interface. The host injects them separately. Plugins receive the raw bearer `token` string and must embed it in the body or a header field as their protocol requires.
 
 ## 3. Manifest
 
@@ -183,7 +183,7 @@ let manifest = PluginManifest {
 
 // Validates the binary *before* touching the registry.
 // If the file is missing or the component is malformed, the registry
-// is left unchanged — no partial state to clean up.
+// is left unchanged. No partial state to clean up.
 host.install_wasm(manifest, "./my-plugin.wasm")?;
 
 // Later: unload cleanly
@@ -197,8 +197,8 @@ assert!(removed);
 
 | Plugin kind | On failure |
 |---|---|
-| `Auth` / `policy` | **Fail closed** — request is rejected with an error response |
-| `observer` / enrichment | **Fail open** — error is logged; request continues |
+| `Auth` / `policy` | **Fail closed**: request is rejected with an error response |
+| `observer` / enrichment | **Fail open**: error is logged; request continues |
 
 The host enforces this distinction based on `PluginKind`. Never rely on an observer plugin to enforce security decisions.
 
@@ -232,7 +232,7 @@ fn wasm_component_loads() {
     let path = "target/wasm32-wasip2/release/my_provider_plugin.wasm";
     let instance = WasmPluginInstance::load(path)
         .expect("component should be valid");
-    // load() validates — if it returns Ok, the binary is a well-formed component.
+    // load() validates; if it returns Ok, the binary is a well-formed component.
     drop(instance);
 }
 
@@ -247,7 +247,7 @@ fn install_and_uninstall_lifecycle() {
         description: "test".into(),
     };
 
-    // install_wasm returns Err if binary is missing/invalid — test rollback
+    // install_wasm returns Err if binary is missing/invalid; test rollback
     let result = host.install_wasm(manifest.clone(), "/nonexistent/path.wasm");
     assert!(result.is_err(), "bad path should fail");
     // Registry must be unchanged after the failed install
@@ -257,13 +257,13 @@ fn install_and_uninstall_lifecycle() {
 
 ## 10. Current limitations (Phase E)
 
-`WasmPluginInstance::call_prepare()` is currently a **stub** — it re-validates the component binary but returns `Err("wasm call not yet wired (Phase E)")`. Full `wasmtime::component::bindgen!` codegen and typed dispatch are landing in Phase E.
+`WasmPluginInstance::call_prepare()` is currently a **stub**. It re-validates the component binary but returns `Err("wasm call not yet wired (Phase E)")`. Full `wasmtime::component::bindgen!` codegen and typed dispatch are landing in Phase E.
 
 What works today:
-- `install_wasm` — validates and registers any well-formed WASM component
-- `uninstall` — drops the instance and removes from registry
-- `plugins_for_hook` — manifest-based hook dispatch
-- `WasmPluginInstance::load` — binary validation
+- `install_wasm`: validates and registers any well-formed WASM component
+- `uninstall`: drops the instance and removes from registry
+- `plugins_for_hook`: manifest-based hook dispatch
+- `WasmPluginInstance::load`: binary validation
 
 What requires Phase E:
 - Actually calling `prepare()` or `name()` inside a loaded component

@@ -4,10 +4,10 @@ Async job manager for long-running media operations (video generation, batch inf
 
 ## Public API
 
-- `JobManager` — creates, updates, and reconciles jobs; validates state transitions
-- `SqliteJobStore` — SQLite WAL-backed implementation of the `JobStore` trait from `vkdg-storage`
-- `JobTransition` — valid state machine edges; `JobManager` rejects invalid transitions
-- `reconcile(store: &dyn JobStore)` — scans for stale `Running` jobs and marks them `Failed` after a timeout
+- `JobManager`: creates, updates, and reconciles jobs; validates state transitions
+- `SqliteJobStore`: SQLite WAL-backed implementation of the `JobStore` trait from `vkdg-storage`
+- `JobTransition`: valid state machine edges; `JobManager` rejects invalid transitions
+- `reconcile(store: &dyn JobStore)`: scans for stale `Running` jobs and marks them `Failed` after a timeout
 
 ## Invariants
 

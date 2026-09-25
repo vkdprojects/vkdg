@@ -1,6 +1,6 @@
 # bin/vkdg
 
-Entrypoint for the VKDG binary. Wires all crates into a working server. Contains no domain logic — only configuration, composition, and initialization.
+Entrypoint for the VKDG binary. Wires all crates into a working server. Contains no domain logic: only configuration, composition, and initialization.
 
 ## Subcommands
 
@@ -13,7 +13,7 @@ vkdg config check <file>       # Validate YAML configuration
 ## What `serve` does
 
 1. Initializes tracing via `vkdg_observe::init_tracing`
-2. Builds `PipelineState` from environment variables (`ANTHROPIC_API_KEY`, etc.) — optional; without a credential, `/v1/messages` returns 501
+2. Builds `PipelineState` from environment variables (`ANTHROPIC_API_KEY`, etc.): optional; without a credential, `/v1/messages` returns 501
 3. Creates `AppState` with `ServerConfig` and `PipelineState`
 4. Calls `vkdg_http::build_router(state)` and `vkdg_http::serve(config, router)`
 

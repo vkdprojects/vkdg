@@ -41,10 +41,10 @@ connections:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `id` | string | yes | — | Unique identifier; referenced by `routes[].targets` |
-| `provider` | string | yes | — | Provider kind (see below) |
-| `auth` | object | yes | — | Authentication method (see `auth`) |
-| `models` | list of strings | yes | — | Model names or patterns this connection serves |
+| `id` | string | yes | none | Unique identifier; referenced by `routes[].targets` |
+| `provider` | string | yes | none | Provider kind (see below) |
+| `auth` | object | yes | none | Authentication method (see `auth`) |
+| `models` | list of strings | yes | none | Model names or patterns this connection serves |
 | `max_concurrent` | integer | no | `u32::MAX` | Maximum simultaneous in-flight requests |
 | `weight` | integer | no | `1` | Relative weight for `weighted` strategy |
 
@@ -263,7 +263,7 @@ observe:
 The gateway watches the config file for changes using `vkdg_config::watch`. On change:
 
 1. The new file is parsed and passed to `ConfigSnapshot::build()`.
-2. If validation fails, the error is logged and the running snapshot is kept — **no traffic is disrupted**.
+2. If validation fails, the error is logged and the running snapshot is kept. No traffic is disrupted.
 3. If validation succeeds, the new `Arc<ConfigSnapshot>` is published via a `tokio::sync::watch` channel.
 4. In-flight requests finish against the old snapshot (receivers hold a strong `Arc` reference). New requests immediately use the new snapshot.
 

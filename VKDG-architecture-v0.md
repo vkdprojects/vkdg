@@ -1,4 +1,4 @@
-# VKDG — reference architecture v0.1
+# VKDG: reference architecture v0.1
 
 **Status:** architecture proposal v0.3; 25/09/2026. **Goal:** central AI API, open source and in Rust, for agents and applications, with a SvelteKit operations console as a separate process from day 0. Exposes the native VKDG API and facades compatible with well-known protocols; connects multiple accounts/providers for text, image, audio, and video through extensible converters, policies, route composition, and diagnostics. The console contract and deployment plan are in `VKDG-frontend-day0.md`.
 
@@ -234,15 +234,15 @@ Every tool error reports cause and next action. Examples: invalid config points 
 
 ## 10. Milestones and exit criteria
 
-**Phase A — executable specification:** inventory of requests from an agent client and an application, `conversation` and `image` contracts, chosen protocol, states, resource budget, OAuth account lifecycle, capability matrix, and failure corpus; decisions recorded in ADRs. Criterion: tests describe failures before implementation and distinguish ingress, operation, client, and upstream account.
+**Phase A: executable specification:** inventory of requests from an agent client and an application, `conversation` and `image` contracts, chosen protocol, states, resource budget, OAuth account lifecycle, capability matrix, and failure corpus; decisions recorded in ADRs. Criterion: tests describe failures before implementation and distinguish ingress, operation, client, and upstream account.
 
-**Phase B — data vertical:** native VKDG conversation API, Anthropic or OpenAI compatible endpoint tested with a real client, one authorized upstream OAuth/API key account, two concurrent streams over the same connection, singleflight refresh when applicable, streaming/passthrough, cancellation, limits, telemetry, and fake upstream. Criterion: slow client does not grow memory without bound; cancellation releases reservations; concurrent refresh does not lose token; metrics and request explain point to each phase.
+**Phase B: data vertical:** native VKDG conversation API, Anthropic or OpenAI compatible endpoint tested with a real client, one authorized upstream OAuth/API key account, two concurrent streams over the same connection, singleflight refresh when applicable, streaming/passthrough, cancellation, limits, telemetry, and fake upstream. Criterion: slow client does not grow memory without bound; cancellation releases reservations; concurrent refresh does not lose token; metrics and request explain point to each phase.
 
-**Phase C — interoperability:** second provider with distinct format, second ingress protocol, per-event translation, capabilities, simple fallback combo, and errors. Criterion: tool call, usage, partial stream, and retry matrices pass on both; semantic loss is rejected or documented.
+**Phase C: interoperability:** second provider with distinct format, second ingress protocol, per-event translation, capabilities, simple fallback combo, and errors. Criterion: tool call, usage, partial stream, and retry matrices pass on both; semantic loss is rejected or documented.
 
-**Phase D — modalities and extensions:** native image and via chosen compatible protocol, video job on simulated provider, artifact with ACL/TTL, provider WASM plugin, optional compression policy plugin, example external service, atomic configuration, optional history, and replay. Criterion: restart recovers jobs; stalled plugin respects budget; DB-free mode remains operational for operations without jobs; fixture proves plugin installation and rollback without editing core.
+**Phase D: modalities and extensions:** native image and via chosen compatible protocol, video job on simulated provider, artifact with ACL/TTL, provider WASM plugin, optional compression policy plugin, example external service, atomic configuration, optional history, and replay. Criterion: restart recovers jobs; stalled plugin respects budget; DB-free mode remains operational for operations without jobs; fixture proves plugin installation and rollback without editing core.
 
-**Phase E — scale/release:** load with tens, hundreds, and thousands of streams depending on available hardware; compare passthrough/translation/plugin; profiler identifies bottlenecks; SDK and operational documentation; release candidate. Publish numbers with environment, load, and margin, without universal claims.
+**Phase E: scale/release:** load with tens, hundreds, and thousands of streams depending on available hardware; compare passthrough/translation/plugin; profiler identifies bottlenecks; SDK and operational documentation; release candidate. Publish numbers with environment, load, and margin, without universal claims.
 
 **Release blockers:** credential leakage, unbounded memory growth, retry after commit, tenant mixing, silent loss of required events, unexplained TTFT regression, invalid config activated, and protocol error in a supported agent client.
 

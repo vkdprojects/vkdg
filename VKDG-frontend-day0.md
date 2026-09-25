@@ -1,4 +1,4 @@
-# VKDG Console — SvelteKit frontend as an independent process
+# VKDG Console: SvelteKit frontend as an independent process
 
 **Architecture decision, 25/09/2026.** This document complements `VKDG-architecture-v0.md`. The operations console is part of day 0. SvelteKit on Node (`adapter-node`) is a process, build, and deploy separate from the Rust server. The experience must allow operating the gateway for real, not just displaying metrics. Parity with OmniRoute is a utility reference, not a promise of all screens and features in the first delivery.
 

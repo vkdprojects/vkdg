@@ -1,4 +1,4 @@
-# VKDG — Architectural overview
+# VKDG: Architectural overview
 
 Summary reference. Full document: [`VKDG-architecture-v0.md`](../../VKDG-architecture-v0.md).
 
@@ -48,7 +48,7 @@ flowchart LR
 ## Critical path of a request
 
 1. `FrontDoor` accepts the TCP connection, assigns `request_id`/`trace_id`, applies body limit.
-2. `AdmissionGuard` acquires RAII semaphore — releases on any exit (success, error, panic, cancellation).
+2. `AdmissionGuard` acquires RAII semaphore, releases on any exit (success, error, panic, cancellation).
 3. `vkdg-ingress-anthropic::decode_request` validates and converts Anthropic bytes into `(model_name, Operation)`.
 4. `PipelineCtx` is created with state `Received`; advances through audited transitions.
 5. `Router::resolve` filters connections by eligibility and returns `RouteResult` with `ConnectionGuard`.

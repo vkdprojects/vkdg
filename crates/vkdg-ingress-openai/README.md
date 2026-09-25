@@ -4,11 +4,11 @@ Input adapter for the OpenAI Chat Completions protocol. Decodes wire requests �
 
 ## Public API
 
-- `decode_request(body: Bytes) -> Result<(String, Operation), VkdgError>` — validates and converts OpenAI Chat Completions bytes into `(model_name, Operation::Conversation(...))`
-- `encode_event(event: &ConversationEvent) -> String` — serializes an event as an OpenAI SSE line; `Completed` emits `data: [DONE]`
-- `events_to_sse_stream(stream) -> Response` — wraps a `ConversationEvent` stream in an Axum SSE response with correct OpenAI headers
-- `vkdg_error_to_openai_response(err: VkdgError) -> Response` — maps VKDG errors to HTTP status and JSON body in OpenAI error format
-- `handle_chat_completions(State<AppState>, Request) -> Response` — Axum handler for `POST /v1/chat/completions`
+- `decode_request(body: Bytes) -> Result<(String, Operation), VkdgError>`: validates and converts OpenAI Chat Completions bytes into `(model_name, Operation::Conversation(...))`
+- `encode_event(event: &ConversationEvent) -> String`: serializes an event as an OpenAI SSE line; `Completed` emits `data: [DONE]`
+- `events_to_sse_stream(stream) -> Response`: wraps a `ConversationEvent` stream in an Axum SSE response with correct OpenAI headers
+- `vkdg_error_to_openai_response(err: VkdgError) -> Response`: maps VKDG errors to HTTP status and JSON body in OpenAI error format
+- `handle_chat_completions(State<AppState>, Request) -> Response`: Axum handler for `POST /v1/chat/completions`
 
 ## Invariants
 

@@ -27,7 +27,7 @@ Move `Capability` and `CapabilitySet` to **`vkdg-core`**.
 
 ## Reasons
 
-- `CapabilitySet` is a pure domain type: `HashSet<Capability>` with set operations. It has no HTTP, DB, or WASM dependencies — suitable for the core.
+- `CapabilitySet` is a pure domain type: `HashSet<Capability>` with set operations. It has no HTTP, DB, or WASM dependencies, so it belongs in core.
 - `vkdg-connections` now imports directly from `vkdg-core`, eliminating the inverted coupling.
 - The re-export in `vkdg-operations` preserves backward compatibility for existing callers (`use vkdg_operations::CapabilitySet` continues to work).
 

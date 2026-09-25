@@ -1,24 +1,23 @@
 # Contributing to VKDG
 
-Thank you for your interest in contributing! This guide covers everything you need
-to make a clean, reviewable pull request.
+Good contributions share one trait: the author read the relevant skill guide first.
+`.agents/skills/` has a file for each subsystem. A PR that ignores those conventions
+takes longer to review and usually needs a rewrite.
 
-## Before You Start
+## Before you start
 
-For anything beyond a small fix (typo, docs, obvious bug), **open an issue first**.
-This avoids wasted effort on PRs that won't be accepted for design reasons.
+For anything beyond a small fix, open an issue first. PRs that conflict with
+planned design changes get closed, not revised. Small fixes (docs, typos, obvious
+bugs) can go straight to a PR.
 
-Small fixes — documentation edits, typo corrections, trivial refactors — can go
-directly as a PR.
-
-## Development Setup
+## Development setup
 
 ```bash
 # Clone
 git clone https://github.com/vkdprojects/vkdg
 cd vkdg
 
-# Run tests (no external keys needed — uses in-process fake upstreams)
+# Run tests (no external keys needed; fake upstreams cover almost everything)
 cargo test --workspace
 
 # Smoke test with fake provider
@@ -35,35 +34,49 @@ cargo doc --workspace --no-deps
 cargo run -p vkdg -- config check <path>
 ```
 
-## PR Checklist
+The conformance suite starts a `FakeUpstream` in-process. You do not need real
+provider credentials to run any of the existing tests. If you are adding a new
+provider adapter, the same fake covers the wire protocol; check
+`tests/conformance/src/fake_upstream.rs` for `FakeUpstreamBehavior` variants.
+
+## PR checklist
 
 - [ ] `cargo fmt --all` passes
 - [ ] `cargo clippy --workspace -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
 - [ ] New behavior has a test that fails before the change and passes after
 - [ ] Public API changes have rustdoc comments
-- [ ] CHANGELOG.md updated under `## Unreleased` (optional — release-plz can do this)
+- [ ] CHANGELOG.md updated under `## Unreleased` (release-plz can handle this if you skip it)
 
-## Code Style
+## Code style
 
-- Clippy warnings are errors in CI. Fix them rather than suppressing with `#[allow]`
-- No `unwrap()` or `expect()` on external input paths. Return `VkdgError` instead
-- Each `#[test]` should document the plausible wrong implementation it defeats,
-  using a comment like: `// Plausible wrong impl: ...`
-- Follow the skill guides in `.agents/skills/` — they define the coding contracts
-  for each subsystem
+Clippy warnings are errors in CI. Fix them rather than suppressing with `#[allow]`.
 
-## Adding a Provider
+No `unwrap()` or `expect()` on external input paths. Return `VkdgError` instead.
+The distinction matters: panics in the hot path bring down all tenant traffic.
 
-See [docs/sdk/adding-a-provider.md](docs/sdk/adding-a-provider.md) for a step-by-step
-guide. The short version: create `crates/vkdg-provider-<name>/`, implement `ProviderAdapter`,
-add tests, done — no changes to the core pipeline required.
+Each `#[test]` should document the plausible wrong implementation it defeats:
 
-## Adding a Plugin
+```rust
+// Plausible wrong impl: admits request before checking semaphore
+#[test]
+fn admission_blocks_before_routing() { ... }
+```
 
-See [docs/sdk/writing-a-plugin.md](docs/sdk/writing-a-plugin.md) for the WASM plugin guide.
+Tests that only verify wiring or that a function returns `Ok(())` on a happy path
+get asked to demonstrate an actual defect they prevent.
+
+## Adding a provider
+
+See [docs/sdk/adding-a-provider.md](docs/sdk/adding-a-provider.md). The short path:
+create `crates/vkdg-provider-<name>/`, implement `ProviderAdapter`, add tests. The
+core pipeline does not change.
+
+## Adding a plugin
+
+See [docs/sdk/writing-a-plugin.md](docs/sdk/writing-a-plugin.md) for the WASM/Component
+Model guide.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same
-license as the project (see [LICENSE](LICENSE)).
+Contributions are licensed under the same terms as the project. See [LICENSE](LICENSE).

@@ -4,16 +4,16 @@ All notable changes to VKDG are documented here.
 Format: [keepachangelog.com](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/).
 
-## [0.1.0-rc1] — 2026-09-26
+## [0.1.0-rc1]: 2026-09-26
 
 ### Added
 
-**Phase A — Executable specification**
+**Phase A: Executable specification**
 - `vkdg-core`: fundamental types, attempt state machine (12 states), `DecisionRecord`, `VkdgError`, `Capability`/`CapabilitySet`
 - `vkdg-operations`: contracts for `conversation.generate`, `image.generate/edit`, `video.generate/remix`, embedding, audio
 - `spec/scenarios/`: 13 executable contract scenarios with RED/GREEN verified
 
-**Phase B — Data vertical**
+**Phase B: Data vertical**
 - `vkdg-http`: HTTP server Hyper/Tower/Axum, frontdoor, admission semaphore (503 before routing), incremental SSE parser (fragmentation at any byte, partial UTF-8, `[DONE]`)
 - `vkdg-connections`: `ConnectionCatalog`, RAII `ConnectionGuard`, `CredentialManager`, `eligible_for_operation` fail-closed
 - `vkdg-ingress-anthropic`: decode Anthropic Messages → Operation, encode response/stream
@@ -22,13 +22,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - Backpressure via `Body::from_stream` lazy; `DecisionRecord` emitted per attempt
 - `vkdg-observe`: tracing + OTLP + `DecisionRecordExporter`
 
-**Phase C — Interoperability**
+**Phase C: Interoperability**
 - `vkdg-ingress-openai`: decode Chat Completions → Operation, encode SSE OpenAI wire
 - `vkdg-provider-openai`: `OpenAIAdapter` with upstream SSE parsing (parallel tool calls included)
 - Fallback 429: retry with second candidate before `committed`; `DecisionRecord` per attempt
 - Routes: `/v1/messages` (Anthropic), `/v1/chat/completions` (OpenAI), `/v1/images/generations`
 
-**Phase D — Modalities and extensions**
+**Phase D: Modalities and extensions**
 - `vkdg-config`: versioned `ConfigSnapshot`, hot-reload via `notify`, cross-reference validation; real `vkdg config check`
 - `image.generate`: `ImageGenerateRequest/Response`, OpenAI Images API provider
 - `vkdg-jobs`: `JobManager` + `SqliteJobStore` (SQLite WAL) + validated state transitions + reconciliation
@@ -53,14 +53,14 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - Config: cross-reference validation, hot-reload rejects invalid config
 
 ### Known gaps (Phase E targets)
-- WASM `call_prepare` is a stub — full Component Model bindgen in Phase E
-- `ModelSummarize` compression is a stub — requires metered internal call
-- `video.generate` polling/webhook not implemented — returns 202 Accepted
-- OAuth2 credential refresh is a stub — singleflight + encrypted vault in Phase E
-- Admin API (`/admin/v1/`) and SvelteKit console pending — `VKDG-frontend-day0.md`
+- WASM `call_prepare` is a stub: full Component Model bindgen in Phase E
+- `ModelSummarize` compression is a stub: requires metered internal call
+- `video.generate` polling/webhook not implemented: returns 202 Accepted
+- OAuth2 credential refresh is a stub: singleflight + encrypted vault in Phase E
+- Admin API (`/admin/v1/`) and SvelteKit console pending: `VKDG-frontend-day0.md`
 - `vkdg request explain <id>` and `vkdg replay` pending
 
 ### Breaking changes
 - None (first release)
 
-[0.1.0-rc1]: https://github.com/codeatlasdev/vkdg/releases/tag/v0.1.0-rc1
+[0.1.0-rc1]: https://github.com/vkdprojects/vkdg/releases/tag/v0.1.0-rc1

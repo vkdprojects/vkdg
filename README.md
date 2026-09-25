@@ -4,7 +4,7 @@
 
 VKDG is an AI gateway for clients that speak different protocols and providers that behave differently. It receives a request, identifies the client, checks what the request needs, selects an eligible provider connection, translates only when the semantics can be preserved, and records why it made that choice.
 
-> **Status:** Phase D complete — 145 tests passing, 0 failing, 0 clippy warnings. 17 crates in production. Phase E (scale/release) in progress.
+> **Status:** Phase D complete: 145 tests passing, 0 failing, 0 clippy warnings. 17 crates in production. Phase E (scale/release) in progress.
 
 [The idea](#the-idea) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Endpoints](#endpoints) · [Protocols](#protocols-and-capabilities) · [Phases](#phases) · [Known gaps](#known-gaps) · [Development](#development) · [Architecture](VKDG-architecture-v0.md)
 
@@ -106,8 +106,8 @@ curl http://localhost:4000/v1/chat/completions \
 | `POST` | `/v1/messages` | Anthropic Messages | Conversation generation; streaming supported |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions | Conversation generation; streaming supported |
 | `POST` | `/v1/images/generations` | OpenAI Images | Image generation |
-| `GET` | `/health` | — | Health check; returns 200 when ready |
-| `GET` | `/vkdg/v1/info` | — | Gateway version and build info |
+| `GET` | `/health` |: | Health check; returns 200 when ready |
+| `GET` | `/vkdg/v1/info` |: | Gateway version and build info |
 
 ## Protocols and capabilities
 
@@ -115,32 +115,32 @@ Compatibility is declared per **client protocol × provider adapter × capabilit
 
 | Surface | Status |
 | --- | --- |
-| Anthropic Messages (`/v1/messages`) | ✅ Implemented — text, streaming, tool calls |
-| OpenAI Chat Completions (`/v1/chat/completions`) | ✅ Implemented — text, streaming, parallel tool calls |
+| Anthropic Messages (`/v1/messages`) | ✅ Implemented: text, streaming, tool calls |
+| OpenAI Chat Completions (`/v1/chat/completions`) | ✅ Implemented: text, streaming, parallel tool calls |
 | OpenAI Images (`/v1/images/generations`) | ✅ Implemented |
 | Video generation (`/v1/videos/generations`) | ✅ 202 Accepted + async job; polling pending |
 | VKDG native API | Designed; not yet exposed |
-| Admin API (`/admin/v1/`) | Pending — see [Known gaps](#known-gaps) |
+| Admin API (`/admin/v1/`) | Pending: see [Known gaps](#known-gaps) |
 
 ## Phases
 
 | Phase | Description | Status |
 | --- | --- | --- |
-| A | Executable specification — types, state machine, 13 contract scenarios | ✅ Complete |
-| B | Data vertical — HTTP server, pipeline, SSE parser, Anthropic ingress/provider | ✅ Complete |
-| C | Interoperability — OpenAI ingress/provider, 429 fallback, bidirectional translation | ✅ Complete |
-| D | Modalities and extensions — config hot-reload, jobs, artifacts, WASM plugin host, compression, circuit breaker | ✅ Complete |
-| E | Scale/release — benchmarks, full OAuth, Admin API, SvelteKit console | 🔄 In progress |
+| A | Executable specification: types, state machine, 13 contract scenarios | ✅ Complete |
+| B | Data vertical: HTTP server, pipeline, SSE parser, Anthropic ingress/provider | ✅ Complete |
+| C | Interoperability: OpenAI ingress/provider, 429 fallback, bidirectional translation | ✅ Complete |
+| D | Modalities and extensions: config hot-reload, jobs, artifacts, WASM plugin host, compression, circuit breaker | ✅ Complete |
+| E | Scale/release: benchmarks, full OAuth, Admin API, SvelteKit console | 🔄 In progress |
 
 ## Known gaps
 
-These are honest stubs that will be completed in Phase E. Nothing here is hidden or silently broken — each is tested as returning a safe placeholder.
+These are honest stubs that will be completed in Phase E. Nothing here is hidden or silently broken: each is tested as returning a safe placeholder.
 
 - **WASM `call_prepare`** is a stub. The Component Model bindgen is not yet wired; plugins load and unload but cannot intercept requests.
 - **`ModelSummarize` compression** is a stub. Context truncation runs but the summarize path requires an internal metered call.
 - **`video.generate` polling/webhook** not implemented. The endpoint returns 202 Accepted with a job ID; status polling and webhook delivery are Phase E.
 - **OAuth2 credential refresh** is a stub. Static API keys work; singleflight refresh + encrypted vault is Phase E.
-- **Admin API** (`/admin/v1/`) is pending. Connection, route, and key management requires the SvelteKit console work — see [VKDG-frontend-day0.md](VKDG-frontend-day0.md).
+- **Admin API** (`/admin/v1/`) is pending. Connection, route, and key management requires the SvelteKit console work: see [VKDG-frontend-day0.md](VKDG-frontend-day0.md).
 - **`vkdg request explain <id>`** and **`vkdg replay`** CLI subcommands are pending.
 
 ## Development
@@ -180,7 +180,7 @@ See the [console architecture](VKDG-frontend-day0.md) for the API boundary, OAut
 
 ## Extensions without a hidden second gateway
 
-Provider adapters describe capabilities, request preparation, event decoding, and error classification. The core retains control of HTTP, credentials, resource budgets, and cancellation. Official adapters start as Rust crates; the WASM plugin interface is implemented and tested — external providers can be loaded at runtime after Phase E completes the Component Model bindgen.
+Provider adapters describe capabilities, request preparation, event decoding, and error classification. The core retains control of HTTP, credentials, resource budgets, and cancellation. Official adapters start as Rust crates; the WASM plugin interface is implemented and tested: external providers can be loaded at runtime after Phase E completes the Component Model bindgen.
 
 See [docs/sdk/adding-a-provider.md](docs/sdk/adding-a-provider.md) and [docs/sdk/writing-a-plugin.md](docs/sdk/writing-a-plugin.md).
 

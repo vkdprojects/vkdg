@@ -1,6 +1,6 @@
 # Adding a Provider Adapter
 
-A provider adapter translates VKDG's internal `Operation` type into the wire format a specific upstream API expects. The pipeline core calls `prepare()` once per request and knows nothing about URLs, auth headers, or JSON schemas — that's the adapter's job.
+A provider adapter translates VKDG's internal `Operation` type into the wire format a specific upstream API expects. The pipeline core calls `prepare()` once per request and knows nothing about URLs, auth headers, or JSON schemas. That's the adapter's job.
 
 ## 1. The `ProviderAdapter` trait
 
@@ -26,8 +26,8 @@ pub trait ProviderAdapter: Send + Sync {
 }
 ```
 
-- `name()` — unique string identifier used in logs and error messages.
-- `prepare()` — receives the decoded operation, the connection's config (models, capabilities, base URL), and the resolved bearer token. Returns a ready-to-send HTTP request or a `VkdgError`.
+- `name()`: unique string identifier used in logs and error messages.
+- `prepare()`: receives the decoded operation, the connection's config (models, capabilities, base URL), and the resolved bearer token. Returns a ready-to-send HTTP request or a `VkdgError`.
 
 ## 2. Create the crate
 
@@ -272,5 +272,5 @@ impl ProviderAdapter for EchoAdapter {
 
 ## 8. Reference implementations
 
-- **Anthropic**: `crates/vkdg-provider-anthropic/src/lib.rs` — `x-api-key` header, `/v1/messages` endpoint, `anthropic-version` header.
-- **OpenAI**: `crates/vkdg-provider-openai/src/prepare.rs` — `Authorization: Bearer` header, `/v1/chat/completions`, image and video generation endpoints.
+- **Anthropic**: `crates/vkdg-provider-anthropic/src/lib.rs`: `x-api-key` header, `/v1/messages` endpoint, `anthropic-version` header.
+- **OpenAI**: `crates/vkdg-provider-openai/src/prepare.rs`: `Authorization: Bearer` header, `/v1/chat/completions`, image and video generation endpoints.

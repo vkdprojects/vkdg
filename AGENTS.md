@@ -1,4 +1,4 @@
-# VKDG — agent entry guide
+# VKDG: agent entry guide
 
 Product: AI gateway in Rust. Receives calls via native VKDG API and compatible protocols; selects connection/provider by capability and policy; transforms only when necessary; streams responses and manages media jobs. Not an agent tool runtime.
 
@@ -66,4 +66,4 @@ cargo run -p vkdg -- config check <file.yaml>
 
 ## Spec
 
-`spec/scenarios/*.yaml` — observable contracts per phase. Each file maps to tests in `tests/conformance/`.
+`spec/scenarios/*.yaml`: observable contracts per phase. Each file maps to tests in `tests/conformance/`.

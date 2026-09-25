@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - **Rust stable** (toolchain managed via `rustup`)
-- No API keys needed to develop — the fake upstream covers almost the entire test suite
+- No API keys needed to develop, the fake upstream covers almost the entire test suite
 
 ```bash
 rustup update stable
@@ -57,7 +57,7 @@ These tests start a fake upstream in memory, make no real network calls, and req
 
 3. **Add a provider adapter** (Phase C): crate `vkdg-provider-<name>` implementing the `ProviderAdapter` trait (to be stabilized in Phase C).
 
-4. **Write scenarios** in `spec/scenarios/` before implementing — the YAML file documents the expected behavior.
+4. **Write scenarios** in `spec/scenarios/` before implementing, the YAML file documents the expected behavior.
 
 5. **Add conformance tests** in `tests/conformance/` covering at minimum: valid decode, invalid decode, streaming, upstream error, capability mismatch.
 
@@ -76,8 +76,8 @@ These tests start a fake upstream in memory, make no real network calls, and req
 
 | Phase | Status | Exit criterion |
 |---|---|---|
-| A — Executable specification | ✅ Done | Conversation contracts, states, failure corpus, decisions in ADR |
-| B — Data vertical | ✅ Done | Anthropic endpoint, streaming, cancellation, fake upstream, 72 tests |
-| C — Interoperability | ✅ Done | Second provider, second ingress protocol, per-event translation, fallback combo |
-| D — Modalities and extensions | ✅ Done | Image, video job, WASM plugin, atomic config |
-| E — Scale / release | 🔲 Pending | Benchmarks, SDK documentation, release candidate |
+| A: Executable specification | ✅ Done | Conversation contracts, states, failure corpus, decisions in ADR |
+| B: Data vertical | ✅ Done | Anthropic endpoint, streaming, cancellation, fake upstream, 72 tests |
+| C: Interoperability | ✅ Done | Second provider, second ingress protocol, per-event translation, fallback combo |
+| D: Modalities and extensions | ✅ Done | Image, video job, WASM plugin, atomic config |
+| E: Scale / release | 🔲 Pending | Benchmarks, SDK documentation, release candidate |

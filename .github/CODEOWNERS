@@ -1,0 +1,13 @@
+# Default: all maintainers review everything
+* @matheusdejesus
+
+# Workflow and release config — require explicit sign-off
+/.github/ @matheusdejesus
+/Cargo.toml @matheusdejesus
+/deny.toml @matheusdejesus
+
+# Core protocol contracts
+/crates/vkdg-core/ @matheusdejesus
+/crates/vkdg-operations/ @matheusdejesus
+/wit/ @matheusdejesus
+/spec/ @matheusdejesus

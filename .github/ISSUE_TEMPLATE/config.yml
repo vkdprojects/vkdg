@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🙏 Q&A (GitHub Discussions)
+    url: https://github.com/vkdprojects/vkdg/discussions/categories/q-a
+    about: Questions about usage, configuration, or integration
+  - name: 💬 Feature Roadmap
+    url: https://github.com/vkdprojects/vkdg/discussions/categories/ideas
+    about: Ideas and roadmap discussion

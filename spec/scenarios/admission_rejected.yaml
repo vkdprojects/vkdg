@@ -1,0 +1,36 @@
+id: admission_rejected
+title: Admission gate rejects request when limit exceeded
+contract: When the admission gate has no capacity, the gateway returns 503 (not 500) with AdmissionRejected error
+phase: Admitted
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 0  # zero capacity — all requests rejected
+  upstream_behavior: unreachable  # never reached
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 503
+  error_code: AdmissionRejected
+  invariants:
+    - "Response status is 503, never 500"
+    - "Response body contains error_code=AdmissionRejected"
+    - "Upstream is never contacted"
+    - "No account lease is held after rejection"

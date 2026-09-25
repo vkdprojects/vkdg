@@ -1,0 +1,66 @@
+id: anthropic_decode_valid
+title: Valid Anthropic response body decodes to correct Operation
+contract: A well-formed Anthropic Messages API JSON response is decoded into the correct Operation variant with all fields intact
+phase: Committed
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: respond
+      status: 200
+      headers:
+        content-type: application/json
+      body: >
+        {
+          "id": "msg_01XFDUDYJgAACzvnptvVoYEL",
+          "type": "message",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Hello, world!"
+            }
+          ],
+          "model": "claude-3-5-sonnet-20241022",
+          "stop_reason": "end_turn",
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4
+          }
+        }
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 200
+  operation:
+    type: AnthropicMessages
+    content_text: "Hello, world!"
+    stop_reason: end_turn
+    usage_input_tokens: 10
+    usage_output_tokens: 4
+  invariants:
+    - "Decoded Operation variant is AnthropicMessages (not a raw bytes passthrough)"
+    - "content[0].text equals 'Hello, world!'"
+    - "stop_reason is end_turn"
+    - "usage.input_tokens = 10, usage.output_tokens = 4"
+    - "No fields are dropped or coerced during decode"

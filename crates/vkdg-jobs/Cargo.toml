@@ -1,0 +1,18 @@
+[package]
+name = "vkdg-jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core    = { workspace = true }
+vkdg-storage = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+tokio        = { workspace = true }
+chrono       = { workspace = true }
+uuid         = { workspace = true }
+thiserror    = { workspace = true }
+anyhow       = { workspace = true }
+async-trait  = { workspace = true }
+rusqlite     = { workspace = true }

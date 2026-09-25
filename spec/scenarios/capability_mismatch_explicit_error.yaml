@@ -1,0 +1,50 @@
+id: capability_mismatch_explicit_error
+title: Capability mismatch returns explicit unsupported_capability error, never fails open
+contract: When a client requests a capability that the selected connection does not support, the gateway returns an explicit CapabilityUnsupported error — it NEVER silently proceeds with a degraded or incorrect behavior
+phase: Prepared
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+      supported_capabilities:
+        - text
+        - vision
+      unsupported_capabilities:
+        - computer_use  # this connection does not support computer use
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: unreachable  # must never be reached
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      tools:
+        - type: computer_20241022
+          name: computer
+          display_width_px: 1024
+          display_height_px: 768
+      messages:
+        - role: user
+          content: click the button
+
+assert:
+  http_status: 400
+  error_code: CapabilityUnsupported
+  invariants:
+    - "Response error_code is CapabilityUnsupported"
+    - "Error message names the specific unsupported capability (computer_use)"
+    - "Upstream is NEVER contacted — check is done before UpstreamOpen"
+    - "Gateway does NOT fail open by forwarding the request without the capability"
+    - "Gateway does NOT silently ignore the unsupported tool and proceed"
+    - "Behavior differs from OmniRoute's documented fail-open: VKDG always errors explicitly"

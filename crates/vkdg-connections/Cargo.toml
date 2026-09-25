@@ -1,0 +1,13 @@
+[package]
+name = "vkdg-connections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core       = { workspace = true }
+serde           = { workspace = true }
+async-trait     = { workspace = true }
+tokio           = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }

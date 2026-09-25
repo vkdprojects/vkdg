@@ -1,0 +1,119 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vkdg-core",
+    "crates/vkdg-operations",
+    "crates/vkdg-http",
+    "crates/vkdg-routing",
+    "crates/vkdg-connections",
+    "crates/vkdg-ingress-anthropic",
+    "crates/vkdg-observe",
+    "crates/vkdg-cli",
+    "crates/vkdg-plugin-host",
+    "crates/vkdg-storage",
+    "bin/vkdg",
+    "tests/conformance",
+    "crates/vkdg-provider-anthropic",
+    "crates/vkdg-ingress-openai",
+    "crates/vkdg-jobs",
+    "crates/vkdg-artifacts",
+    "crates/vkdg-policy-compress",
+    "crates/vkdg-config",
+    "bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codeatlasdev/vkdg"
+
+[workspace.dependencies]
+# async runtime
+tokio = { version = "1.45", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# http
+hyper = { version = "1.6", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1.3"
+http-body = "1.0"
+http-body-util = "0.1"
+bytes = "1.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+
+# tower middleware
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "limit"] }
+
+# axum for routing surface
+axum = { version = "0.8", features = ["macros"] }
+
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# config
+figment = { version = "0.10", features = ["yaml", "env"] }
+
+# errors
+thiserror = "2.0"
+anyhow = "1.0"
+
+# tracing / observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = { version = "0.27" }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+tracing-opentelemetry = "0.28"
+
+# ids / time
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# crypto
+aes-gcm = "0.10"
+rand = "0.8"
+
+# cli
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# async utils
+futures = "0.3"
+pin-project-lite = "0.2"
+async-trait = "0.1"
+
+# internal crates
+vkdg-core        = { path = "crates/vkdg-core" }
+vkdg-operations  = { path = "crates/vkdg-operations" }
+vkdg-http        = { path = "crates/vkdg-http" }
+vkdg-routing     = { path = "crates/vkdg-routing" }
+vkdg-connections = { path = "crates/vkdg-connections" }
+vkdg-ingress-anthropic = { path = "crates/vkdg-ingress-anthropic" }
+vkdg-observe     = { path = "crates/vkdg-observe" }
+vkdg-plugin-host = { path = "crates/vkdg-plugin-host" }
+vkdg-storage     = { path = "crates/vkdg-storage" }
+serde_yaml      = "0.9"
+vkdg-cli        = { path = "crates/vkdg-cli" }
+vkdg-provider-anthropic = { path = "crates/vkdg-provider-anthropic" }
+vkdg-ingress-openai     = { path = "crates/vkdg-ingress-openai" }
+vkdg-provider-openai    = { path = "crates/vkdg-provider-openai" }
+vkdg-jobs        = { path = "crates/vkdg-jobs" }
+vkdg-artifacts   = { path = "crates/vkdg-artifacts" }
+vkdg-policy-compress = { path = "crates/vkdg-policy-compress" }
+vkdg-config      = { path = "crates/vkdg-config" }
+notify           = { version = "6.1", features = ["macos_fsevent"] }
+rusqlite         = { version = "0.31", features = ["bundled"] }
+wasmtime        = { version = "27", features = ["component-model"] }
+tempfile         = "3.10"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

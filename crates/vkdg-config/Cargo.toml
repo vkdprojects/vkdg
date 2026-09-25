@@ -1,0 +1,21 @@
+[package]
+name = "vkdg-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core        = { workspace = true }
+vkdg-connections = { workspace = true }
+vkdg-routing     = { workspace = true }
+vkdg-observe     = { workspace = true }
+serde            = { workspace = true }
+serde_yaml       = { workspace = true }
+serde_json       = { workspace = true }
+thiserror        = { workspace = true }
+tokio            = { workspace = true }
+tracing          = { workspace = true }
+notify           = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

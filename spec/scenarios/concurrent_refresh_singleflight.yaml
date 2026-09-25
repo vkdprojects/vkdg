@@ -1,0 +1,46 @@
+id: concurrent_refresh_singleflight
+title: Concurrent token refresh on same connection is deduplicated via singleflight
+contract: When multiple concurrent streams share a connection whose token has expired, exactly one HTTP call is made to the token endpoint; all streams receive a valid token
+phase: CredentialReady
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+      token_expired: true  # token is expired at start of test
+  token_endpoint:
+    url: http://fake-token-server/token
+    response:
+      access_token: fresh-token-abc123
+      expires_in: 3600
+    call_count_limit: 1  # test assertion: must not exceed 1 call
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: succeed_after_token_refresh
+
+act:
+  concurrent_requests: 5
+  request_template:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 10
+      messages:
+        - role: user
+          content: ping
+
+assert:
+  token_endpoint_call_count: 1
+  invariants:
+    - "singleflight deduplicates concurrent refresh — token endpoint called exactly 1 time"
+    - "All 5 streams receive a valid (non-expired) token"
+    - "No stream proceeds with the expired token"
+    - "No stream errors due to token contention"
+    - "The deduplicated result is shared to all 5 waiters, not just the first caller"

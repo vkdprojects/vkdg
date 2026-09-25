@@ -1,0 +1,30 @@
+[package]
+name = "vkdg-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core       = { workspace = true }
+vkdg-routing    = { workspace = true }
+vkdg-connections = { workspace = true }
+vkdg-operations = { workspace = true }
+vkdg-observe    = { workspace = true }
+
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+hyper       = { workspace = true }
+hyper-util  = { workspace = true }
+http        = { workspace = true }
+http-body-util = { workspace = true }
+bytes       = { workspace = true }
+tower       = { workspace = true }
+tower-http  = { workspace = true }
+axum        = { workspace = true }
+futures     = { workspace = true }
+pin-project-lite = { workspace = true }
+uuid        = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+reqwest         = { workspace = true }

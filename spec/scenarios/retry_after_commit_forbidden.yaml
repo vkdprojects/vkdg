@@ -1,0 +1,44 @@
+id: retry_after_commit_forbidden
+title: No transparent retry after committed state
+contract: Once the pipeline transitions to Committed, any subsequent failure is surfaced to the client as an error — no transparent retry
+phase: Committed
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+    - id: conn-002
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: fail
+      status: 500
+      at_state: Committed  # fails AFTER first bytes sent/committed
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 500
+  error_code: UpstreamError
+  invariants:
+    - "conn-002 is NEVER attempted after conn-001 fails post-Committed"
+    - "Client receives an error response, not a retried success"
+    - "attempt_count in DecisionRecord is 1"
+    - "AttemptResult is Failed with committed=true"
+    - "No partial response is silently swallowed"

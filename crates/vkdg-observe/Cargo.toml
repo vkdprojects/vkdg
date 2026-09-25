@@ -1,0 +1,19 @@
+[package]
+name = "vkdg-observe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core          = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry      = { workspace = true }
+opentelemetry_sdk  = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+chrono             = { workspace = true }
+tokio              = { workspace = true }
+anyhow             = { workspace = true }

@@ -1,0 +1,58 @@
+id: anthropic_decode_invalid_json
+title: Invalid JSON from upstream returns 400 in Anthropic error format
+contract: When the upstream returns a 200 with a body that is not valid JSON, the ingress layer returns HTTP 400 formatted as an Anthropic API error object — never a 500 or raw parse error
+phase: Committed
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: respond
+      status: 200
+      headers:
+        content-type: application/json
+      body: "this is not json {"
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 400
+  error_format: anthropic  # response body must match Anthropic error shape
+  error_body_schema:
+    type: object
+    required: [type, error]
+    properties:
+      type:
+        const: error
+      error:
+        type: object
+        required: [type, message]
+        properties:
+          type:
+            type: string
+          message:
+            type: string
+  invariants:
+    - "HTTP status is 400, not 500"
+    - "Response Content-Type is application/json"
+    - "Body has top-level 'type': 'error' field"
+    - "Body has nested 'error.type' and 'error.message' fields (Anthropic error shape)"
+    - "Raw parse error message is NOT leaked verbatim to the client"
+    - "No panic or Internal error variant is surfaced"

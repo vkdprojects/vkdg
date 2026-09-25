@@ -1,0 +1,17 @@
+[package]
+name = "vkdg-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core    = { workspace = true }
+vkdg-observe = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+clap         = { workspace = true }
+anyhow       = { workspace = true }
+tokio        = { workspace = true }
+tracing      = { workspace = true }
+serde_yaml   = { workspace = true }
+vkdg-config  = { workspace = true }

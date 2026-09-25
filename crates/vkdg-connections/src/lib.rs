@@ -1,0 +1,254 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+
+use vkdg_core::{CapabilitySet, ConnectionId, Result, VkdgError};
+
+// ── Provider / auth kinds ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Anthropic,
+    OpenAI,
+    Google,
+    Custom { base_url: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthKind {
+    ApiKey { env_var: String },
+    OAuth2 {
+        token_url: String,
+        client_id: String,
+        client_secret_env: String,
+        scopes: Vec<String>,
+    },
+}
+
+// ── Connection config ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionConfig {
+    pub id: ConnectionId,
+    pub provider: ProviderKind,
+    pub auth: AuthKind,
+    /// Model names/patterns this connection serves; `*` suffix = prefix match.
+    pub models: Vec<String>,
+    pub max_concurrent: u32,
+    pub weight: u32,
+    pub tags: Vec<String>,
+    /// Capabilities this connection supports (e.g. Vision, Tools, Streaming).
+    /// Empty set means no capability filtering is applied (legacy / unconfigured).
+    pub capabilities: CapabilitySet,
+}
+
+// ── Token state ───────────────────────────────────────────────────────────────
+
+/// Intentionally does NOT derive Debug — contains a sensitive token.
+pub struct TokenState {
+    pub access_token: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub generation: u64,
+}
+
+impl std::fmt::Debug for TokenState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenState")
+            .field("expires_at", &self.expires_at)
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
+// ── Connection state ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+    Healthy,
+    Degraded { since: DateTime<Utc> },
+    CircuitOpen { until: DateTime<Utc> },
+    Cooldown { until: DateTime<Utc> },
+}
+
+impl ConnectionState {
+    pub fn is_healthy(&self) -> bool {
+        matches!(self, ConnectionState::Healthy)
+    }
+}
+
+// ── Connection ────────────────────────────────────────────────────────────────
+
+pub struct Connection {
+    pub config: ConnectionConfig,
+    pub state: ConnectionState,
+    active_requests: Arc<AtomicU32>,
+}
+
+impl Connection {
+    pub fn new(config: ConnectionConfig) -> Self {
+        Self {
+            config,
+            state: ConnectionState::Healthy,
+            active_requests: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    pub fn active_requests(&self) -> u32 {
+        self.active_requests.load(Ordering::Relaxed)
+    }
+
+    pub fn has_capacity(&self) -> bool {
+        self.active_requests() < self.config.max_concurrent
+    }
+
+    /// Returns a guard that decrements the counter on drop.
+    pub fn acquire(&self) -> Option<ConnectionGuard> {
+        let current = self.active_requests.load(Ordering::Acquire);
+        if current >= self.config.max_concurrent {
+            return None;
+        }
+        // Best-effort CAS; exact fairness not required on this path.
+        self.active_requests.fetch_add(1, Ordering::AcqRel);
+        Some(ConnectionGuard { counter: Arc::clone(&self.active_requests) })
+    }
+
+    fn serves_model(&self, model: &str) -> bool {
+        self.config.models.iter().any(|pattern| {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                model.starts_with(prefix)
+            } else {
+                model == pattern
+            }
+        })
+    }
+}
+
+/// RAII guard — decrements active_requests on drop.
+pub struct ConnectionGuard {
+    counter: Arc<AtomicU32>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+// ── Catalog ───────────────────────────────────────────────────────────────────
+
+pub struct ConnectionCatalog {
+    connections: HashMap<ConnectionId, Arc<RwLock<Connection>>>,
+}
+
+impl ConnectionCatalog {
+    pub fn new(configs: Vec<ConnectionConfig>) -> Self {
+        let connections = configs
+            .into_iter()
+            .map(|cfg| {
+                let id = cfg.id.clone();
+                (id, Arc::new(RwLock::new(Connection::new(cfg))))
+            })
+            .collect();
+        Self { connections }
+    }
+
+    pub fn get(&self, id: &ConnectionId) -> Option<Arc<RwLock<Connection>>> {
+        self.connections.get(id).cloned()
+    }
+
+    /// Connections that are Healthy, have capacity, and serve `model`.
+    /// Runs synchronous reads; callers on an async runtime should use
+    /// `blocking_read` only when the lock is uncontended (catalog mutations
+    /// are rare configuration events, not hot-path writes).
+    pub fn eligible(&self, model: &str, exclude: &[ConnectionId]) -> Vec<ConnectionId> {
+        self.connections
+            .iter()
+            .filter_map(|(id, arc)| {
+                if exclude.contains(id) {
+                    return None;
+                }
+                // `try_read` — if the lock is held by a writer we skip rather
+                // than block the caller; the writer is a state-transition event
+                // and the connection will appear in the next routing attempt.
+                let conn = arc.try_read().ok()?;
+                if conn.state.is_healthy() && conn.has_capacity() && conn.serves_model(model) {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Like `eligible`, but also filters out connections whose declared
+    /// `capabilities` do not cover every capability in `required`.
+    ///
+    /// A connection with an empty `capabilities` set is treated as supporting
+    /// *nothing* explicitly — it will be excluded if `required` is non-empty.
+    /// This ensures fail-closed behaviour: capability mismatch is never silent.
+    pub fn eligible_for_operation(
+        &self,
+        model: &str,
+        exclude: &[ConnectionId],
+        required: &CapabilitySet,
+    ) -> Vec<ConnectionId> {
+        self.connections
+            .iter()
+            .filter_map(|(id, arc)| {
+                if exclude.contains(id) {
+                    return None;
+                }
+                let conn = arc.try_read().ok()?;
+                if !conn.state.is_healthy() || !conn.has_capacity() || !conn.serves_model(model) {
+                    return None;
+                }
+                // Every required capability must be present.
+                // An empty required set means no filtering — all healthy connections pass.
+                for cap in &required.0 {
+                    if !conn.config.capabilities.contains(cap) {
+                        return None;
+                    }
+                }
+                Some(id.clone())
+            })
+            .collect()
+    }
+}
+
+// ── Credential manager ────────────────────────────────────────────────────────
+
+pub struct CredentialManager;
+
+impl CredentialManager {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub async fn get_token(&self, conn: &ConnectionConfig) -> Result<String> {
+        match &conn.auth {
+            AuthKind::ApiKey { env_var } => {
+                std::env::var(env_var).map_err(|_| VkdgError::ConfigInvalid {
+                    field: env_var.clone(),
+                    message: "environment variable not set".into(),
+                })
+            }
+            AuthKind::OAuth2 { .. } => {
+                // Phase B: full OAuth2 token exchange.
+                Ok("oauth-stub".into())
+            }
+        }
+    }
+}
+
+impl Default for CredentialManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

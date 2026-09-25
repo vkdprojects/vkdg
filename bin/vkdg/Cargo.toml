@@ -1,0 +1,28 @@
+[package]
+name = "vkdg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vkdg"
+path = "src/main.rs"
+
+[dependencies]
+vkdg-core        = { workspace = true }
+vkdg-http        = { workspace = true }
+vkdg-observe     = { workspace = true }
+vkdg-cli         = { workspace = true }
+vkdg-connections = { workspace = true }
+vkdg-routing     = { workspace = true }
+vkdg-ingress-anthropic = { workspace = true }
+vkdg-ingress-openai     = { workspace = true }
+axum                   = { workspace = true }
+vkdg-operations        = { workspace = true }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+tokio            = { workspace = true }
+clap             = { workspace = true }
+tracing          = { workspace = true }
+vkdg-provider-anthropic = { workspace = true }
+vkdg-config      = { workspace = true }

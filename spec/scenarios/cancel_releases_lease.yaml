@@ -1,0 +1,39 @@
+id: cancel_releases_lease
+title: Cancellation in any state releases the account lease
+contract: Whether the request is cancelled during Admitted, AccountReserved, CredentialReady, Prepared, UpstreamOpen, or Committed, the account lease is always released
+phase: AccountReserved  # representative mid-pipeline cancellation
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: hang  # upstream holds connection open so we can cancel mid-flight
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+  cancel_after_ms: 50  # client disconnects 50ms after sending
+
+assert:
+  http_status: null  # connection dropped by client, no HTTP response
+  invariants:
+    - "Account lease for conn-001 is released after cancellation"
+    - "No lease counter remains incremented after the request lifecycle ends"
+    - "AttemptState transitions to Cancelled"
+    - "A subsequent request can acquire the same lease without starvation"
+    - "Cancellation handling is idempotent regardless of which AttemptState was active"

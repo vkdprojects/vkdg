@@ -1,0 +1,39 @@
+id: no_eligible_connection
+title: No eligible connection returns explicit error
+contract: When all connections are unhealthy or excluded, gateway returns an explicit NoEligibleConnection error, never fails open
+phase: AccountReserved
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: false
+    - id: conn-002
+      model: claude-3-5-sonnet-20241022
+      healthy: false
+  admission_limit: 100
+  upstream_behavior: unreachable
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 503
+  error_code: NoEligibleConnection
+  invariants:
+    - "Response body contains error_code=NoEligibleConnection"
+    - "Gateway never fails open by selecting a degraded connection"
+    - "No upstream request is made"
+    - "Both connections appear in candidates_excluded of the decision record"

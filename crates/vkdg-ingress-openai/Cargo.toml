@@ -1,0 +1,18 @@
+[package]
+name = "vkdg-ingress-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core        = { workspace = true }
+vkdg-operations  = { workspace = true }
+vkdg-http        = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+bytes            = { workspace = true }
+futures          = { workspace = true }
+http             = { workspace = true }
+axum             = { workspace = true }
+tracing          = { workspace = true }
+tokio            = { workspace = true }

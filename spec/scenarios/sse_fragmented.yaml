@@ -1,0 +1,50 @@
+id: sse_fragmented
+title: SSE parser produces complete events from arbitrarily fragmented byte stream
+contract: When upstream delivers an SSE event split across multiple read() calls at arbitrary byte boundaries, the parser buffers correctly and emits exactly one complete event — never a partial event
+phase: Committed
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: stream_sse_fragmented
+      # Full event: "data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}\n\n"
+      # Delivered as 3 separate byte slices to simulate TCP fragmentation:
+      chunks:
+        - 'data: {"type":"content_block'  # slice 1: cuts mid-JSON key
+        - '_delta","delta":{"type":"text' # slice 2: cuts mid-string value
+        - '_delta","text":"hello"}}\n\n'  # slice 3: completes event + double newline
+      chunk_delay_ms: 0
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      stream: true
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 200
+  events:
+    - type: content_block_delta
+      delta: hello
+  event_count: 1
+  invariants:
+    - "SSE parser buffers across read boundaries — no partial event emitted"
+    - "Exactly one OutputDelta event is produced with delta='hello'"
+    - "No extra empty or malformed events are emitted"
+    - "Parser state is correctly reset after the double-newline event terminator"
+    - "Fragmentation at any byte offset within the event produces the same result"

@@ -1,0 +1,46 @@
+id: retry_before_commit
+title: Transparent retry allowed before committed state
+contract: A retryable upstream failure before the Committed state triggers a transparent retry on the next eligible connection
+phase: UpstreamOpen
+
+arrange:
+  connections:
+    - id: conn-001
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+    - id: conn-002
+      model: claude-3-5-sonnet-20241022
+      healthy: true
+  admission_limit: 100
+  upstream_behavior:
+    conn-001:
+      action: fail
+      status: 503
+      at_state: UpstreamOpen  # fails before any bytes committed
+    conn-002:
+      action: succeed
+      response_body: '{"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-5-sonnet-20241022","stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}'
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 200
+  invariants:
+    - "conn-001 is attempted first and fails before Committed"
+    - "conn-002 is attempted transparently without client seeing the first failure"
+    - "Final response is 200 from conn-002"
+    - "attempt_count in DecisionRecord is 2"
+    - "Client receives a single successful response"

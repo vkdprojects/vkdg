@@ -1,0 +1,22 @@
+id: plugin_install_rollback
+title: Plugin WASM can be installed and then removed without changing the core
+contract: install_wasm registers the plugin; uninstall removes it from the registry; core pipeline is unchanged
+phase: plugin
+arrange:
+  manifest:
+    id: test-provider-v1
+    version: 0.1.0
+    kind: {wasm: {path: "./fixtures/test_provider.wasm"}}
+    hooks: [pre_dispatch]
+    description: Test WASM provider
+act:
+  steps:
+    - install plugin from path
+    - verify registered in host.registry
+    - uninstall plugin
+    - verify no longer in host.registry
+assert:
+  invariants:
+    - registry.plugins_for_hook(PreDispatch) is empty after uninstall
+    - core pipeline is not modified at any step
+    - wasm_instances do not leak memory (Drop impl)

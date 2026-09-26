@@ -3,20 +3,48 @@
 //! Never modifies context without explicit route consent.
 
 pub mod caveman;
+pub mod class;
 pub mod metrics;
+pub mod packs;
+pub mod registry;
 pub mod rtk;
 pub mod stacked;
 pub mod styles;
 pub mod truncate;
 
 pub use caveman::CavemanCompressor;
+pub use class::ContentClass;
 pub use metrics::CompressionMetrics;
+pub use registry::PackRegistry;
 pub use rtk::RtkCompressor;
 pub use stacked::StackedCompressor;
 pub use styles::OutputStyle;
 pub use truncate::{TruncateCompressor, TruncatePolicy, TruncateResult};
 
 use vkdg_operations::ConversationRequest;
+
+/// A filter pack applies targeted text transformations to one ContentClass.
+///
+/// Implement this trait to add a new pack.
+/// Register via PackRegistry; enable/disable per route.
+pub trait FilterPack: Send + Sync {
+    /// Unique identifier: `"rtk:<name>"` for built-in, `"custom:<name>"` for user packs.
+    fn id(&self) -> &str;
+
+    /// Which ContentClass this pack handles.
+    fn handles(&self) -> ContentClass;
+
+    /// Apply the filter and return the compressed text.
+    ///
+    /// Must preserve: code blocks, URLs, file paths, identifiers, numbers.
+    fn apply(&self, text: &str) -> String;
+
+    /// One-line description for admin UI and docs.
+    fn description(&self) -> &str;
+
+    /// Rough % reduction for this class. Used for logging and metrics.
+    fn estimated_reduction_pct(&self) -> u8;
+}
 
 /// Native Rust compressor interface — mirrors the WIT compressor-plugin interface.
 /// Native implementations (Caveman, RTK) implement this trait directly.

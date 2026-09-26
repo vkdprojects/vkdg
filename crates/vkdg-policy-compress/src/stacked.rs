@@ -28,7 +28,10 @@ impl StackedCompressor {
     /// Build the default RTK → Caveman stack.
     pub fn rtk_caveman() -> Self {
         use crate::{CavemanCompressor, RtkCompressor};
-        Self::new(vec![Arc::new(RtkCompressor), Arc::new(CavemanCompressor)])
+        Self::new(vec![
+            Arc::new(RtkCompressor::default()),
+            Arc::new(CavemanCompressor),
+        ])
     }
 }
 

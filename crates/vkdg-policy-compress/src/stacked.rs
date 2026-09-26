@@ -45,7 +45,7 @@ impl Compressor for StackedCompressor {
         mut req: ConversationRequest,
         budget: u32,
     ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
-        let original_tokens = self.stages.first()
+        let _original_tokens = self.stages.first()
             .map(|s| s.estimate_tokens(&req))
             .unwrap_or(0);
 

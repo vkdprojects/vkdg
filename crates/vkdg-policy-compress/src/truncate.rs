@@ -68,7 +68,7 @@ pub fn apply(
     let mut tokens_so_far = estimated_tokens(&kept);
     let mut added: Vec<Message> = Vec::new();
     for msg in non_system.into_iter().rev() {
-        let t = estimated_tokens(&[msg.clone()]);
+        let t = estimated_tokens(std::slice::from_ref(&msg));
         if tokens_so_far + t <= max_tokens {
             tokens_so_far += t;
             added.push(msg);

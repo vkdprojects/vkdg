@@ -143,7 +143,7 @@ impl InMemoryArtifactStore {
         let map = self.inner.read().await;
         let (meta, data) = map
             .get(handle)
-            .ok_or_else(|| ArtifactError::NotFound(handle.0))?;
+            .ok_or(ArtifactError::NotFound(handle.0))?;
         if meta.owner_tenant != requesting_tenant {
             return Err(ArtifactError::Forbidden);
         }

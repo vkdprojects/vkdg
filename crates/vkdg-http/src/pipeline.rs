@@ -91,6 +91,20 @@ fn emit_decision_record(
     pipeline.exporter.export(&record);
 }
 
+// ── RAII dedup guard ──────────────────────────────────────────────────────────
+/// Calls `DedupTable::complete` on drop so in-flight tracking is always cleaned
+/// up regardless of how run_pipeline_inner exits (normal return, early return,
+/// or `?`-propagated error).
+struct DedupGuard {
+    dedup: Arc<crate::DedupTable>,
+    key: String,
+}
+impl Drop for DedupGuard {
+    fn drop(&mut self) {
+        self.dedup.complete(&self.key);
+    }
+}
+
 async fn run_pipeline_inner(
     pipeline: &PipelineState,
     ctx: &mut PipelineCtx,
@@ -132,13 +146,30 @@ async fn run_pipeline_inner(
         .router
         .route(&ctx.envelope, &filter)
         .await?;
-    ctx.connection_id = Some(route_result.connection_id.clone());
+    // Apply combo target override: if a combo matched and its targets don't
+    // include the routed connection, redirect to the first combo target.
+    let connection_id = if let Some(c) = &combo {
+        if !c.targets.is_empty() && !c.targets.contains(&route_result.connection_id) {
+            tracing::debug!(
+                combo_id = %c.id,
+                routed   = %route_result.connection_id.0,
+                redirect = %c.targets[0].0,
+                "combo redirect: routed connection not in combo targets",
+            );
+            c.targets[0].clone()
+        } else {
+            route_result.connection_id
+        }
+    } else {
+        route_result.connection_id
+    };
+    ctx.connection_id = Some(connection_id.clone());
     ctx.transition(AttemptState::AccountReserved);
 
     // 3. Connection + RAII guard ───────────────────────────────────────────────
     let conn_arc = pipeline
         .catalog
-        .get(&route_result.connection_id)
+        .get(&connection_id)
         .ok_or(VkdgError::NoEligibleConnection)?;
     // Read the connection config and acquire a request slot.
     // `_guard` is kept alive for the entire function; it decrements
@@ -195,12 +226,27 @@ async fn run_pipeline_inner(
         }
     }
 
+    // 4.7. Request deduplication ───────────────────────────────────────────────
+    // Register this request as in-flight.  If a duplicate is already in-flight
+    // we still proceed (Phase D: register-and-proceed).  Phase E will add the
+    // wait-then-read-cache path.  The DedupGuard calls complete() on drop so
+    // the entry is always removed even on error or early return.
+    let _dedup_guard = if let (Some(dedup), Operation::Conversation(conv_req)) =
+        (&pipeline.dedup_table, &operation)
+    {
+        let key = cache_key(&ctx.envelope.model_requested, conv_req);
+        let (is_first, _notify) = dedup.register(&key);
+        tracing::debug!(key = %key, is_first, "dedup registration");
+        Some(DedupGuard { dedup: Arc::clone(dedup), key })
+    } else {
+        None
+    };
 
     // 5a. Cache lookup (before upstream, after credential) ────────────────────
     // Bypass rules enforced here in core; the cache plugin never needs to check them.
     let conv_req = if let Operation::Conversation(r) = &operation { Some(r) } else { None };
     let bypass_cache = ctx.envelope.cache_bypass
-        || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
+        || conv_req.is_none_or(|r| is_multiturn(r) || has_tool_calls(r));
     let cache_key_val: Option<String> = if !bypass_cache {
         conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
     } else {
@@ -448,6 +494,7 @@ mod tests {
             cache: None,
             combo_resolver: None,
             compressor: None,
+            dedup_table: None,
         })
     }
 
@@ -574,6 +621,7 @@ mod tests {
             cache: None,
             combo_resolver: None,
             compressor: Some(Arc::new(CavemanCompressor)),
+            dedup_table: None,
         });
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.

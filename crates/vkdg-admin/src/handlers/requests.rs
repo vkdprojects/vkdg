@@ -14,6 +14,19 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ExcludedInfo {
+    pub id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecisionInfo {
+    pub route_id: Option<String>,
+    pub attempt_count: u32,
+    pub candidates_excluded: Vec<ExcludedInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RequestRecord {
     pub request_id: String,
     pub model: String,
@@ -22,6 +35,7 @@ pub struct RequestRecord {
     pub connection_id: Option<String>,
     pub started_at_ms: i64,
     pub duration_ms: Option<i64>,
+    pub decision: Option<DecisionInfo>,
 }
 
 pub struct RequestLog {
@@ -46,7 +60,7 @@ impl RequestLog {
         let filtered: Vec<RequestRecord> = v
             .iter()
             .rev()
-            .filter(|r| status_filter.map_or(true, |s| r.status == s))
+            .filter(|r| status_filter.is_none_or(|s| r.status == s))
             .cloned()
             .collect();
         let has_more = filtered.len() > limit;
@@ -154,6 +168,7 @@ mod tests {
             connection_id: Some("conn-a".into()),
             started_at_ms: 1000,
             duration_ms: Some(42),
+            decision: None,
         });
         state.request_log.push(RequestRecord {
             request_id: "req-2".into(),
@@ -163,6 +178,7 @@ mod tests {
             connection_id: None,
             started_at_ms: 2000,
             duration_ms: None,
+            decision: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(

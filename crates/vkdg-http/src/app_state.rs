@@ -4,6 +4,7 @@ use vkdg_connections::{ConnectionCatalog, CredentialManager};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
+use crate::dedup::DedupTable;
 use crate::admission::AdmissionGuard;
 use crate::frontdoor::{FrontDoor, ServerConfig};
 use crate::provider::ProviderAdapter;
@@ -29,6 +30,8 @@ pub struct PipelineState {
     pub combo_resolver: Option<Arc<ComboResolver>>,
     /// Optional compressor.  None = compression disabled for this pipeline.
     pub compressor: Option<Arc<dyn Compressor>>,
+    /// Optional request deduplication table.  None = dedup disabled.
+    pub dedup_table: Option<Arc<DedupTable>>,
 }
 
 #[derive(Clone)]

@@ -89,8 +89,9 @@ pub async fn handle_chat_completions(
     State(state): State<AppState>,
     req: Request,
 ) -> Response {
-    // 1. Read body (4 MB hard limit — matches ServerConfig::default).
-    let bytes: Bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
+    // 1. Split request to access headers and body separately.
+    let (parts, body) = req.into_parts();
+    let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
             return vkdg_error_to_oai_response(VkdgError::ConfigInvalid {
@@ -106,20 +107,40 @@ pub async fn handle_chat_completions(
         Err(e) => return vkdg_error_to_oai_response(e),
     };
 
-    // 3. Build request envelope with OpenAI API type.
-    let envelope = RequestEnvelope {
+    // 3. Build request envelope with per-request override headers.
+    let headers = &parts.headers;
+    let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId("anonymous".into()),
         tenant_id: TenantId("default".into()),
         session_key: None,
         api_type: ApiType::OpenAiChatCompletions,
         model_requested: model,
-            deadline: None,
-            mode_pack_override: None,
-            compression_override: None,
-            cache_bypass: false,
-            include_think_tags: false,
-        };
+        deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
+    };
+    // Extract per-request override headers (all are optional).
+    envelope.mode_pack_override = headers
+        .get("x-vkdg-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.compression_override = headers
+        .get("x-vkdg-compression")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.cache_bypass = headers
+        .get("x-vkdg-cache")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("none"))
+        .unwrap_or(false);
+    envelope.include_think_tags = headers
+        .get("x-vkdg-think-tags")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("include"))
+        .unwrap_or(false);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {
@@ -146,8 +167,9 @@ pub async fn handle_image_generations(
     State(state): State<AppState>,
     req: Request,
 ) -> Response {
-    // 1. Read body (4 MB hard limit).
-    let bytes: Bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
+    // 1. Split request to access headers and body separately.
+    let (parts, body) = req.into_parts();
+    let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
             return vkdg_error_to_oai_response(VkdgError::ConfigInvalid {
@@ -163,20 +185,40 @@ pub async fn handle_image_generations(
         Err(e) => return vkdg_error_to_oai_response(e),
     };
 
-    // 3. Build request envelope with OpenAI Images API type.
-    let envelope = RequestEnvelope {
+    // 3. Build request envelope with per-request override headers.
+    let headers = &parts.headers;
+    let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId("anonymous".into()),
         tenant_id: TenantId("default".into()),
         session_key: None,
         api_type: ApiType::OpenAiImages,
         model_requested: model,
-            deadline: None,
-            mode_pack_override: None,
-            compression_override: None,
-            cache_bypass: false,
-            include_think_tags: false,
-        };
+        deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
+    };
+    // Extract per-request override headers (all are optional).
+    envelope.mode_pack_override = headers
+        .get("x-vkdg-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.compression_override = headers
+        .get("x-vkdg-compression")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.cache_bypass = headers
+        .get("x-vkdg-cache")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("none"))
+        .unwrap_or(false);
+    envelope.include_think_tags = headers
+        .get("x-vkdg-think-tags")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("include"))
+        .unwrap_or(false);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {

@@ -139,7 +139,7 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
                 AnthropicContent::Blocks(blocks) => {
                     let content_blocks: Vec<ContentBlock> = blocks
                         .into_iter()
-                        .filter_map(|b| anthropic_block_to_content(b))
+                        .filter_map(anthropic_block_to_content)
                         .collect();
                     if content_blocks.is_empty() {
                         MessageContent::Text(String::new())

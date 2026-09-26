@@ -1,5 +1,4 @@
 use crate::plan::Combo;
-use vkdg_routing::StrategyKind;
 
 /// Resolves a model name or request metadata to a Combo.
 ///

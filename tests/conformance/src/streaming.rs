@@ -62,6 +62,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     })
 }
 

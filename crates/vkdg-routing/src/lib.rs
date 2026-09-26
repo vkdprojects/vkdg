@@ -196,7 +196,7 @@ impl Strategy for ScoredStrategy {
         scorer::rank_candidates(&signals, &weights)
             .into_iter()
             .next()
-            .map(|id| ConnectionId(id))
+            .map(ConnectionId)
             .ok_or(VkdgError::NoEligibleConnection)
     }
 }

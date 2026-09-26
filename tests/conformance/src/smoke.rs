@@ -58,6 +58,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     })
 }
 
@@ -359,6 +360,7 @@ where
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     })
 }
 
@@ -414,6 +416,7 @@ where
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     })
 }
 

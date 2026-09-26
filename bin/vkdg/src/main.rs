@@ -40,6 +40,23 @@ enum Command {
         #[command(subcommand)]
         sub: ConfigSub,
     },
+    /// Inspect requests processed by the gateway.
+    Request {
+        #[command(subcommand)]
+        sub: RequestSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum RequestSub {
+    /// Show routing decision and phases for a request.
+    Explain {
+        /// Request ID (UUID)
+        id: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -57,6 +74,9 @@ async fn main() -> Result<()> {
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
         Command::Config { sub: ConfigSub::Check { path } } => {
             vkdg_cli::commands::config_check::run(&path).await?;
+        }
+        Command::Request { sub: RequestSub::Explain { id, json } } => {
+            vkdg_cli::commands::explain::run(&id, json).await?;
         }
     }
     Ok(())
@@ -167,6 +187,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     }
 }
 
@@ -211,5 +232,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         cache: None,
         combo_resolver: None,
         compressor: None,
+        dedup_table: None,
     })
 }

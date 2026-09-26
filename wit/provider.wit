@@ -1,30 +1,40 @@
-package vkdg:provider@0.1.0;
+package vkdg:plugin@0.1.0;
 
-interface types {
-    /// Opaque bytes for a prepared request body.
-    type request-body = list<u8>;
-    type response-body = list<u8>;
+/// Provider adapter plugin.
+/// Translates VKDG internal Operation -> provider wire format and back.
+/// The gateway owns the HTTP client, TLS, DNS, auth injection, and retry.
+/// The plugin only transforms bytes.
+interface provider-plugin {
+    use types.{request, response, plugin-error};
 
-    record prepared-request {
-        url: string,
-        body: request-body,
-        is-streaming: bool,
-    }
+    /// Translate a VKDG request into the provider's wire format.
+    /// Returns: (url, body-bytes, is-streaming)
+    translate-request: func(
+        req: request,
+        connection-config-json: string,
+        token: string,
+    ) -> result<tuple<string, list<u8>, bool>, plugin-error>;
 
-    variant error {
-        capability-unsupported(string),
-        upstream-error(u16),
-        internal(string),
-    }
+    /// Translate a complete (non-streaming) provider response body.
+    translate-response: func(
+        body: list<u8>,
+        request-id: string,
+    ) -> result<response, plugin-error>;
+
+    /// Translate one SSE chunk. Returns none to indicate skip (e.g. comment lines).
+    /// Returns not-applicable when streaming is not supported.
+    translate-chunk: func(
+        chunk: list<u8>,
+        request-id: string,
+    ) -> result<option<response>, plugin-error>;
+
+    /// List of model IDs or glob patterns this provider handles.
+    /// e.g. ["claude-*", "claude-3-5-haiku-20241022"]
+    model-patterns: func() -> list<string>;
+
+    name: func() -> string;
 }
 
 world provider {
-    use types.{prepared-request, error};
-
-    /// Called by the host with the serialized Operation JSON and connection config JSON.
-    /// Returns a PreparedRequest or an error.
-    export prepare: func(operation-json: string, config-json: string, token: string) -> result<prepared-request, error>;
-
-    /// Plugin name for logging and registry.
-    export name: func() -> string;
+    export provider-plugin;
 }

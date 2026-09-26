@@ -1,0 +1,14 @@
+package vkdg:plugin@0.1.0;
+
+/// Top-level world for a plugin that implements multiple roles.
+/// A plugin component exports only the interfaces it handles.
+/// The gateway discovers capabilities at load time.
+world vkdg-plugin {
+    // A plugin may export any subset of these.
+    // Exporting none is an error caught at install time.
+    export router-plugin;
+    export compressor-plugin;
+    export provider-plugin;
+    export cache-backend-plugin;
+    export auth-plugin;
+}

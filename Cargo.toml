@@ -20,6 +20,8 @@ members = [
     "crates/vkdg-policy-compress",
     "crates/vkdg-config",
     "crates/vkdg-admin",
+    "crates/vkdg-cache",
+    "crates/vkdg-combos",
     "bench",
 ]
 [workspace.package]
@@ -74,6 +76,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # crypto
 aes-gcm = "0.10"
+sha2             = "0.10"
 rand = "0.8"
 
 # cli
@@ -106,6 +109,8 @@ vkdg-artifacts   = { path = "crates/vkdg-artifacts" }
 vkdg-policy-compress = { path = "crates/vkdg-policy-compress" }
 vkdg-config      = { path = "crates/vkdg-config" }
 vkdg-admin       = { path = "crates/vkdg-admin" }
+vkdg-cache       = { path = "crates/vkdg-cache" }
+vkdg-combos      = { path = "crates/vkdg-combos" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }

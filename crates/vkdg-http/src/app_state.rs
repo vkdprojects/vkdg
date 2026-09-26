@@ -8,6 +8,7 @@ use crate::admission::AdmissionGuard;
 use crate::frontdoor::{FrontDoor, ServerConfig};
 use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
+use vkdg_cache::CacheBackend;
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
 /// injected into AppState; optional so unit tests that only exercise admission
@@ -20,6 +21,8 @@ pub struct PipelineState {
     pub http_client: Arc<HttpClient>,
     pub exporter: Arc<DecisionRecordExporter>,
     pub provider_adapter: Arc<dyn ProviderAdapter>,
+    /// Optional cache backend.  None = cache disabled for this pipeline.
+    pub cache: Option<Arc<dyn CacheBackend>>,
 }
 
 #[derive(Clone)]

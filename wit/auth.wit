@@ -1,0 +1,35 @@
+package vkdg:plugin@0.1.0;
+
+/// Auth and rate-limit plugin.
+/// Called at ingress before any other plugin.
+/// The gateway enforces that auth runs before routing, compression, or cache.
+interface auth-plugin {
+    use types.{request, auth-context, plugin-error};
+
+    /// Authenticate the incoming request.
+    /// Returns an AuthContext on success or rejected/internal on failure.
+    authenticate: func(req: request) -> result<auth-context, plugin-error>;
+
+    /// Check rate limit for an authenticated request.
+    /// Returns ok(unit) if allowed.
+    /// Returns rejected("retry-after:30") with a parseable hint if rate-limited.
+    check-rate-limit: func(
+        ctx: auth-context,
+        req: request,
+    ) -> result<_, plugin-error>;
+
+    /// Record usage asynchronously after the response is returned.
+    /// Fire-and-forget: gateway does not wait for this to complete.
+    record-usage: func(
+        ctx: auth-context,
+        req: request,
+        prompt-tokens: u32,
+        completion-tokens: u32,
+    ) -> result<_, plugin-error>;
+
+    name: func() -> string;
+}
+
+world auth {
+    export auth-plugin;
+}

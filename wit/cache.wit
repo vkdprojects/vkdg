@@ -1,0 +1,29 @@
+package vkdg:plugin@0.1.0;
+
+/// Cache backend plugin.
+/// Two hooks: lookup before provider, store after.
+/// The gateway enforces bypass rules (multi-turn, tool calls, x-vkdg-cache: none)
+/// before calling lookup -- the plugin never needs to check these.
+interface cache-backend-plugin {
+    use types.{request, response, cache-result, plugin-error};
+
+    /// Look up a cached response for this request.
+    lookup: func(req: request) -> result<cache-result, plugin-error>;
+
+    /// Store a response. ttl-secs: none = backend default.
+    store: func(
+        req: request,
+        resp: response,
+        ttl-secs: option<u32>,
+    ) -> result<_, plugin-error>;
+
+    /// Invalidate all cached entries for a tenant.
+    /// Backends that don't support tenant-scoped invalidation return not-applicable.
+    invalidate-tenant: func(tenant-id: string) -> result<u32, plugin-error>;
+
+    name: func() -> string;
+}
+
+world cache-backend {
+    export cache-backend-plugin;
+}

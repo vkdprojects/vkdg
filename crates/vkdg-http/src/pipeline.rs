@@ -1,11 +1,13 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Response;
 use http::header;
 use serde_json::json;
+use vkdg_cache::{CacheEntry, CacheResult, cache_key};
 use vkdg_core::{AttemptResult, AttemptState, ConnectionId, DecisionRecord, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
-use vkdg_operations::Operation;
+use vkdg_operations::{ContentBlock, MessageContent, Operation, Role};
 use vkdg_routing::EligibilityFilter;
 
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
@@ -148,8 +150,38 @@ async fn run_pipeline_inner(
             .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
     }
 
+    // 5a. Cache lookup (before upstream, after credential) ────────────────────
+    // Bypass rules enforced here in core; the cache plugin never needs to check them.
+    let conv_req = if let Operation::Conversation(r) = operation { Some(r) } else { None };
+    let bypass_cache = conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
+    let cache_key_val: Option<String> = if !bypass_cache {
+        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
+    } else {
+        None
+    };
+    if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
+        match cache.lookup(key).await {
+            Ok(CacheResult::Hit(entry)) => {
+                ctx.transition(AttemptState::Completed);
+                let body = entry.response_json.into_bytes();
+                return Ok(axum::response::Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-vkdg-cache", "hit")
+                    .body(axum::body::Body::from(body))
+                    .unwrap_or_else(|_| error_response(VkdgError::Internal(
+                        "cache response build".into(),
+                    ))));
+            }
+            Ok(CacheResult::Miss) => {}
+            Err(e) => {
+                // Cache errors are non-fatal: log and continue to upstream.
+                tracing::warn!(error = %e, "cache lookup failed, bypassing");
+            }
+        }
+    }
 
-    // 5. Build upstream request via provider adapter ───────────────────────────
+    // 5b. Build upstream request via provider adapter ─────────────────────────
     let prepared = pipeline.provider_adapter.prepare(operation, &config, &token)?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
@@ -164,14 +196,27 @@ async fn run_pipeline_inner(
     let upstream_resp = pipeline.http_client.send(upstream_req, is_streaming).await?;
     ctx.transition(AttemptState::UpstreamOpen);
 
-    // First byte received — mark committed; transparent retry is no longer
-    // safe because the upstream has already started processing.
+    // First byte received — mark committed; transparent retry is no longer safe.
     ctx.mark_committed();
     ctx.transition(AttemptState::Committed);
 
     // 7. Build response ────────────────────────────────────────────────────────
     let resp = match upstream_resp {
         UpstreamResponse::Complete { status, body } => {
+            // 8. Cache store (fire-and-forget, non-streaming only) ─────────────
+            if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
+                let entry = CacheEntry {
+                    response_json: String::from_utf8_lossy(&body).into_owned(),
+                    model: ctx.envelope.model_requested.clone(),
+                    cached_at_secs: unix_secs(),
+                    ttl_secs: Some(300), // default 5 min; Phase E: from combo CachePolicy
+                    cache_type: "exact".into(),
+                    hit_score: None,
+                };
+                let cache = Arc::clone(cache);
+                let key = key.clone();
+                tokio::spawn(async move { let _ = cache.store(&key, entry).await; });
+            }
             let status_code =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
             axum::response::Response::builder()
@@ -183,10 +228,8 @@ async fn run_pipeline_inner(
                 )))
         }
         UpstreamResponse::Streaming { status: _, body } => {
-            // Pass upstream SSE bytes through verbatim — no re-wrapping.
-            // The upstream already emits correctly formatted `data: …\n\n` frames.
-            // SseParser is used on the *ingress* side when we need to inspect events
-            // (guardrails, token counting — Phase C+). For passthrough, raw Body is correct.
+            // Streaming responses are never cached — the body is a stream.
+            // Pass upstream SSE bytes through verbatim.
             axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
@@ -199,6 +242,33 @@ async fn run_pipeline_inner(
         }
     };
     Ok(resp)
+}
+
+// ── Cache bypass helpers ──────────────────────────────────────────────────────
+
+/// True when the conversation has more than one assistant turn in its history.
+/// Multi-turn conversations are never cached: the response depends on prior
+/// assistant outputs that may not be stable across retries.
+fn is_multiturn(op: &vkdg_operations::ConversationRequest) -> bool {
+    op.messages.iter().filter(|m| matches!(m.role, Role::Assistant)).count() > 1
+}
+
+/// True when any message in the conversation contains tool_use or tool_result
+/// content blocks.  Tool-call conversations are non-deterministic.
+fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool {
+    op.messages.iter().any(|m| matches!(
+        &m.content,
+        MessageContent::Blocks(blocks) if blocks.iter().any(|b|
+            matches!(b, ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. })
+        )
+    ))
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -273,6 +343,7 @@ mod tests {
             http_client: Arc::new(HttpClient::new()),
             exporter: Arc::new(DecisionRecordExporter::new()),
             provider_adapter: Arc::new(StubAdapter),
+            cache: None,
         })
     }
 

@@ -1,0 +1,20 @@
+package vkdg:plugin@0.1.0;
+
+/// Routing strategy plugin.
+/// Called after compression signals are available.
+/// Receives candidates pre-filtered by the gateway (healthy, capable, eligible).
+/// Returns reordered/filtered candidates and may inject signals for later stages.
+interface router-plugin {
+    use types.{routing-context, plugin-error};
+
+    /// Reorder or filter candidates. Returning an empty list is an error;
+    /// the gateway will fall back to the next registered router or fail.
+    /// Signals injected here (e.g. "router:cost_estimate") flow to cache + log.
+    route: func(ctx: routing-context) -> result<routing-context, plugin-error>;
+
+    name: func() -> string;
+}
+
+world router {
+    export router-plugin;
+}

@@ -59,6 +59,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(AnthropicAdapter),
+        cache: None,
     })
 }
 

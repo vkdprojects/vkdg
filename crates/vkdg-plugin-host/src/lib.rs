@@ -50,6 +50,25 @@ pub enum HookKind {
     OnFinish,
 }
 
+// ── PluginRole ────────────────────────────────────────────────────────────────
+
+/// What capability a plugin provides.
+/// A single .wasm component may implement multiple roles.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginRole {
+    /// Routing strategy (selects from candidate connections)
+    Router,
+    /// Context compression (pre-dispatch message reduction)
+    Compressor,
+    /// Provider adapter (translates to/from provider wire format)
+    Provider,
+    /// Cache backend (lookup + store)
+    CacheBackend,
+    /// Auth and rate limiting (ingress)
+    Auth,
+}
+
 // ── PluginManifest ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,8 +76,15 @@ pub struct PluginManifest {
     pub id: PluginId,
     pub version: String,
     pub kind: PluginKind,
+    /// Legacy hook-based dispatch (kept for backward compat).
     pub hooks: Vec<HookKind>,
+    /// Capability roles this plugin fulfills (new model).
+    pub roles: Vec<PluginRole>,
     pub description: String,
+    /// Maximum WASM linear memory in megabytes; None = host default (256 MB).
+    pub memory_limit_mb: Option<u32>,
+    /// Hard CPU wall-clock timeout per call in milliseconds; None = no limit.
+    pub cpu_timeout_ms: Option<u32>,
 }
 
 // ── PluginRegistry ────────────────────────────────────────────────────────────
@@ -148,6 +174,29 @@ impl WasmPluginInstance {
     }
 }
 
+
+// ── PluginChain ───────────────────────────────────────────────────────────────
+
+/// An ordered list of plugin IDs for a given role.
+/// Compiled per route from config, not re-computed per request.
+pub struct PluginChain {
+    pub role: PluginRole,
+    /// Plugin IDs in execution order.
+    pub plugins: Vec<PluginId>,
+    /// If true, non-fatal errors from plugins are logged and skipped rather
+    /// than aborting the request.  Auth chains are always fail-closed
+    /// regardless of this flag.
+    pub fail_open: bool,
+}
+
+impl PluginChain {
+    pub fn new(role: PluginRole, plugins: Vec<PluginId>) -> Self {
+        // Auth is always fail-closed; every other role defaults to fail-open
+        // so that a broken optional plugin (e.g. cache) never blocks requests.
+        let fail_open = !matches!(role, PluginRole::Auth);
+        Self { role, plugins, fail_open }
+    }
+}
 // ── PluginHost ────────────────────────────────────────────────────────────────
 
 /// Owns the plugin registry and loaded WASM instances.
@@ -198,6 +247,23 @@ impl PluginHost {
         self.wasm_instances.remove(id);
         self.registry.remove(id)
     }
+
+    /// Return all registered manifests that advertise the given role.
+    pub fn plugins_for_role(&self, role: &PluginRole) -> Vec<&PluginManifest> {
+        self.registry.manifests.values()
+            .filter(|m| m.roles.contains(role))
+            .collect()
+    }
+
+    /// Build the default plugin chain for a role from all registered plugins.
+    /// Ordered by insertion order (FIFO).  Operators can override via config.
+    pub fn default_chain(&self, role: PluginRole) -> PluginChain {
+        let plugins: Vec<PluginId> = self.plugins_for_role(&role)
+            .into_iter()
+            .map(|m| m.id.clone())
+            .collect();
+        PluginChain::new(role, plugins)
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -212,7 +278,23 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: PluginKind::NativeRust,
             hooks,
+            roles: vec![],
             description: "test plugin".to_string(),
+            memory_limit_mb: None,
+            cpu_timeout_ms: None,
+        }
+    }
+
+    fn role_manifest(id: &str, roles: Vec<PluginRole>) -> PluginManifest {
+        PluginManifest {
+            id: PluginId::new(id),
+            version: "0.1.0".to_string(),
+            kind: PluginKind::NativeRust,
+            hooks: vec![],
+            roles,
+            description: "role plugin".to_string(),
+            memory_limit_mb: None,
+            cpu_timeout_ms: None,
         }
     }
 
@@ -238,7 +320,10 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: PluginKind::Wasm { path: "/nonexistent.wasm".to_string() },
             hooks: vec![HookKind::PreDispatch],
+            roles: vec![],
             description: "bad".to_string(),
+            memory_limit_mb: None,
+            cpu_timeout_ms: None,
         };
         let err = host.install_wasm(manifest, "/nonexistent.wasm");
         assert!(err.is_err());
@@ -289,5 +374,60 @@ mod tests {
             !registry.remove(&absent),
             "removing a non-existent plugin must return false"
         );
+    }
+
+    // Plausible wrong impl: plugins_for_role returns plugins with wrong role
+    // (e.g. iterates hooks instead of roles, or uses contains on the wrong field).
+    #[test]
+    fn plugins_for_role_filters_correctly() {
+        let mut host = PluginHost::new(PluginRegistry::new());
+        host.registry.register(role_manifest("cache-a", vec![PluginRole::CacheBackend]));
+        host.registry.register(role_manifest("router-a", vec![PluginRole::Router]));
+        host.registry.register(role_manifest("multi",   vec![PluginRole::CacheBackend, PluginRole::Auth]));
+
+        let cache_plugins = host.plugins_for_role(&PluginRole::CacheBackend);
+        assert_eq!(cache_plugins.len(), 2, "expected cache-a and multi");
+        let ids: Vec<&str> = cache_plugins.iter().map(|m| m.id.0.as_str()).collect();
+        assert!(ids.contains(&"cache-a"));
+        assert!(ids.contains(&"multi"));
+        assert!(!ids.contains(&"router-a"), "router-a must not appear for CacheBackend role");
+
+        let router_plugins = host.plugins_for_role(&PluginRole::Router);
+        assert_eq!(router_plugins.len(), 1);
+        assert_eq!(router_plugins[0].id.0, "router-a");
+    }
+
+    // Plausible wrong impl: default_chain includes plugins from every role
+    // instead of filtering to the requested one.
+    #[test]
+    fn default_chain_only_includes_matching_role() {
+        let mut host = PluginHost::new(PluginRegistry::new());
+        host.registry.register(role_manifest("cache-1", vec![PluginRole::CacheBackend]));
+        host.registry.register(role_manifest("cache-2", vec![PluginRole::CacheBackend]));
+        host.registry.register(role_manifest("auth-1",  vec![PluginRole::Auth]));
+
+        let chain = host.default_chain(PluginRole::CacheBackend);
+        assert_eq!(chain.plugins.len(), 2, "chain must contain exactly the two cache plugins");
+        assert!(chain.fail_open, "CacheBackend chains must be fail-open");
+
+        let auth_chain = host.default_chain(PluginRole::Auth);
+        assert_eq!(auth_chain.plugins.len(), 1);
+        assert!(!auth_chain.fail_open, "Auth chain must be fail-closed");
+    }
+
+    // Plausible wrong impl: PluginChain::new sets fail_open=true for Auth.
+    #[test]
+    fn plugin_chain_auth_is_fail_closed() {
+        let chain = PluginChain::new(PluginRole::Auth, vec![PluginId::new("auth-plugin")]);
+        assert!(!chain.fail_open, "Auth chains must always be fail-closed");
+    }
+
+    // Plausible wrong impl: PluginChain::new sets fail_open=false for non-Auth roles.
+    #[test]
+    fn plugin_chain_non_auth_is_fail_open() {
+        for role in [PluginRole::Router, PluginRole::Compressor, PluginRole::Provider, PluginRole::CacheBackend] {
+            let chain = PluginChain::new(role.clone(), vec![]);
+            assert!(chain.fail_open, "{role:?} chain must be fail-open");
+        }
     }
 }

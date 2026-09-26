@@ -164,6 +164,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(AnthropicAdapter),
+        cache: None,
     }
 }
 
@@ -205,5 +206,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(AnthropicAdapter),
+        cache: None,
     })
 }

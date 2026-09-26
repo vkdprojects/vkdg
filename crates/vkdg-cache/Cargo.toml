@@ -1,0 +1,18 @@
+[package]
+name = "vkdg-cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core        = { workspace = true }
+vkdg-operations  = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+bytes            = { workspace = true }
+tokio            = { workspace = true }
+chrono           = { workspace = true }
+thiserror        = { workspace = true }
+async-trait      = { workspace = true }
+rusqlite         = { workspace = true }
+sha2             = { workspace = true }

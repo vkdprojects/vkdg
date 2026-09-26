@@ -1,0 +1,156 @@
+/// Core domain types shared across all plugin interfaces.
+/// The gateway owns HTTP, I/O, credentials, and config.
+/// Plugins are pure transform functions with no ambient authority.
+package vkdg:plugin@0.1.0;
+
+interface types {
+    // ── Identity ─────────────────────────────────────────────────────────────
+
+    /// Opaque tenant identifier.
+    type tenant-id = string;
+    /// Opaque request correlation ID (UUIDv4 as string).
+    type request-id = string;
+    /// Plugin-declared name, e.g. "anthropic", "rtk-compressor", "redis-cache".
+    type plugin-name = string;
+
+    // ── Request / Response ────────────────────────────────────────────────────
+
+    record message {
+        role:         string,
+        content:      string,
+        /// For role=tool: the id of the tool call this is a result for.
+        tool-call-id: option<string>,
+        /// tool_calls produced by role=assistant.
+        tool-calls:   list<tool-call>,
+    }
+
+    record tool-call {
+        id:        string,
+        name:      string,
+        arguments: string,  // JSON string
+    }
+
+    record request {
+        id:         request-id,
+        tenant-id:  tenant-id,
+        model:      string,
+        messages:   list<message>,
+        /// system prompt, if provided separately from messages
+        system:     option<string>,
+        stream:     bool,
+        max-tokens: option<u32>,
+        temperature: option<float32>,
+        /// arbitrary key-value metadata threaded through the pipeline
+        metadata:   list<tuple<string, string>>,
+        /// raw extension bytes preserved from the incoming protocol
+        extensions: list<tuple<string, list<u8>>>,
+    }
+
+    record response {
+        id:           request-id,
+        model:        string,
+        content:      string,
+        tool-calls:   list<tool-call>,
+        finish-reason: string,
+        usage:        option<usage>,
+        /// metadata injected or propagated by plugins
+        metadata:     list<tuple<string, string>>,
+    }
+
+    record usage {
+        prompt-tokens:     u32,
+        completion-tokens: u32,
+        cache-read-tokens:  option<u32>,
+        cache-write-tokens: option<u32>,
+    }
+
+    // ── Routing ───────────────────────────────────────────────────────────────
+
+    /// A candidate connection the gateway may dispatch to.
+    record candidate {
+        connection-id: string,
+        provider:      string,
+        model:         string,
+        /// latest known health score [0.0, 1.0]
+        health:        float32,
+        /// tokens remaining in the quota window; none = unknown
+        quota-remaining: option<u32>,
+        /// estimated cost per 1k tokens in microdollars; none = unknown
+        cost-per-ktoken: option<u32>,
+        /// EWMA latency in milliseconds
+        latency-p50-ms:  option<u32>,
+    }
+
+    /// Typed signals produced by one plugin stage and consumed by later stages.
+    /// Keys are namespaced: "compress:tokens_after", "auth:tier", etc.
+    type signal-map = list<tuple<string, string>>;
+
+    record routing-context {
+        request:    request,
+        candidates: list<candidate>,
+        signals:    signal-map,
+        /// combo name that triggered this route, if any
+        combo-id:   option<string>,
+        /// mode pack in effect: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly"
+        mode-pack:  option<string>,
+    }
+
+    // ── Auth ──────────────────────────────────────────────────────────────────
+
+    record auth-context {
+        tenant-id:    tenant-id,
+        /// VKDG client key id (never the raw token)
+        key-id:       string,
+        role:         string,
+        /// e.g. ["data:inference", "data:embeddings"]
+        scopes:       list<string>,
+        claims:       list<tuple<string, string>>,
+    }
+
+    // ── Cache ─────────────────────────────────────────────────────────────────
+
+    record cache-entry {
+        response:   response,
+        /// unix seconds
+        cached-at:  u64,
+        ttl-secs:   option<u32>,
+        /// "exact" | "semantic" | "provider"
+        cache-type: string,
+        hit-score:  option<float32>,
+    }
+
+    variant cache-result {
+        hit(cache-entry),
+        miss,
+    }
+
+    // ── Compression ───────────────────────────────────────────────────────────
+
+    record compression-report {
+        tokens-before:  u32,
+        tokens-after:   u32,
+        /// "caveman" | "rtk" | "truncate" | "summarize" | custom name
+        algorithm:      string,
+        /// percentage saved [0.0, 1.0]
+        ratio:          float32,
+        /// true if messages were structurally altered (for audit)
+        lossy:          bool,
+    }
+
+    record compressed-request {
+        messages:   list<message>,
+        system:     option<string>,
+        report:     compression-report,
+    }
+
+    // ── Errors ────────────────────────────────────────────────────────────────
+
+    variant plugin-error {
+        /// plugin rejected the operation; caller should fail-closed
+        rejected(string),
+        /// plugin failed; caller may fail-open or fail-closed per policy
+        internal(string),
+        /// not applicable for this request; skip this plugin
+        not-applicable,
+    }
+}

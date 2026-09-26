@@ -1,0 +1,23 @@
+package vkdg:plugin@0.1.0;
+
+/// Context compression plugin.
+/// Called pre-dispatch. Never modifies config, credentials, or response.
+/// Compression report injected into routing-context.signals as:
+///   "compress:tokens_before", "compress:tokens_after", "compress:algorithm"
+interface compressor-plugin {
+    use types.{request, compressed-request, plugin-error};
+
+    /// Compress the request's message list.
+    /// not-applicable means "skip me, I don't handle this request type".
+    compress: func(req: request) -> result<compressed-request, plugin-error>;
+
+    name: func() -> string;
+
+    /// Approximate token estimate before calling compress().
+    /// Used by the gateway to decide whether to invoke this plugin at all.
+    estimate-tokens: func(req: request) -> u32;
+}
+
+world compressor {
+    export compressor-plugin;
+}

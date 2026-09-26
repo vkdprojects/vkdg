@@ -55,6 +55,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(AnthropicAdapter),
+        cache: None,
     })
 }
 
@@ -345,6 +346,7 @@ where
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(adapter),
+        cache: None,
     })
 }
 
@@ -397,6 +399,7 @@ where
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(adapter),
+        cache: None,
     })
 }
 

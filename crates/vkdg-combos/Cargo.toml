@@ -1,0 +1,12 @@
+[package]
+name = "vkdg-combos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core    = { workspace = true }
+vkdg-routing = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }

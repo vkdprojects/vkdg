@@ -141,6 +141,50 @@ pub async fn preview_route(
     .into_response()
 }
 
+#[derive(Serialize)]
+struct ComboSummary {
+    id: String,
+    match_patterns: Vec<String>,
+    strategy: String,
+    targets: Vec<String>,
+    has_compression: bool,
+    has_cache: bool,
+    has_budget: bool,
+}
+
+#[derive(Serialize)]
+struct ComboList {
+    items: Vec<ComboSummary>,
+    total: usize,
+}
+
+pub async fn list_combos(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    let items: Vec<ComboSummary> = state
+        .combo_resolver
+        .as_ref()
+        .map(|r| {
+            r.all()
+                .iter()
+                .map(|c| ComboSummary {
+                    id: c.id.clone(),
+                    match_patterns: c.match_patterns.clone(),
+                    strategy: strategy_str(&c.strategy),
+                    targets: c.targets.iter().map(|t| t.0.clone()).collect(),
+                    has_compression: c.compression.is_some(),
+                    has_cache: c.cache.is_some(),
+                    has_budget: c.budget.is_some(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let total = items.len();
+    Json(ComboList { items, total }).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

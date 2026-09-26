@@ -3,7 +3,7 @@ use std::sync::Arc;
 use vkdg_combos::BudgetPolicy;
 use vkdg_core::{ConnectionId, RequestEnvelope};
 use vkdg_memory::inject_memories;
-use vkdg_operations::{MessageContent, Operation};
+use vkdg_operations::{MessageContent, Operation, Role};
 
 use crate::PipelineState;
 
@@ -246,4 +246,67 @@ pub(super) fn post_response_accounting(
             conn.check_cooldown();
         }
     }
+}
+
+/// Inject conversation context into the operation when a session rotates to a
+/// different connection.  Called when the pipeline detects that the actual
+/// connection differs from the pinned session preference.
+///
+/// Prepends a `[Account rotation: A -> B. Recent context:]` block to the system
+/// prompt so the new provider has the last N turns of conversation history.
+/// Non-conversation operations are left unchanged.
+pub fn relay_on_rotation(
+    operation: &mut Operation,
+    rotated_from: &ConnectionId,
+    rotated_to: &ConnectionId,
+) {
+    let Operation::Conversation(conv_req) = operation else {
+        return;
+    };
+
+    // Preserve last 4 messages (≈2 turns) as context; earlier history is less
+    // relevant and keeping it short avoids blowing up the system prompt.
+    let recent: Vec<String> = conv_req
+        .messages
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|m| {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+                Role::Tool => "tool",
+            };
+            let content = match &m.content {
+                MessageContent::Text(t) => t.chars().take(200).collect::<String>(),
+                _ => "[non-text content]".into(),
+            };
+            format!("{role}: {content}")
+        })
+        .collect();
+
+    if recent.is_empty() {
+        return;
+    }
+
+    let relay_block = format!(
+        "[Account rotation: {} -> {}. Recent context:]\n{}",
+        rotated_from.0,
+        rotated_to.0,
+        recent.join("\n")
+    );
+
+    tracing::info!(
+        from = %rotated_from.0,
+        to   = %rotated_to.0,
+        messages = recent.len(),
+        "context-relay on account rotation",
+    );
+
+    conv_req.system = Some(match &conv_req.system {
+        None => relay_block,
+        Some(existing) => format!("{relay_block}\n\n{existing}"),
+    });
 }

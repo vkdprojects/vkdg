@@ -72,6 +72,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         latency_tracker: None,
         memory_store: None,
         eval_enabled: false,
+        relay_enabled: false,
     })
 }
 

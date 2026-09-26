@@ -23,6 +23,8 @@
     <a href="/keys">Keys</a>
     <a href="/routes">Routes</a>
     <a href="/requests">Requests</a>
+    <a href="/combos">Combos</a>
+    <a href="/strategies">Strategies</a>
   </nav>
 
 

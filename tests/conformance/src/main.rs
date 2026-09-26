@@ -1,6 +1,7 @@
 mod admission;
 mod capability;
 mod fake_upstream;
+mod fusion_chain;
 mod ingress_anthropic;
 mod routing;
 mod smoke;

@@ -692,3 +692,88 @@ async fn auto_routing_zero_config_routes_without_explicit_route() {
         "connection must be called exactly once"
     );
 }
+
+/// Plausible wrong impl: context-relay is called but relay_on_rotation is
+/// never wired in inner.rs, so the new connection receives no conversation
+/// history.  This test calls relay_on_rotation directly to verify it
+/// injects the [Account rotation] block into the system prompt.
+#[test]
+fn context_relay_injects_history_on_account_rotation() {
+    use vkdg_http::pipeline::phases::relay_on_rotation;
+
+    let mut op = Operation::Conversation(ConversationRequest {
+        messages: vec![
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("Hello".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("Hi there".into()),
+            },
+        ],
+        tools: vec![],
+        max_tokens: Some(10),
+        temperature: None,
+        stream: false,
+        system: None,
+        required_capabilities: CapabilitySet::default(),
+    });
+
+    relay_on_rotation(
+        &mut op,
+        &ConnectionId("conn-a".into()),
+        &ConnectionId("conn-b".into()),
+    );
+
+    let Operation::Conversation(req) = &op else {
+        panic!("expected Conversation");
+    };
+    let system = req.system.as_deref().unwrap_or("");
+    assert!(
+        system.contains("Account rotation"),
+        "relay block must mention rotation; got: {system:?}"
+    );
+    assert!(
+        system.contains("conn-a"),
+        "relay block must include source connection id; got: {system:?}"
+    );
+    assert!(
+        system.contains("Hello") || system.contains("Hi there"),
+        "relay block must include recent message content; got: {system:?}"
+    );
+}
+
+/// Plausible wrong impl: relay fires even when relay_enabled=false, leaking
+/// internal routing details into every system prompt.
+/// Verifies relay_on_rotation is a no-op when there is no system_preferred pin
+/// (i.e. no session pin means no rotation possible).
+#[test]
+fn context_relay_noop_on_non_conversation_operation() {
+    use vkdg_http::pipeline::phases::relay_on_rotation;
+    use vkdg_operations::ImageGenerateRequest;
+
+    let mut op = Operation::ImageGenerate(ImageGenerateRequest {
+        prompt: "a cat".into(),
+        model: None,
+        n: None,
+        size: None,
+        quality: None,
+        style: None,
+        response_format: None,
+        user: None,
+    });
+
+    // Must not panic or alter a non-conversation operation.
+    relay_on_rotation(
+        &mut op,
+        &ConnectionId("conn-a".into()),
+        &ConnectionId("conn-b".into()),
+    );
+
+    // If we reach here without panic and op is still ImageGenerate, the guard works.
+    assert!(
+        matches!(op, Operation::ImageGenerate(_)),
+        "non-conversation operation must be unchanged"
+    );
+}

@@ -16,7 +16,9 @@ use vkdg_routing::{EligibilityFilter, RouteId, RouteResult, RoutingHints};
 use super::helpers::{
     error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs,
 };
-use super::phases::{post_response_accounting, prepare_operation, resolve_combo_and_session};
+use super::phases::{
+    post_response_accounting, prepare_operation, relay_on_rotation, resolve_combo_and_session,
+};
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
 
@@ -185,6 +187,9 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // Priority: session pin > combo redirect > routed connection.
+    // Save the preferred connection before it is moved into the if-let so we
+    // can detect rotation afterwards for context-relay.
+    let session_preferred_saved = csr.session_preferred.clone();
     let connection_id = if let Some(preferred) = csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check
         // happens inside acquire() at step 3; here we just guard against stale pins
@@ -222,6 +227,17 @@ pub(super) async fn run_pipeline_inner(
     };
     ctx.connection_id = Some(connection_id.clone());
     ctx.transition(AttemptState::AccountReserved);
+
+    // Context-relay: if the session had a pinned connection but we rotated to a
+    // different one (stale pin or exclusion fallback), inject the recent
+    // conversation history so the new provider has context.
+    if pipeline.relay_enabled {
+        if let Some(preferred) = &session_preferred_saved {
+            if preferred != &connection_id {
+                relay_on_rotation(&mut operation, preferred, &connection_id);
+            }
+        }
+    }
 
     // 3. Connection + RAII guard ───────────────────────────────────────────────
     let conn_arc = pipeline

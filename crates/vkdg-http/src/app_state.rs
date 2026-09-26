@@ -49,7 +49,9 @@ pub struct PipelineState {
     pub memory_store: Option<Arc<MemoryStore>>,
     /// Enable quality scoring via vkdg-eval after each complete response.
     pub eval_enabled: bool,
-    /// Optional IP allowlist/blocklist policy.  None = all IPs allowed.
+    /// Enable context-relay: when a session pin rotates to a different connection,
+    /// inject the session's recent conversation history as a system context block.
+    pub relay_enabled: bool,
     pub ip_policy: Option<Arc<IpPolicy>>,
 }
 
@@ -84,6 +86,7 @@ impl PipelineState {
             latency_tracker: None,
             memory_store: None,
             eval_enabled: false,
+            relay_enabled: false,
         }
     }
 }

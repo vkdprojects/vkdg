@@ -252,6 +252,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         latency_tracker: None,
         memory_store: None,
         eval_enabled: false,
+        relay_enabled: false,
     }
 }
 
@@ -306,5 +307,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         latency_tracker: None,
         memory_store: None,
         eval_enabled: false,
+        relay_enabled: false,
     })
 }

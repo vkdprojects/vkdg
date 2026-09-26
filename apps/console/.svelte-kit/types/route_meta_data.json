@@ -2,6 +2,9 @@
 	"/": [
 		"src/routes/+page.server.ts"
 	],
+	"/combos": [
+		"src/routes/combos/+page.server.ts"
+	],
 	"/connections": [
 		"src/routes/connections/+page.server.ts"
 	],
@@ -19,5 +22,6 @@
 	],
 	"/routes": [
 		"src/routes/routes/+page.server.ts"
-	]
+	],
+	"/strategies": []
 }

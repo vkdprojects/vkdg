@@ -161,6 +161,25 @@ components:
         has_more: { type: boolean }
         cursor:   { type: string, nullable: true }
 
+
+    ComboSummary:
+      type: object
+      required: [id, match_patterns, strategy, targets, has_compression, has_cache, has_budget]
+      properties:
+        id:               { type: string, example: "coding-fast" }
+        match_patterns:   { type: array, items: { type: string }, example: ["coding-fast", "code:*"] }
+        strategy:         { type: string, example: "fallback_chain" }
+        targets:          { type: array, items: { type: string } }
+        has_compression:  { type: boolean }
+        has_cache:        { type: boolean }
+        has_budget:       { type: boolean }
+
+    ComboList:
+      type: object
+      required: [items, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ComboSummary" } }
+        total: { type: integer }
 security:
   - sessionCookie: []
 
@@ -307,6 +326,22 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+
+  # ── Combos ───────────────────────────────────────────────────────────────────
+
+  /combos:
+    get:
+      operationId: listCombos
+      summary: List all configured combos with routing strategy and policy flags
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComboList" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
   # ── Routes ───────────────────────────────────────────────────────────────────
 
   /routes:

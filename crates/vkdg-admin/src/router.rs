@@ -62,5 +62,9 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/v1/requests/{id}",
             get(crate::handlers::requests::get_request),
         )
+        .route(
+            "/admin/v1/combos",
+            get(crate::handlers::routes::list_combos),
+        )
         .with_state(state)
 }

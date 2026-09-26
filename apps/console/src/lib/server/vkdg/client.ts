@@ -182,3 +182,21 @@ export async function getRequest(cookie: string, id: string): Promise<RequestSum
   if (!res.ok) throw new Error(`request not found: ${res.status}`);
   return res.json() as Promise<RequestSummary>;
 }
+
+export interface ComboSummary {
+  id: string;
+  match_patterns: string[];
+  strategy: string;
+  targets: string[];
+  has_compression: boolean;
+  has_cache: boolean;
+  has_budget: boolean;
+}
+
+// Combos
+export async function listCombos(cookie: string): Promise<ComboSummary[]> {
+  const res = await fetch(`${BASE}/admin/v1/combos`, { headers: adminHeaders(cookie) });
+  if (!res.ok) throw new Error(`combos fetch failed: ${res.status}`);
+  const d = (await res.json()) as { items: ComboSummary[] };
+  return d.items;
+}

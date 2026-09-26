@@ -1,0 +1,37 @@
+id: context_relay_on_rotation
+title: When a session pin rotates to a different connection, recent conversation history is injected
+contract: >
+  relay_enabled=true and session_preferred != actual_connection triggers
+  relay_on_rotation which prepends [Account rotation: A -> B. Recent context:]
+  to the system prompt.  relay_enabled=false or no session pin: no injection.
+phase: routing
+
+arrange:
+  pipeline:
+    relay_enabled: true
+    session_registry:
+      sess-1: conn-a   # session pinned to conn-a
+  routing_result: conn-b  # rotation: pipeline resolves to a different connection
+  operation:
+    type: Conversation
+    messages:
+      - role: user
+        content: "Hello"
+      - role: assistant
+        content: "Hi there"
+
+assert:
+  system_contains: "Account rotation"
+  system_contains_any:
+    - "conn-a"
+    - "Hello"
+    - "Hi there"
+
+invariants:
+  - relay only fires when session_preferred != actual_connection
+  - relay only fires when relay_enabled=true
+  - no relay on first request (session_preferred is None)
+  - non-conversation operations (ImageGenerate, etc.) are not modified
+  - existing system prompt is preserved; relay block is prepended
+  - relay block includes both connection IDs (rotated_from, rotated_to)
+  - at most last 4 messages are included in the relay block

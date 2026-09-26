@@ -67,6 +67,7 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
         latency_tracker: None,
         memory_store: None,
         eval_enabled: false,
+        relay_enabled: false,
     });
     let state = AppState::new(ServerConfig::default()).with_pipeline(pipeline);
     axum::Router::new()

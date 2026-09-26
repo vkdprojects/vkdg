@@ -1,9 +1,9 @@
-// Smoke test: exercício end-to-end do pipeline completo contra fake upstream.
-// Testa: decode Anthropic → pipeline → upstream HTTP → resposta JSON passthrough.
-// Não sobe o servidor HTTP do gateway — chama run_conversation_pipeline diretamente.
+// Smoke test: end-to-end pipeline exercise against a fake upstream.
+// Tests: decode Anthropic -> pipeline -> upstream HTTP -> JSON response passthrough.
+// Does not start the gateway HTTP server — calls run_conversation_pipeline directly.
 //
-// Defeito plausível derrotado: pipeline nunca chega ao upstream (retorna erro antes),
-// ou upstream é chamado mas a resposta é perdida/corrompida no caminho.
+// Plausible wrong impl defeated: pipeline never reaches upstream (returns error first),
+// or upstream is called but the response is dropped or corrupted.
 
 use axum::response::IntoResponse;
 use bytes::Bytes;
@@ -330,9 +330,9 @@ async fn connection_guard_releases_on_drop() {
     );
 }
 
-// Defeito plausível derrotado: ConnectionGuard dentro do pipeline
-// não é liberado se o Future é dropped antes de completar
-// (ex: cliente fecha conexão). Com RAII isso deve funcionar automaticamente.
+// Plausible wrong impl defeated: ConnectionGuard inside the pipeline
+// is not released if the Future is dropped before completing
+// (e.g. client closes the connection). With RAII this must work automatically.
 #[tokio::test]
 async fn pipeline_cancellation_releases_on_drop() {
     let config = ConnectionConfig {

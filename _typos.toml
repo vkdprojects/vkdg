@@ -12,7 +12,8 @@ vkdg = "vkdg"
 VKDG = "VKDG"
 
 [default.extend-words]
-# Add domain-specific terms here if typos fires on them.
+# café appears in the SSE parser UTF-8 boundary test as a multi-byte test fixture.
+caf = "caf"
 
 [files]
 extend-exclude = [

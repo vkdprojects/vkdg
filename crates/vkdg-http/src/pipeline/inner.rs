@@ -205,8 +205,8 @@ pub(super) async fn run_pipeline_inner(
     } else {
         None
     };
-    let bypass_cache =
-        ctx.envelope.cache_bypass || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
+    let bypass_cache = ctx.envelope.cache_bypass
+        || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
     let cache_key_val: Option<String> = if !bypass_cache {
         conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
     } else {

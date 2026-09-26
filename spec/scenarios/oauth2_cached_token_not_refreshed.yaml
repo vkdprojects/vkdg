@@ -1,0 +1,28 @@
+id: oauth2_cached_token_not_refreshed
+title: Valid cached OAuth2 token returned without hitting token endpoint
+contract: CredentialManager returns cached token when not expired, does not call token_url
+phase: credential
+
+arrange:
+  connection:
+    auth:
+      type: oauth2
+      token_url: "http://unreachable-token-endpoint.invalid"
+      client_id: "test-client-id"
+      client_secret_env: "SECRET"
+    cached_token:
+      access_token: "cached-token"
+      expires_at: "2 hours from now"
+
+act:
+  credential_resolve:
+    connection_id: conn-oauth2
+
+assert:
+  credential: "cached-token"
+  token_endpoint_calls: 0
+  invariants:
+    - "token_url never contacted when cache is valid"
+    - "concurrent calls share the same refresh via singleflight"
+    - "expired token triggers exactly one token_url call regardless of concurrency"
+    - "CredentialManager never returns empty string for a cached valid token"

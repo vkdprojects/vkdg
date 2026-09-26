@@ -50,7 +50,8 @@ impl SqliteJobStore {
                  state           TEXT NOT NULL,
                  created_at      TEXT NOT NULL,
                  idempotency_key TEXT,
-                 updated_at      TEXT NOT NULL
+                 updated_at      TEXT NOT NULL,
+                 webhook_url     TEXT
              );
              CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency
                  ON jobs(idempotency_key)
@@ -75,8 +76,8 @@ impl JobStore for SqliteJobStore {
                 .execute(
                     "INSERT INTO jobs
                          (job_id, owner_client_id, connection_id, upstream_job_id,
-                          state, created_at, idempotency_key, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                          state, created_at, idempotency_key, updated_at, webhook_url)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                     params![
                         record.job_id.to_string(),
                         record.owner_client_id,
@@ -86,6 +87,7 @@ impl JobStore for SqliteJobStore {
                         record.created_at.to_rfc3339(),
                         record.idempotency_key,
                         Utc::now().to_rfc3339(),
+                        record.webhook_url,
                     ],
                 )
                 .map_err(|e| {
@@ -110,7 +112,7 @@ impl JobStore for SqliteJobStore {
             let guard = conn.lock().map_err(|e| anyhow!("lock poisoned: {e}"))?;
             let result = guard.query_row(
                 "SELECT job_id, owner_client_id, connection_id, upstream_job_id,
-                        state, created_at, idempotency_key
+                        state, created_at, idempotency_key, webhook_url
                    FROM jobs WHERE job_id = ?1",
                 params![job_id.to_string()],
                 |row| {
@@ -122,6 +124,7 @@ impl JobStore for SqliteJobStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             );
@@ -129,7 +132,7 @@ impl JobStore for SqliteJobStore {
             match result {
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(anyhow!("sqlite get: {e}")),
-                Ok((id_str, owner, conn_id, upstream, state_json, created_str, idem)) => {
+                Ok((id_str, owner, conn_id, upstream, state_json, created_str, idem, webhook)) => {
                     let job_id = Uuid::parse_str(&id_str)
                         .with_context(|| format!("parse job_id uuid: {id_str}"))?;
                     let state: JobState = serde_json::from_str(&state_json)
@@ -145,6 +148,7 @@ impl JobStore for SqliteJobStore {
                         state,
                         created_at,
                         idempotency_key: idem,
+                        webhook_url: webhook,
                     }))
                 }
             }
@@ -191,6 +195,7 @@ mod tests {
             state: JobState::Queued,
             created_at: Utc::now(),
             idempotency_key: idempotency_key.map(str::to_string),
+            webhook_url: None,
         }
     }
 

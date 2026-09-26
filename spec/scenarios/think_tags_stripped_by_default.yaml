@@ -1,0 +1,23 @@
+id: think_tags_stripped_by_default
+title: SSE parser strips think-tag blocks from stream unless client sends X-VKDG-Think-Tags include
+contract: SseParser with strip_think_tags=true removes <think>...</think> from data events
+phase: streaming
+
+arrange:
+  upstream_sse_chunk: "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"<think>reasoning</think>answer\"}}\n\n"
+  sse_parser:
+    strip_think_tags: true   # default
+
+act:
+  parse_sse_chunk:
+    input: "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"<think>reasoning</think>answer\"}}\n\n"
+
+assert:
+  emitted_text: "answer"
+  not_emitted: "reasoning"
+  invariants:
+    - "SseParser.strip_think_tags defaults to true"
+    - "X-VKDG-Think-Tags: include disables stripping (SseParser.with_think_tags())"
+    - "think blocks inside code fences not affected (known limitation Phase E)"
+    - "empty think blocks are removed: <think></think> → empty string"
+    - "text outside think blocks is never modified"

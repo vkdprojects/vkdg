@@ -1,0 +1,36 @@
+id: ip_allowlist_blocks_request
+title: IP not in allowlist returns 401 before admission check
+contract: when ip_allowlist is non-empty, IpPolicy.allows() returns false for unlisted IPs, pipeline returns Unauthorized before consuming admission capacity
+phase: admission
+
+arrange:
+  pipeline:
+    ip_policy:
+      allowlist: ["10.0.0.1"]
+      blocklist: []
+  request:
+    client_ip: "192.168.1.1"  # not in allowlist
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-ip: "192.168.1.1"
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  http_status: 401
+  invariants:
+    - "AdmissionGuard.acquire() never called when IP is blocked"
+    - "blocked IP is detected at step 0, before any routing"
+    - "Upstream is never contacted"
+    - "Response status is 401, never 403 or 503"

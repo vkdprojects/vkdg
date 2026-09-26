@@ -366,3 +366,62 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
     );
     assert_eq!(fake.call_count(), 1, "upstream must be called exactly once");
 }
+
+// ── think-tag stripping (scenario: think_tags_stripped_by_default) ────────────
+
+/// Plausible wrong impl: think tags not stripped when strip_think_tags=true.
+/// Scenario: spec/scenarios/think_tags_stripped_by_default.yaml
+/// PASSES — strip_think_tags is already implemented.
+#[test]
+fn sse_parser_strips_think_tags_by_default() {
+    use vkdg_http::sse::strip_think_tags;
+    let input = "<think>internal reasoning</think>The answer is 42";
+    let output = strip_think_tags(input);
+    assert_eq!(
+        output, "The answer is 42",
+        "think tags must be stripped from output: got {output:?}"
+    );
+    assert!(
+        !output.contains("reasoning"),
+        "reasoning content must not appear in output after stripping: got {output:?}"
+    );
+}
+
+/// Plausible wrong impl: stripping modifies content outside think blocks,
+/// corrupting the factual part of the response.
+/// Scenario: spec/scenarios/think_tags_stripped_by_default.yaml (invariant: text outside not modified)
+/// PASSES.
+#[test]
+fn sse_parser_think_stripping_preserves_content() {
+    use vkdg_http::sse::strip_think_tags;
+    let input = "Before<think>remove this</think>after";
+    assert_eq!(
+        strip_think_tags(input),
+        "Beforeafter",
+        "content outside think blocks must be preserved verbatim"
+    );
+}
+
+/// Plausible wrong impl: SseParser.new() has strip_think_tags=false by default,
+/// leaking reasoning tokens to clients that don't opt in.
+/// PASSES — default is true.
+#[test]
+fn sse_parser_defaults_to_stripping_think_tags() {
+    let p = vkdg_http::sse::SseParser::new();
+    assert!(
+        p.strip_think_tags,
+        "SseParser must default to strip_think_tags=true per spec/scenarios/think_tags_stripped_by_default.yaml"
+    );
+}
+
+/// Plausible wrong impl: with_think_tags() does not disable stripping,
+/// so clients that opt in still have reasoning stripped.
+/// PASSES.
+#[test]
+fn sse_parser_with_think_tags_disables_stripping() {
+    let p = vkdg_http::sse::SseParser::new().with_think_tags();
+    assert!(
+        !p.strip_think_tags,
+        "SseParser::with_think_tags() must set strip_think_tags=false (X-VKDG-Think-Tags: include)"
+    );
+}

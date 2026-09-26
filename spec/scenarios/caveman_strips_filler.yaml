@@ -1,0 +1,27 @@
+id: caveman_strips_filler
+title: CavemanCompressor removes preamble and filler from user messages
+contract: CavemanCompressor.compress() strips 'Certainly! I'd be happy to help' from text, preserves factual content
+phase: compression
+
+arrange:
+  compressor: caveman
+  input_message:
+    role: user
+    content: "Certainly! I'd be happy to help you. The answer is 42."
+
+act:
+  compress:
+    messages:
+      - role: user
+        content: "Certainly! I'd be happy to help you. The answer is 42."
+    compressor: caveman
+
+assert:
+  output_contains: "The answer is 42"
+  output_not_contains: "Certainly"
+  invariants:
+    - "system messages are never modified"
+    - "tool messages are never modified"
+    - "compression_metrics.estimated_tokens_removed > 0"
+    - "factual content after the filler preamble is preserved exactly"
+    - "assistant messages are candidates for filler stripping; user messages are not modified"

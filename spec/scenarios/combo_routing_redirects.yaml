@@ -1,0 +1,42 @@
+id: combo_routing_redirects
+title: Request matching a combo name routes to combo targets instead of default route
+contract: ComboResolver.resolve() returns the matching combo, pipeline uses combo.targets overriding the default route
+phase: routing
+
+arrange:
+  combos:
+    - id: coding-fast
+      match_patterns: ["coding-fast", "code:*"]
+      strategy: fallback_chain
+      targets: ["anthropic-haiku", "openai-gpt4o-mini"]
+  connections:
+    - id: anthropic-haiku
+      healthy: true
+    - id: openai-gpt4o-mini
+      healthy: true
+  default_route:
+    targets: ["default-conn"]
+    strategy: round_robin
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: "code:python"   # matches combo pattern via glob
+      max_tokens: 100
+      messages:
+        - role: user
+          content: write a function
+
+assert:
+  connection_chosen_from: ["anthropic-haiku", "openai-gpt4o-mini"]
+  invariants:
+    - "request model 'code:python' resolves to combo 'coding-fast' via glob"
+    - "routing uses combo targets, not default route targets"
+    - "'default-conn' is never selected when combo matches"
+    - "combo strategy (fallback_chain) is used, not the default route strategy"

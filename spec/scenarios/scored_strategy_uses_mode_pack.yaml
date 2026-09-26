@@ -1,0 +1,45 @@
+id: scored_strategy_uses_mode_pack
+title: Scored routing strategy ranks candidates by configured mode pack weights
+contract: With ship-fast mode, a low-latency connection ranks above a low-cost connection
+phase: routing
+
+arrange:
+  route:
+    strategy: scored
+    mode_pack: ship-fast
+    targets: ["fast-conn", "cheap-conn"]
+  connections:
+    - id: fast-conn
+      healthy: true
+    - id: cheap-conn
+      healthy: true
+  routing_hints:
+    fast-conn:
+      latency_p50_ms: 20
+      cost_per_ktoken: 10
+    cheap-conn:
+      latency_p50_ms: 3000
+      cost_per_ktoken: 1
+
+act:
+  request:
+    method: POST
+    path: /v1/messages
+    headers:
+      content-type: application/json
+      x-client-id: client-test
+      x-tenant-id: tenant-test
+    body:
+      model: claude-3-5-sonnet-20241022
+      max_tokens: 100
+      messages:
+        - role: user
+          content: hello
+
+assert:
+  connection_chosen: "fast-conn"
+  invariants:
+    - "ship-fast weighs latency 0.5 vs cost 0.05"
+    - "mode_pack override from X-VKDG-Mode header takes precedence over route default"
+    - "'cheap-conn' is not selected when ship-fast mode is active and fast-conn is healthy"
+    - "scored strategy never fails open: if all connections excluded, NoEligibleConnection returned"

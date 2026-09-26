@@ -38,6 +38,7 @@ pub struct JobRecord {
     pub state: JobState,
     pub created_at: DateTime<Utc>,
     pub idempotency_key: Option<String>,
+    pub webhook_url: Option<String>,
 }
 
 // ── JobStore trait ────────────────────────────────────────────────────────────

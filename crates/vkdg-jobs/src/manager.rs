@@ -10,6 +10,8 @@ use uuid::Uuid;
 use vkdg_core::{ConnectionId, VkdgError};
 use vkdg_storage::{JobRecord, JobState, JobStore};
 
+use crate::webhook;
+
 // ── JobManager ────────────────────────────────────────────────────────────────
 
 pub struct JobManager {
@@ -31,6 +33,7 @@ impl JobManager {
         owner_client_id: String,
         connection_id: ConnectionId,
         idempotency_key: Option<String>,
+        webhook_url: Option<String>,
     ) -> vkdg_core::Result<Uuid> {
         let job_id = Uuid::new_v4();
         let record = JobRecord {
@@ -41,6 +44,7 @@ impl JobManager {
             state: JobState::Queued,
             created_at: Utc::now(),
             idempotency_key,
+            webhook_url,
         };
         self.store
             .create(record)
@@ -67,6 +71,14 @@ impl JobManager {
             .map_err(|e| VkdgError::Internal(e.to_string()))?
             .ok_or_else(|| VkdgError::Internal(format!("job {job_id} not found")))?;
         validate_transition(&record.state, &new_state)?;
+        // Fire webhook before updating state so we have the pre-transition record
+        // with the webhook_url; the event name reflects the target state.
+        if let Some(url) = &record.webhook_url {
+            // Build a temporary record reflecting the new state for the payload.
+            let mut updated = record.clone();
+            updated.state = new_state.clone();
+            webhook::dispatch(&updated, url);
+        }
         self.store
             .update_state(job_id, new_state)
             .await
@@ -124,7 +136,7 @@ mod tests {
     async fn create_and_get_job() {
         let mgr = manager();
         let id = mgr
-            .create_job("client-a".into(), ConnectionId("c1".into()), None)
+            .create_job("client-a".into(), ConnectionId("c1".into()), None, None)
             .await
             .unwrap();
         // Confirm the id is a valid uuid (non-nil).
@@ -136,7 +148,7 @@ mod tests {
     async fn state_transitions_valid() {
         let mgr = manager();
         let id = mgr
-            .create_job("client-b".into(), ConnectionId("c1".into()), None)
+            .create_job("client-b".into(), ConnectionId("c1".into()), None, None)
             .await
             .unwrap();
         mgr.transition(id, JobState::Running).await.unwrap();
@@ -148,7 +160,7 @@ mod tests {
     async fn state_transition_invalid() {
         let mgr = manager();
         let id = mgr
-            .create_job("client-c".into(), ConnectionId("c1".into()), None)
+            .create_job("client-c".into(), ConnectionId("c1".into()), None, None)
             .await
             .unwrap();
         let err = mgr.transition(id, JobState::Succeeded).await;

@@ -24,6 +24,7 @@ members = [
     "crates/vkdg-memory",
     "crates/vkdg-eval",
     "crates/vkdg-free-tier",
+    "crates/vkdg-governance",
     "bench",
 ]
 [workspace.package]
@@ -116,6 +117,7 @@ vkdg-combos      = { path = "crates/vkdg-combos" }
 vkdg-memory      = { path = "crates/vkdg-memory" }
 vkdg-eval       = { path = "crates/vkdg-eval" }
 vkdg-free-tier   = { path = "crates/vkdg-free-tier" }
+vkdg-governance  = { path = "crates/vkdg-governance" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }

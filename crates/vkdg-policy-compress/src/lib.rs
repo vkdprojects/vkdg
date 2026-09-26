@@ -6,12 +6,14 @@ pub mod caveman;
 pub mod metrics;
 pub mod rtk;
 pub mod stacked;
+pub mod styles;
 pub mod truncate;
 
 pub use caveman::CavemanCompressor;
 pub use metrics::CompressionMetrics;
 pub use rtk::RtkCompressor;
 pub use stacked::StackedCompressor;
+pub use styles::OutputStyle;
 pub use truncate::{TruncateCompressor, TruncatePolicy, TruncateResult};
 
 use vkdg_operations::ConversationRequest;

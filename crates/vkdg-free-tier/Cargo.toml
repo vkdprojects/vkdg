@@ -9,9 +9,6 @@ description = "Free-tier provider catalog for VKDG — auto-registers Groq, Toge
 [dependencies]
 vkdg-core        = { workspace = true }
 vkdg-connections = { workspace = true }
-serde            = { workspace = true }
-serde_json       = { workspace = true }
-chrono           = { workspace = true }
 
 [lib]
 doctest = false

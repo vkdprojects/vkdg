@@ -19,6 +19,14 @@ enum ContentClass {
     FileList,
     Diff,
     Generic,
+    GitStatus,
+    GitLog,
+    TypeScriptBuild,
+    EslintOutput,
+    NpmAudit,
+    DockerLog,
+    TestOutput,
+    HexDump,
 }
 
 fn detect_class(text: &str) -> ContentClass {
@@ -38,6 +46,49 @@ fn detect_class(text: &str) -> ContentClass {
         l.trim().is_empty() || l.starts_with('/') || l.starts_with('.') || l.ends_with('/')
     }) {
         ContentClass::FileList
+    } else if text.contains("On branch")
+        || text.contains("Changes not staged")
+        || text.contains("Untracked files:")
+        || (text.contains("modified:") && text.contains("git"))
+    {
+        ContentClass::GitStatus
+    } else if text
+        .lines()
+        .take(5)
+        .filter(|l| !l.trim().is_empty())
+        .all(|l| l.len() > 7 && l.chars().take(7).all(|c| c.is_ascii_hexdigit()))
+    {
+        ContentClass::GitLog
+    } else if text.contains("error TS")
+        || (text.contains(".ts(") && text.contains("error:"))
+        || (text.contains("Cannot find module") && text.contains(".ts"))
+    {
+        ContentClass::TypeScriptBuild
+    } else if (text.contains('✖') && (text.contains("error") || text.contains("warning")))
+        || (text.contains("problems (") && text.contains("error"))
+        || text.contains("Prettier:")
+        || text.contains("biome check")
+    {
+        ContentClass::EslintOutput
+    } else if text.contains("npm audit")
+        || (text.contains("vulnerabilities") && text.contains("npm"))
+    {
+        ContentClass::NpmAudit
+    } else if (text.contains("test result:")
+        && (text.contains("passed") || text.contains("failed")))
+        || (text.contains("PASS") && text.contains("FAIL") && text.contains("Tests:"))
+        || (text.contains("passed") && text.contains("failed") && text.contains("====="))
+    {
+        ContentClass::TestOutput
+    } else if text.lines().take(3).all(|l| {
+        l.contains('|') && l.len() > 20 && l.chars().filter(|c| c.is_ascii_hexdigit()).count() > 10
+    }) && !text.trim().is_empty()
+    {
+        ContentClass::HexDump
+    } else if text.lines().any(|l| {
+        l.contains('|') && l.len() > 25 && l.chars().next().is_some_and(|c| c.is_alphabetic())
+    }) {
+        ContentClass::DockerLog
     } else if text.contains('$') && text.contains('\n') {
         ContentClass::CommandOutput
     } else {
@@ -120,6 +171,129 @@ fn apply_rtk_filters(text: &str, class: &ContentClass) -> String {
             let mut lines: Vec<&str> = text.lines().collect();
             lines.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty());
             lines.join("\n")
+        }
+        ContentClass::GitStatus => {
+            let lines: Vec<&str> = text.lines().collect();
+            let mut kept: Vec<String> = Vec::new();
+            let mut file_count = 0usize;
+            for line in &lines {
+                let trimmed = line.trim();
+                if trimmed.starts_with("modified:")
+                    || trimmed.starts_with("new file:")
+                    || trimmed.starts_with("deleted:")
+                {
+                    file_count += 1;
+                    if file_count <= 10 {
+                        kept.push(line.to_string());
+                    }
+                } else {
+                    kept.push(line.to_string());
+                }
+            }
+            if file_count > 10 {
+                kept.push(format!("  ... ({} more files)", file_count - 10));
+            }
+            kept.join("\n")
+        }
+        ContentClass::GitLog => {
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() > 20 {
+                let total = lines.len();
+                let mut out: Vec<String> = lines[..20].iter().map(|s| s.to_string()).collect();
+                out.push(format!("... ({} more commits)", total - 20));
+                out.join("\n")
+            } else {
+                text.to_string()
+            }
+        }
+        ContentClass::TypeScriptBuild => {
+            let lines: Vec<&str> = text.lines().collect();
+            let total_errors = lines.iter().filter(|l| l.contains("error TS")).count();
+            let mut out: Vec<String> = lines
+                .iter()
+                .filter(|l| l.contains("error TS") || l.contains("error:"))
+                .take(20)
+                .map(|s| s.to_string())
+                .collect();
+            if total_errors > 20 {
+                out.push(format!("... {} more errors", total_errors - 20));
+            }
+            out.join("\n")
+        }
+        ContentClass::EslintOutput => {
+            let lines: Vec<&str> = text.lines().collect();
+            lines
+                .iter()
+                .filter(|l| l.contains("error") || l.contains("warning") || l.contains("problem"))
+                .take(20)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        ContentClass::NpmAudit => {
+            let lines: Vec<&str> = text.lines().collect();
+            lines
+                .iter()
+                .filter(|l| {
+                    l.contains("critical")
+                        || l.contains("high")
+                        || l.contains("moderate")
+                        || l.contains("vulnerabilities")
+                        || l.contains("npm audit fix")
+                })
+                .take(15)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        ContentClass::DockerLog => {
+            let lines: Vec<&str> = text.lines().collect();
+            let mut service_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            let mut kept: Vec<String> = Vec::new();
+            for line in &lines {
+                if let Some(service) = line.split('|').next() {
+                    let service = service.trim().to_string();
+                    let count = service_counts.entry(service).or_insert(0);
+                    if *count < 5 {
+                        kept.push(line.to_string());
+                        *count += 1;
+                    }
+                } else {
+                    kept.push(line.to_string());
+                }
+            }
+            kept.join("\n")
+        }
+        ContentClass::TestOutput => {
+            let lines: Vec<&str> = text.lines().collect();
+            lines
+                .iter()
+                .filter(|l| {
+                    l.contains("PASS")
+                        || l.contains("FAIL")
+                        || l.contains("passed")
+                        || l.contains("failed")
+                        || l.contains("error")
+                        || l.contains("FAILED")
+                        || l.contains("test result:")
+                        || l.contains("Finished")
+                        || l.contains("=====")
+                })
+                .take(30)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        ContentClass::HexDump => {
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() > 8 {
+                let mut out: Vec<String> = lines[..8].iter().map(|s| s.to_string()).collect();
+                out.push("... [hex dump truncated]".to_string());
+                out.join("\n")
+            } else {
+                text.to_string()
+            }
         }
     }
 }
@@ -303,5 +477,61 @@ mod tests {
             MessageContent::Text(t) => assert_eq!(*t, sys, "system message must be unchanged"),
             _ => panic!("unexpected content type"),
         }
+    }
+
+    fn extract_content(req: &ConversationRequest) -> String {
+        match &req.messages[0].content {
+            MessageContent::Blocks(b) => match &b[0] {
+                ContentBlock::ToolResult { content, .. } => content.clone(),
+                _ => panic!("unexpected block type"),
+            },
+            _ => panic!("unexpected content type"),
+        }
+    }
+
+    // Plausible wrong impl: TypeScript build errors not detected as TypeScriptBuild class
+    #[test]
+    fn typescript_errors_detected_as_build_output() {
+        let ts_output = "src/main.ts(42,5): error TS2345: Argument of type 'string'\nsrc/utils.ts(18,3): error TS2304: Cannot find name 'foo'\nFound 2 errors.";
+        let class = detect_class(ts_output);
+        assert!(
+            matches!(class, ContentClass::TypeScriptBuild),
+            "must detect TS build: {:?}",
+            class
+        );
+    }
+
+    // Plausible wrong impl: git status not detected
+    #[test]
+    fn git_status_detected() {
+        let git_out = "On branch main\nChanges not staged for commit:\n  modified: src/main.rs";
+        let class = detect_class(git_out);
+        assert!(
+            matches!(class, ContentClass::GitStatus),
+            "must detect git status: {:?}",
+            class
+        );
+    }
+
+    // Plausible wrong impl: test output not compressed
+    #[test]
+    fn test_output_retains_only_summary_lines() {
+        let c = RtkCompressor;
+        let test_out = (0..50)
+            .map(|i| format!("test test_{i} ... ok"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\ntest result: ok. 50 passed; 0 failed";
+        let req = tool_result_req(&test_out);
+        let (out, metrics) = c.compress(req, 10000).unwrap();
+        let content = extract_content(&out);
+        assert!(
+            content.contains("50 passed"),
+            "summary must be preserved: {content}"
+        );
+        assert!(
+            metrics.estimated_tokens_removed > 0,
+            "test output must be compressed"
+        );
     }
 }

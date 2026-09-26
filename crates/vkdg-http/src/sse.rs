@@ -1,3 +1,8 @@
+use std::pin::Pin;
+
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
+
 // Incremental SSE parser — buffers bytes across arbitrary TCP read boundaries.
 //
 // A complete SSE event is terminated by a blank line (\n\n or \r\n\r\n).
@@ -163,6 +168,62 @@ pub fn strip_think_tags(data: &str) -> String {
         }
     }
     result
+}
+
+// ── Stream termination guard ──────────────────────────────────────────────────
+
+/// The SSE error event injected when upstream closes without [DONE].
+/// Format matches Anthropic's error event format so clients handle it correctly.
+const STREAM_INTERRUPTED_EVENT: &str =
+    "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream closed mid-stream\"}}\n\ndata: [DONE]\n\n";
+
+/// Wrap a byte stream and inject an error event if it ends without `[DONE]`.
+///
+/// Detects upstream TCP closure mid-stream: if the inner stream terminates
+/// (or errors) before a `[DONE]` sentinel is seen, appends a well-formed SSE
+/// error event so clients can detect the incomplete response.
+pub fn with_termination_guard(
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    Box::pin(futures::stream::unfold(
+        (inner, false, false),
+        |(mut stream, mut saw_done, mut finished)| async move {
+            if finished {
+                return None;
+            }
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    if chunk.windows(6).any(|w| w == b"[DONE]") {
+                        saw_done = true;
+                    }
+                    Some((Ok(chunk), (stream, saw_done, finished)))
+                }
+                None => {
+                    finished = true;
+                    if !saw_done {
+                        // Upstream closed without [DONE] — inject error event.
+                        tracing::warn!(
+                            "upstream closed SSE stream before [DONE]; injecting error event"
+                        );
+                        Some((
+                            Ok(Bytes::from_static(STREAM_INTERRUPTED_EVENT.as_bytes())),
+                            (stream, true, finished),
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                Some(Err(e)) => {
+                    finished = true;
+                    tracing::warn!(error = %e, "SSE stream error; injecting error event");
+                    Some((
+                        Ok(Bytes::from_static(STREAM_INTERRUPTED_EVENT.as_bytes())),
+                        (stream, true, finished),
+                    ))
+                }
+            }
+        },
+    ))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -350,5 +411,83 @@ mod tests {
         // Multi-line data is joined: "hello <think>reasoning\nend</think> world"
         // strip_think_tags sees the complete block and removes it.
         assert_eq!(events[0].data, "hello  world");
+    }
+
+    // Plausible wrong impl: stream closes cleanly with 200 when upstream dies,
+    // client cannot detect incomplete response.
+    #[tokio::test]
+    async fn termination_guard_injects_error_when_done_missing() {
+        use futures::stream;
+
+        // Stream that ends without [DONE] — simulates upstream dropping connection.
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"type\":\"content_block_delta\"}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"data: {\"type\":\"content_block_delta\"}\n\n",
+            )),
+        ];
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(chunks));
+        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+
+        // Last chunk must contain the error event.
+        let last = guarded.last().unwrap().as_ref().unwrap();
+        let text = std::str::from_utf8(last).unwrap();
+        assert!(
+            text.contains("overloaded_error") || text.contains("upstream closed"),
+            "missing [DONE] must produce error event, got: {text}"
+        );
+        assert!(text.contains("[DONE]"), "error event must end with [DONE]");
+    }
+
+    // Plausible wrong impl: termination guard adds error event even for complete streams.
+    #[tokio::test]
+    async fn termination_guard_passes_through_complete_stream() {
+        use futures::stream;
+
+        // Stream that ends properly with [DONE].
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(b"data: {\"delta\":{}}\n\n")),
+            Ok(Bytes::from_static(b"data: [DONE]\n\n")),
+        ];
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(chunks));
+        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+
+        // Must have exactly 2 chunks (no extra error event injected).
+        assert_eq!(
+            guarded.len(),
+            2,
+            "complete stream must not have extra events injected"
+        );
+    }
+
+    // Plausible wrong impl: stream error silently terminates without notifying client.
+    #[tokio::test]
+    async fn termination_guard_injects_error_on_stream_error() {
+        use futures::stream;
+
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(
+                b"data: {\"type\":\"content_block_delta\"}\n\n",
+            )),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "reset",
+            )),
+        ];
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(chunks));
+        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+
+        // Guard swallows the Err and replaces it with an Ok error-event chunk.
+        let last = guarded.last().unwrap().as_ref().unwrap();
+        let text = std::str::from_utf8(last).unwrap();
+        assert!(
+            text.contains("overloaded_error") || text.contains("upstream closed"),
+            "stream error must produce error event, got: {text}"
+        );
     }
 }

@@ -15,4 +15,5 @@ pub use app_state::{AppState, PipelineState};
 pub use dedup::DedupTable;
 pub use frontdoor::{extract_client_ip, extract_vkdg_overrides, FrontDoor, ServerConfig};
 pub use server::{mcp_discovery, serve};
+pub use sse::with_termination_guard;
 pub use upstream::HttpClient;

@@ -413,12 +413,16 @@ pub(super) async fn run_pipeline_inner(
             } else {
                 body
             };
+            // Guard: if upstream closes before [DONE], inject error event so
+            // clients can detect the incomplete response (instead of silent 200).
+            let guarded_body = crate::with_termination_guard(filtered_body);
             axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
-                .body(axum::body::Body::from_stream(filtered_body))
+                .header("x-vkdg-stream-guard", "active")
+                .body(axum::body::Body::from_stream(guarded_body))
                 .unwrap_or_else(|_| {
                     error_response(VkdgError::Internal(
                         "streaming response builder failed".into(),

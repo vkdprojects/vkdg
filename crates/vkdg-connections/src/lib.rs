@@ -74,7 +74,11 @@ pub enum ConnectionState {
     Healthy,
     Degraded { since: DateTime<Utc> },
     CircuitOpen { until: DateTime<Utc> },
-    Cooldown { until: DateTime<Utc> },
+    Cooldown {
+        until: DateTime<Utc>,
+        /// Consecutive failures; drives exponential backoff.
+        failure_count: u32,
+    },
 }
 
 impl ConnectionState {
@@ -127,6 +131,45 @@ impl Connection {
                 model == pattern
             }
         })
+    }
+}
+
+impl Connection {
+    /// Record a 429/5xx and move to `Cooldown` with exponential backoff.
+    ///
+    /// Base: 1 s, doubling each failure up to 300 s, with deterministic jitter
+    /// (`failure_count % 5` seconds) to spread retries across connections.
+    ///
+    /// Returns the new `cooldown_until` timestamp.
+    pub fn record_upstream_error(&mut self, status_code: u16) -> DateTime<Utc> {
+        let failure_count = match &self.state {
+            ConnectionState::Cooldown { failure_count, .. } => *failure_count + 1,
+            _ => 1,
+        };
+        // 2^(n-1) seconds, capped at 300 s.
+        let base_secs = (2u32.pow(failure_count.saturating_sub(1).min(8))).min(300) as i64;
+        let jitter = (failure_count % 5) as i64;
+        let cooldown_secs = base_secs + jitter;
+        let until = chrono::Utc::now() + chrono::Duration::seconds(cooldown_secs);
+        self.state = ConnectionState::Cooldown { until, failure_count };
+        tracing::info!(
+            connection_id = %self.config.id.0,
+            status_code,
+            failure_count,
+            cooldown_secs,
+            "connection entering cooldown"
+        );
+        until
+    }
+
+    /// Check whether the cooldown window has elapsed and, if so, transition
+    /// back to `Healthy`.
+    pub fn check_cooldown(&mut self) {
+        if let ConnectionState::Cooldown { until, .. } = &self.state {
+            if chrono::Utc::now() >= *until {
+                self.state = ConnectionState::Healthy;
+            }
+        }
     }
 }
 
@@ -250,5 +293,72 @@ impl CredentialManager {
 impl Default for CredentialManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vkdg_core::ConnectionId;
+
+    fn make_connection() -> Connection {
+        Connection::new(ConnectionConfig {
+            id: ConnectionId("test-conn".into()),
+            provider: ProviderKind::Custom { base_url: "http://localhost".into() },
+            auth: AuthKind::ApiKey { env_var: "FAKE_KEY".into() },
+            models: vec!["claude-3".into()],
+            max_concurrent: 4,
+            weight: 1,
+            tags: vec![],
+            capabilities: vkdg_core::CapabilitySet::default(),
+        })
+    }
+
+    // Plausible wrong impl: backoff doesn't increase on repeated failures
+    #[test]
+    fn backoff_increases_with_failures() {
+        let mut conn = make_connection();
+        let t1 = conn.record_upstream_error(429);
+        let t2 = conn.record_upstream_error(429);
+        assert!(t2 > t1, "second failure must produce a later cooldown deadline");
+    }
+
+    // Plausible wrong impl: cooldown doesn't expire, stays in Cooldown forever
+    #[test]
+    fn cooldown_expires_after_duration() {
+        let mut conn = make_connection();
+        conn.state = ConnectionState::Cooldown {
+            until: chrono::Utc::now() - chrono::Duration::seconds(1),
+            failure_count: 1,
+        };
+        conn.check_cooldown();
+        assert!(
+            matches!(conn.state, ConnectionState::Healthy),
+            "expired cooldown must transition to Healthy"
+        );
+    }
+
+    // Guard: unexpired cooldown must NOT transition to Healthy
+    #[test]
+    fn cooldown_does_not_expire_early() {
+        let mut conn = make_connection();
+        conn.state = ConnectionState::Cooldown {
+            until: chrono::Utc::now() + chrono::Duration::seconds(60),
+            failure_count: 1,
+        };
+        conn.check_cooldown();
+        assert!(
+            matches!(conn.state, ConnectionState::Cooldown { .. }),
+            "active cooldown must not transition to Healthy prematurely"
+        );
+    }
+
+    // Plausible wrong impl: first failure uses failure_count=0 -> 2^(0-1) underflows
+    #[test]
+    fn first_failure_produces_positive_cooldown() {
+        let mut conn = make_connection();
+        let now = chrono::Utc::now();
+        let until = conn.record_upstream_error(429);
+        assert!(until > now, "cooldown deadline must be in the future");
     }
 }

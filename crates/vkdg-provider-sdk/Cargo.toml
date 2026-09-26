@@ -1,0 +1,19 @@
+[package]
+name = "vkdg-provider-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Trait definitions for VKDG provider plugins"
+
+[dependencies]
+bytes            = { workspace = true }
+http             = { workspace = true }
+thiserror        = { workspace = true }
+futures          = { workspace = true }
+vkdg-connections = { workspace = true }
+vkdg-operations  = { workspace = true }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

@@ -4,6 +4,7 @@ use vkdg_combos::BudgetPolicy;
 use vkdg_core::{ConnectionId, RequestEnvelope};
 use vkdg_memory::inject_memories;
 use vkdg_operations::{MessageContent, Operation, Role};
+use vkdg_policy_compress::CompressionMetrics;
 
 use crate::PipelineState;
 
@@ -69,7 +70,8 @@ pub(super) async fn prepare_operation(
     envelope: &RequestEnvelope,
     compression_threshold: u32,
     effective_compressor_id: &Option<String>,
-) -> Operation {
+) -> (Operation, Option<CompressionMetrics>) {
+    let mut compression_metrics: Option<CompressionMetrics> = None;
     // Context compression (pre-dispatch)
     let skip_compression = effective_compressor_id.as_deref() == Some("none");
     if !skip_compression {
@@ -95,6 +97,7 @@ pub(super) async fn prepare_operation(
                                 "compression applied",
                             );
                             operation = Operation::Conversation(compressed_req);
+                            compression_metrics = Some(report);
                         }
                         Err(vkdg_policy_compress::CompressionError::NotApplicable) => {}
                         Err(e) => {
@@ -135,7 +138,7 @@ pub(super) async fn prepare_operation(
         }
     }
 
-    operation
+    (operation, compression_metrics)
 }
 
 pub(super) fn post_response_accounting(

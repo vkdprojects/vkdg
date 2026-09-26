@@ -4,19 +4,22 @@ use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
-use vkdg_core::VkdgError;
-use vkdg_http::provider::{PreparedRequest, ProviderAdapter};
 use vkdg_operations::{
     ContentBlock, ConversationRequest, ImageGenerateRequest, MessageContent, Operation, Role,
     VideoGenerateRequest,
 };
+use vkdg_provider_sdk::{PreparedRequest, ProviderAdapter, ProviderError};
 
 /// OpenAI provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
 
 impl ProviderAdapter for OpenAIAdapter {
-    fn name(&self) -> &str {
+    fn id(&self) -> &str {
         "openai"
+    }
+
+    fn display_name(&self) -> &str {
+        "OpenAI"
     }
 
     fn prepare(
@@ -24,7 +27,7 @@ impl ProviderAdapter for OpenAIAdapter {
         operation: &Operation,
         config: &ConnectionConfig,
         token: &str,
-    ) -> Result<PreparedRequest, VkdgError> {
+    ) -> Result<PreparedRequest, ProviderError> {
         match operation {
             Operation::Conversation(req) => {
                 let body = build_body(req, config);
@@ -48,9 +51,7 @@ impl ProviderAdapter for OpenAIAdapter {
                     is_streaming: false,
                 })
             }
-            Operation::ImageEdit(_) => Err(VkdgError::CapabilityUnsupported {
-                capability: "image_edit_multipart".into(),
-            }),
+            Operation::ImageEdit(_) => Err(ProviderError::UnsupportedOperation),
             Operation::VideoGenerate(req) => {
                 let body = build_video_generate_body(req);
                 let url = format!("{}/v1/videos/generations", base_url(config));
@@ -62,9 +63,7 @@ impl ProviderAdapter for OpenAIAdapter {
                     is_streaming: false,
                 })
             }
-            _ => Err(VkdgError::CapabilityUnsupported {
-                capability: "operation_not_implemented".into(),
-            }),
+            _ => Err(ProviderError::UnsupportedOperation),
         }
     }
 }

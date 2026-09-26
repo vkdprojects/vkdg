@@ -1,0 +1,18 @@
+[package]
+name = "vkdg-provider-mistral"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vkdg-provider-sdk = { workspace = true }
+vkdg-connections  = { workspace = true }
+vkdg-operations   = { workspace = true }
+bytes             = { workspace = true }
+http              = { workspace = true }
+serde_json        = { workspace = true }
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true

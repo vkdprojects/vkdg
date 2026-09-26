@@ -272,7 +272,7 @@ pub(super) async fn run_pipeline_inner(
             .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
     }
     // 5. Prepare operation (compression + system prompt + memory injection) ────
-    operation = prepare_operation(
+    let (op, _compress_metrics) = prepare_operation(
         pipeline,
         operation,
         &ctx.envelope,
@@ -280,6 +280,7 @@ pub(super) async fn run_pipeline_inner(
         &csr.effective_compressor_id,
     )
     .await;
+    operation = op;
     // 6. Request deduplication ─────────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
     // we still proceed (Phase D: register-and-proceed).  Phase E will add the
@@ -338,7 +339,8 @@ pub(super) async fn run_pipeline_inner(
     // 8. Build upstream request via provider adapter ───────────────────────────
     let prepared = pipeline
         .provider_adapter
-        .prepare(&operation, &config, &token)?;
+        .prepare(&operation, &config, &token)
+        .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
         method: http::Method::POST,
@@ -459,7 +461,7 @@ async fn run_fusion_dispatch(
     ctx.transition(AttemptState::AccountReserved);
 
     // Prepare operation once — compression, system prompt, memory injection.
-    operation = prepare_operation(
+    let (op, _) = prepare_operation(
         pipeline,
         operation,
         &ctx.envelope,
@@ -467,6 +469,7 @@ async fn run_fusion_dispatch(
         effective_compressor_id,
     )
     .await;
+    operation = op;
 
     // Race all targets; return first Ok, or NoEligibleConnection if all fail.
     let mut futs: FuturesUnordered<_> = fusion_targets
@@ -510,7 +513,8 @@ async fn fusion_one_target(
 
     let prepared = pipeline
         .provider_adapter
-        .prepare(&operation, &config, &token)?;
+        .prepare(&operation, &config, &token)
+        .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
         method: http::Method::POST,
@@ -562,7 +566,7 @@ async fn run_prompt_chain(
     ctx.transition(AttemptState::AccountReserved);
 
     // Prepare operation once (compression, system prompt, memory injection).
-    operation = prepare_operation(
+    let (op, _) = prepare_operation(
         pipeline,
         operation,
         &ctx.envelope,
@@ -570,6 +574,7 @@ async fn run_prompt_chain(
         effective_compressor_id,
     )
     .await;
+    operation = op;
 
     let mut previous_response: Option<String> = None;
     let step_count = steps.len();
@@ -713,18 +718,19 @@ mod tests {
 
     struct StubAdapter;
     impl ProviderAdapter for StubAdapter {
-        fn name(&self) -> &str {
+        fn id(&self) -> &str {
             "stub"
+        }
+        fn display_name(&self) -> &str {
+            "Stub"
         }
         fn prepare(
             &self,
             _op: &Operation,
             _cfg: &vkdg_connections::ConnectionConfig,
             _token: &str,
-        ) -> Result<PreparedRequest, VkdgError> {
-            Err(VkdgError::Internal(
-                "stub adapter — not for real requests".into(),
-            ))
+        ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
         }
     }
 

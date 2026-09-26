@@ -13,7 +13,9 @@ members = [
     "crates/vkdg-storage",
     "bin/vkdg",
     "tests/conformance",
-    "crates/vkdg-provider-anthropic",
+    "plugins/providers/anthropic",
+    "plugins/providers/openai",
+    "crates/vkdg-provider-sdk",
     "crates/vkdg-ingress-openai",
     "crates/vkdg-jobs",
     "crates/vkdg-artifacts",
@@ -25,6 +27,18 @@ members = [
     "crates/vkdg-eval",
     "crates/vkdg-free-tier",
     "crates/vkdg-governance",
+    "plugins/providers/gemini",
+    "plugins/providers/groq",
+    "plugins/providers/together",
+    "plugins/providers/fireworks",
+    "plugins/providers/deepseek",
+    "plugins/providers/mistral",
+    "plugins/providers/claude-code",
+    "plugins/providers/codex",
+    "plugins/providers/kiro",
+    "plugins/providers/kimi-coding",
+    "plugins/providers/antigravity",
+    "plugins/providers/github-copilot",
     "bench",
 ]
 [workspace.package]
@@ -104,9 +118,9 @@ vkdg-plugin-host = { path = "crates/vkdg-plugin-host" }
 vkdg-storage     = { path = "crates/vkdg-storage" }
 serde_yaml      = "0.9"
 vkdg-cli        = { path = "crates/vkdg-cli" }
-vkdg-provider-anthropic = { path = "crates/vkdg-provider-anthropic" }
+vkdg-provider-anthropic = { path = "plugins/providers/anthropic" }
 vkdg-ingress-openai     = { path = "crates/vkdg-ingress-openai" }
-vkdg-provider-openai    = { path = "crates/vkdg-provider-openai" }
+vkdg-provider-openai    = { path = "plugins/providers/openai" }
 vkdg-jobs        = { path = "crates/vkdg-jobs" }
 vkdg-artifacts   = { path = "crates/vkdg-artifacts" }
 vkdg-policy-compress = { path = "crates/vkdg-policy-compress" }
@@ -118,6 +132,19 @@ vkdg-memory      = { path = "crates/vkdg-memory" }
 vkdg-eval       = { path = "crates/vkdg-eval" }
 vkdg-free-tier   = { path = "crates/vkdg-free-tier" }
 vkdg-governance  = { path = "crates/vkdg-governance" }
+vkdg-provider-sdk       = { path = "crates/vkdg-provider-sdk" }
+vkdg-provider-gemini    = { path = "plugins/providers/gemini" }
+vkdg-provider-groq      = { path = "plugins/providers/groq" }
+vkdg-provider-together  = { path = "plugins/providers/together" }
+vkdg-provider-fireworks = { path = "plugins/providers/fireworks" }
+vkdg-provider-deepseek  = { path = "plugins/providers/deepseek" }
+vkdg-provider-mistral   = { path = "plugins/providers/mistral" }
+vkdg-provider-claude-code  = { path = "plugins/providers/claude-code" }
+vkdg-provider-codex     = { path = "plugins/providers/codex" }
+vkdg-provider-kiro      = { path = "plugins/providers/kiro" }
+vkdg-provider-kimi-coding  = { path = "plugins/providers/kimi-coding" }
+vkdg-provider-antigravity  = { path = "plugins/providers/antigravity" }
+vkdg-provider-github-copilot = { path = "plugins/providers/github-copilot" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }

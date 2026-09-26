@@ -6,15 +6,18 @@ use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
-use vkdg_core::VkdgError;
-use vkdg_http::provider::{PreparedRequest, ProviderAdapter};
 use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
+use vkdg_provider_sdk::{PreparedRequest, ProviderAdapter, ProviderError};
 
 pub struct AnthropicAdapter;
 
 impl ProviderAdapter for AnthropicAdapter {
-    fn name(&self) -> &str {
+    fn id(&self) -> &str {
         "anthropic"
+    }
+
+    fn display_name(&self) -> &str {
+        "Anthropic"
     }
 
     fn prepare(
@@ -22,14 +25,10 @@ impl ProviderAdapter for AnthropicAdapter {
         operation: &Operation,
         config: &ConnectionConfig,
         token: &str,
-    ) -> Result<PreparedRequest, VkdgError> {
+    ) -> Result<PreparedRequest, ProviderError> {
         let req = match operation {
             Operation::Conversation(r) => r,
-            _ => {
-                return Err(VkdgError::Internal(
-                    "non-conversation ops not yet implemented".into(),
-                ))
-            }
+            _ => return Err(ProviderError::UnsupportedOperation),
         };
 
         let body = build_body(req, config);

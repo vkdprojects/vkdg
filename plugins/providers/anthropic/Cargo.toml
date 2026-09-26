@@ -5,10 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vkdg-core        = { workspace = true }
+vkdg-provider-sdk = { workspace = true }
 vkdg-operations  = { workspace = true }
 vkdg-connections = { workspace = true }
-vkdg-http        = { workspace = true }
 bytes            = { workspace = true }
 http             = { workspace = true }
 serde_json       = { workspace = true }

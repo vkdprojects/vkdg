@@ -10,6 +10,7 @@
 
 pub mod error;
 pub mod oauth;
+pub mod openai_compat;
 pub mod registry;
 pub mod request;
 

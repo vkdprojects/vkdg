@@ -7,9 +7,6 @@ edition = "2021"
 vkdg-provider-sdk = { workspace = true }
 vkdg-connections  = { workspace = true }
 vkdg-operations   = { workspace = true }
-bytes             = { workspace = true }
-http              = { workspace = true }
-serde_json        = { workspace = true }
 
 [lib]
 doctest = false

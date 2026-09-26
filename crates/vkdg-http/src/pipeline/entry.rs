@@ -78,4 +78,44 @@ pub(super) fn emit_decision_record(
         result,
     };
     pipeline.exporter.export(&record);
+
+    // Push to admin request log if wired.
+    if let Some(log) = &pipeline.request_log {
+        use vkdg_admin::handlers::requests::RequestRecord;
+        use vkdg_core::ApiType;
+
+        let status = match outcome {
+            Ok(_) => "completed",
+            Err(_) => "failed",
+        }
+        .to_string();
+
+        // Derive started_at_ms from the first state transition (Received timestamp).
+        let started_at_ms = ctx
+            .transitions
+            .first()
+            .map(|(_, t)| t.timestamp_millis())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let duration_ms = chrono::Utc::now().timestamp_millis() - started_at_ms;
+
+        let api_type_str = match &ctx.envelope.api_type {
+            ApiType::AnthropicMessages => "anthropic",
+            ApiType::OpenAiChatCompletions => "openai",
+            ApiType::OpenAiResponses => "openai-responses",
+            ApiType::OpenAiImages => "openai-images",
+            ApiType::VkdgNative => "vkdg",
+        }
+        .to_string();
+
+        log.push(RequestRecord {
+            request_id: ctx.envelope.request_id.0.to_string(),
+            model: ctx.envelope.model_requested.clone(),
+            api_type: api_type_str,
+            status,
+            connection_id: ctx.connection_id.as_ref().map(|c| c.0.clone()),
+            started_at_ms,
+            duration_ms: Some(duration_ms),
+            decision: None,
+        });
+    }
 }

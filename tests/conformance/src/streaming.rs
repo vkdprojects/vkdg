@@ -80,6 +80,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         memory_store: None,
         eval_enabled: false,
         relay_enabled: false,
+        request_log: None,
     })
 }
 

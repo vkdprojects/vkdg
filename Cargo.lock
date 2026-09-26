@@ -4336,6 +4336,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "vkdg-admin",
  "vkdg-cache",
  "vkdg-combos",
  "vkdg-connections",

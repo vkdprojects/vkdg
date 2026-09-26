@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use vkdg_admin::handlers::requests::RequestLog;
 use vkdg_connections::{
     ConnectionCatalog, CredentialManager, LatencyTracker, QuotaTracker, SessionRegistry,
 };
@@ -53,6 +54,8 @@ pub struct PipelineState {
     /// inject the session's recent conversation history as a system context block.
     pub relay_enabled: bool,
     pub ip_policy: Option<Arc<IpPolicy>>,
+    /// Optional admin request log.  None = request logging disabled.
+    pub request_log: Option<Arc<RequestLog>>,
 }
 
 impl PipelineState {
@@ -87,6 +90,7 @@ impl PipelineState {
             memory_store: None,
             eval_enabled: false,
             relay_enabled: false,
+            request_log: None,
         }
     }
 }

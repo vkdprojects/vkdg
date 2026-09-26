@@ -16,6 +16,7 @@ vkdg-combos     = { workspace = true }
 vkdg-policy-compress = { workspace = true }
 vkdg-memory     = { workspace = true }
 vkdg-eval       = { workspace = true }
+vkdg-admin      = { workspace = true }
 
 serde_json  = { workspace = true }
 tokio       = { workspace = true }

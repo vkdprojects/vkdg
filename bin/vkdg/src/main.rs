@@ -263,8 +263,9 @@ async fn serve(
         .unwrap_or(1000);
 
     let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
+    let request_log = vkdg_admin::handlers::requests::RequestLog::new();
 
-    let pipeline = if let Some(path) = &config_path {
+    let mut pipeline = if let Some(path) = &config_path {
         match load_and_validate(path, 1) {
             Ok(snap) => {
                 tracing::info!(path = %path, version = snap.version, "loaded config from file");
@@ -283,6 +284,10 @@ async fn serve(
     } else {
         build_pipeline_from_env(max_concurrent)
     };
+    // Share request_log Arc between pipeline and admin API.
+    if let Some(p) = &mut pipeline {
+        p.request_log = Some(Arc::clone(&request_log));
+    }
 
     // Extract catalog for admin API before pipeline is moved into AppState.
     let admin_catalog = pipeline.as_ref().map(|p| Arc::clone(&p.catalog));
@@ -335,7 +340,7 @@ async fn serve(
         config_rx,
         started_at: std::sync::Arc::new(std::time::Instant::now()),
         key_store: vkdg_admin::session::KeyStore::new(),
-        request_log: vkdg_admin::handlers::requests::RequestLog::new(),
+        request_log: Arc::clone(&request_log),
         combo_resolver: None,
         catalog: admin_catalog,
     };
@@ -467,6 +472,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         memory_store: None,
         eval_enabled: false,
         relay_enabled: false,
+        request_log: None,
     }
 }
 
@@ -522,6 +528,7 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         memory_store: None,
         eval_enabled: false,
         relay_enabled: false,
+        request_log: None,
     })
 }
 

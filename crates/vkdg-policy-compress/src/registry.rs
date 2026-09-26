@@ -1,10 +1,10 @@
 //! Pack registry — maps ContentClass to the active FilterPack.
 //!
-//! `PackRegistry` holds the set of registered packs and tracks which are
-//! disabled. Dispatch is O(n) over the number of registered packs; in
-//! practice n ≤ 20, so a HashMap by id suffices over a sorted structure.
+//! Packs are dispatched in insertion order, so the first registered pack
+//! for a class wins. `GenericPack` is always registered last so it acts
+//! as a true fallback, never competing with a specific pack.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::class::ContentClass;
@@ -12,23 +12,18 @@ use crate::FilterPack;
 
 /// Registry of FilterPack implementations.
 ///
-/// Each pack covers exactly one `ContentClass`. At most one pack per class
-/// should be registered at a time; if two packs handle the same class,
-/// `find_for_class` returns whichever comes first in the internal map
-/// iteration order (non-deterministic).
+/// Lookup is O(n) in registration order — deterministic and predictable.
+/// Register specific packs before `GenericPack`; the first match wins.
 pub struct PackRegistry {
-    packs: HashMap<String, Arc<dyn FilterPack>>,
+    packs: Vec<Arc<dyn FilterPack>>,
     disabled: HashSet<String>,
 }
 
 impl PackRegistry {
-    /// Build a registry with all 14 built-in packs enabled.
+    /// All 14 built-in packs, specific packs before the Generic fallback.
     pub fn with_all_defaults() -> Self {
         use crate::packs;
-        let mut r = Self {
-            packs: HashMap::new(),
-            disabled: HashSet::new(),
-        };
+        let mut r = Self::empty();
         r.register(Arc::new(packs::command::CommandOutputPack));
         r.register(Arc::new(packs::stack_trace::StackTracePack));
         r.register(Arc::new(packs::json::JsonOutputPack));
@@ -42,47 +37,47 @@ impl PackRegistry {
         r.register(Arc::new(packs::docker::DockerLogPack));
         r.register(Arc::new(packs::tests::TestOutputPack));
         r.register(Arc::new(packs::hex::HexDumpPack));
-        r.register(Arc::new(packs::generic::GenericPack));
+        r.register(Arc::new(packs::generic::GenericPack)); // fallback — always last
         r
     }
 
-    /// Empty registry — no packs active.
     pub fn empty() -> Self {
         Self {
-            packs: HashMap::new(),
+            packs: Vec::new(),
             disabled: HashSet::new(),
         }
     }
 
-    /// Register a pack. Replaces any existing pack with the same id.
+    /// Register a pack at the end of the priority queue.
+    /// If a pack with the same id is already registered, it is removed first
+    /// so the new one takes effect at the insertion point.
     pub fn register(&mut self, pack: Arc<dyn FilterPack>) {
-        self.packs.insert(pack.id().to_string(), pack);
+        self.packs.retain(|p| p.id() != pack.id());
+        self.packs.push(pack);
     }
 
-    /// Disable a pack by id. Disabled packs are skipped by `find_for_class`.
     pub fn disable(&mut self, pack_id: &str) {
         self.disabled.insert(pack_id.to_string());
     }
 
-    /// Re-enable a previously disabled pack.
     pub fn enable(&mut self, pack_id: &str) {
         self.disabled.remove(pack_id);
     }
 
-    /// Find the first enabled pack that handles `class`, if any.
+    /// First enabled pack that handles `class`, in registration order.
     pub fn find_for_class(&self, class: &ContentClass) -> Option<&dyn FilterPack> {
         self.packs
-            .values()
+            .iter()
             .filter(|p| !self.disabled.contains(p.id()))
             .find(|p| p.handles() == *class)
             .map(|p| p.as_ref())
     }
 
-    /// List all registered packs as `(id, enabled)` pairs.
+    /// All registered packs as `(id, enabled)` in registration order.
     pub fn list_all(&self) -> Vec<(&str, bool)> {
         self.packs
-            .keys()
-            .map(|id| (id.as_str(), !self.disabled.contains(id)))
+            .iter()
+            .map(|p| (p.id(), !self.disabled.contains(p.id())))
             .collect()
     }
 }

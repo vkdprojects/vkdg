@@ -56,6 +56,9 @@ enum Command {
         config: Option<String>,
         #[arg(long, default_value = "0.0.0.0:8080")]
         listen: String,
+        /// Bootstrap token (overrides VKDG_BOOTSTRAP_TOKEN env var).
+        #[arg(long)]
+        token: Option<String>,
     },
     Doctor,
     Config {
@@ -180,7 +183,11 @@ enum ConfigSub {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Serve { config, listen } => serve(config, listen).await?,
+        Command::Serve {
+            config,
+            listen,
+            token,
+        } => serve(config, listen, token).await?,
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
         Command::Config {
             sub: ConfigSub::Check { path },
@@ -214,7 +221,11 @@ async fn main() -> Result<()> {
 
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
-async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
+async fn serve(
+    config_path: Option<String>,
+    listen: String,
+    token_override: Option<String>,
+) -> Result<()> {
     let _ = init_tracing(&ObserveConfig {
         otlp_endpoint: None,
         ..Default::default()
@@ -280,14 +291,17 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
 
     // ── Admin API on a separate port ───────────────────────────────────────────
     let admin_addr = std::env::var("VKDG_ADMIN_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".into());
-    let (bootstrap_token, auto_token): (String, Option<String>) =
+    let (bootstrap_token, auto_token): (String, Option<String>) = if let Some(t) = token_override {
+        (t, None) // explicit --token: don't show it (user already knows it)
+    } else {
         match std::env::var("VKDG_BOOTSTRAP_TOKEN") {
             Ok(t) => (t, None),
             Err(_) => {
                 let t = uuid::Uuid::new_v4().to_string();
                 (t.clone(), Some(t))
             }
-        };
+        }
+    };
     let dummy_snap = vkdg_config::ConfigSnapshot::default_empty();
     let (_config_tx, config_rx) = vkdg_config::config_channel(dummy_snap);
     let admin_state = vkdg_admin::AdminState {

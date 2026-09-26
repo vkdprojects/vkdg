@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ActionData } from './$types';
+  import { Logo } from '$lib/components/index.js';
 
   let { form }: { form: ActionData } = $props();
 </script>
@@ -7,7 +8,7 @@
 <div class="login-shell">
   <div class="login-card">
     <div class="brand">
-      <span class="brand-mark">▶</span>
+      <Logo size={32} />
       <span class="brand-name">VKDG</span>
     </div>
     <h1>Sign in</h1>
@@ -60,10 +61,6 @@
     letter-spacing: 0.04em;
   }
 
-  .brand-mark {
-    color: var(--accent);
-    font-size: 11px;
-  }
 
   h1 {
     font-size: 1.125rem;

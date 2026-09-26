@@ -97,6 +97,53 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Manage plugins from the VKDG registry.
+    Plugin {
+        #[command(subcommand)]
+        sub: PluginSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginSub {
+    /// Search the registry for plugins.
+    Search {
+        query: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<PluginKind>,
+    },
+    /// Install a plugin from the registry or a URL.
+    Install {
+        /// Plugin name, name@version, or URL to .wasm file.
+        plugin: String,
+        #[arg(long, default_value = "main")]
+        registry_ref: String,
+    },
+    /// List installed plugins.
+    List,
+    /// Remove an installed plugin.
+    Remove { name: String },
+    /// Update all installed plugins to latest versions.
+    Update,
+    /// Add a third-party plugin registry.
+    Tap {
+        /// GitHub repo: owner/repo, or --list to show current taps.
+        #[arg(conflicts_with = "list")]
+        repo: Option<String>,
+        #[arg(long)]
+        list: bool,
+    },
+    /// Validate a plugin manifest file (used by CI).
+    ValidateManifest { path: String },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum PluginKind {
+    Provider,
+    OauthProvider,
+    FilterPack,
+    Compressor,
+    Router,
 }
 
 #[derive(Subcommand)]
@@ -160,6 +207,7 @@ async fn main() -> Result<()> {
         Command::Setup => cmd_setup()?,
         Command::Install { config, user } => cmd_install(&config, user)?,
         Command::Update { yes, version } => cmd_update(yes, version.as_deref())?,
+        Command::Plugin { sub } => handle_plugin(sub),
     }
     Ok(())
 }
@@ -682,4 +730,67 @@ fn is_root() -> bool {
         && std::fs::metadata("/etc/systemd/system")
             .map(|m| !m.permissions().readonly())
             .unwrap_or(false)
+}
+
+// ── Plugin subcommands ────────────────────────────────────────────────────────
+
+fn handle_plugin(sub: PluginSub) {
+    use PluginSub::*;
+    match sub {
+        Search { query, kind } => {
+            let q = query.as_deref().unwrap_or("(all)");
+            let kind_str = kind.map(|k| format!(" [kind={k:?}]")).unwrap_or_default();
+            println!("Searching registry for: {q}{kind_str}");
+            println!();
+            println!("  Registry: https://github.com/vkdprojects/vkdg-registry");
+            println!();
+            println!("  The plugin registry client is coming in Phase 3.");
+            println!(
+                "  For now, browse: https://github.com/vkdprojects/vkdg-registry/tree/main/plugins"
+            );
+        }
+        Install { plugin, .. } => {
+            println!("Plugin install is coming in Phase 3.");
+            println!();
+            println!("  To use a plugin now:");
+            println!("    1. Download the .wasm file");
+            println!("    2. Drop it in ~/.config/vkdg/plugins/{plugin}/");
+            println!("    3. Add 'plugins: [{plugin}]' to your vkdg.yaml");
+        }
+        List => {
+            println!("Installed plugins: (none — plugin manager coming in Phase 3)");
+            println!();
+            println!("  Built-in providers (no install needed):");
+            println!("    anthropic, openai, gemini, groq, deepseek, mistral, together, fireworks");
+            println!("    claude-code, codex, kiro, kimi-coding, github-copilot, antigravity");
+        }
+        Remove { name } => {
+            println!(
+                "Plugin manager coming in Phase 3. Remove {name} manually from ~/.config/vkdg/plugins/"
+            );
+        }
+        Update => {
+            println!("Plugin manager coming in Phase 3.");
+        }
+        Tap { repo, list } => {
+            if list {
+                println!("Taps: (none — tap support coming in Phase 3)");
+            } else if let Some(r) = repo {
+                println!("Tap support coming in Phase 3. Noted: {r}");
+            }
+        }
+        ValidateManifest { path } => match std::fs::read_to_string(&path) {
+            Err(e) => {
+                eprintln!("Error reading {path}: {e}");
+                std::process::exit(1);
+            }
+            Ok(content) => match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                Ok(_) => println!("✓ {path}: valid YAML"),
+                Err(e) => {
+                    eprintln!("✗ {path}: invalid YAML: {e}");
+                    std::process::exit(1);
+                }
+            },
+        },
+    }
 }

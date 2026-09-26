@@ -1,0 +1,16 @@
+name: sambanova
+version: "1.0.0"
+kind: provider
+description: "SambaNova Cloud — fast inference for Llama and other open models"
+author: "VKDG Team"
+license: MIT
+tags: [openai-compat, fast, llama]
+models: ["Meta-Llama-*", "Qwen*"]
+
+install:
+  config_snippet: |
+    provider: openai-compat
+    base_url: https://api.sambanova.ai
+    auth:
+      type: api_key
+      env_var: SAMBANOVA_API_KEY

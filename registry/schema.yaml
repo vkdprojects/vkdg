@@ -1,0 +1,55 @@
+# Schema for VKDG plugin manifests
+# All fields validated by the bot on PRs
+# Full docs: https://github.com/vkdprojects/vkdg/blob/main/docs/plugins/registry.md
+
+required: [name, version, kind, description, license, install]
+properties:
+  name:
+    type: string
+    pattern: '^[a-z0-9-]+$'  # kebab-case only
+    maxLength: 64
+  version:
+    type: string
+    pattern: '^\d+\.\d+\.\d+$'  # semver
+  kind:
+    type: string
+    enum: [provider, oauth-provider, filter-pack, compressor, router]
+  description:
+    type: string
+    maxLength: 200
+  author:
+    type: string
+  repository:
+    type: string
+    format: uri
+  license:
+    type: string  # SPDX identifier
+  tags:
+    type: array
+    items: { type: string }
+  models:
+    type: array
+    items: { type: string }  # glob patterns, relevant for provider/oauth-provider
+  content_class:
+    type: string  # for filter-pack kind; must match a registered ContentClass
+  install:
+    oneOf:
+      # WASM plugin: binary download + checksum
+      - required: [wasm, checksum]
+        properties:
+          wasm:
+            type: string
+            format: uri
+          checksum:
+            type: string
+            pattern: '^sha256:[a-f0-9]{64}$'
+      # Config-only provider: snippet injected into vkdg.yaml
+      - required: [config_snippet]
+        properties:
+          config_snippet:
+            type: string
+      # First-party crate: built from source (VKDG team only)
+      - required: [crate]
+        properties:
+          crate:
+            type: string

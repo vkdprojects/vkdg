@@ -1,0 +1,13 @@
+name: rust-build
+version: "1.0.0"
+kind: filter-pack
+description: "Compresses Rust/Cargo build output — keeps errors and warnings, drops decorative lines and progress bars. ~70% reduction on cargo check output."
+author: "VKDG Team"
+license: MIT
+tags: [rust, cargo, build, compiler]
+content_class: RustBuild
+
+# WASM plugin not yet published — stub for registry structure example
+install:
+  wasm: "https://github.com/vkdprojects/vkdg-registry/releases/download/rust-build@1.0.0/rust-build.wasm"
+  checksum: "sha256:pending"

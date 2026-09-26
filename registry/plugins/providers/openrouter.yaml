@@ -1,0 +1,17 @@
+name: openrouter
+version: "1.0.0"
+kind: provider
+description: "OpenRouter — 200+ models via one OpenAI-compatible endpoint"
+author: "VKDG Team"
+repository: "https://github.com/vkdprojects/vkdg"
+license: MIT
+tags: [openai-compat, aggregator, free-tier]
+models: ["openrouter/*", "anthropic/claude*", "openai/gpt*", "google/gemini*"]
+
+install:
+  config_snippet: |
+    provider: openai-compat
+    base_url: https://openrouter.ai/api
+    auth:
+      type: api_key
+      env_var: OPENROUTER_API_KEY

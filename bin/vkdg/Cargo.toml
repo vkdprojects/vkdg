@@ -46,6 +46,7 @@ rust-embed  = { workspace = true }
 axum-embed  = { workspace = true }
 inquire     = { workspace = true }
 self_update = { workspace = true }
+serde_yaml  = { workspace = true }
 
 [lints]
 workspace = true

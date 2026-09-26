@@ -4087,6 +4087,7 @@ dependencies = [
  "rust-embed",
  "self_update",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "tracing",
  "uuid",

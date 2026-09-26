@@ -117,6 +117,7 @@ wasmtime        = { version = "27", features = ["component-model"] }
 tempfile         = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 regex            = "1.11"
+urlencoding      = "2.1"
 redis            = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 [profile.dev]

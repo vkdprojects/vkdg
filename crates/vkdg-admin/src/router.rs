@@ -5,6 +5,7 @@ use axum::{
     Router,
 };
 use vkdg_config::ConfigRx;
+use vkdg_combos::ComboResolver;
 use crate::session::{KeyStore, SessionStore};
 use crate::handlers::requests::RequestLog;
 
@@ -15,6 +16,7 @@ pub struct AdminState {
     pub started_at: Arc<Instant>,
     pub key_store: Arc<KeyStore>,
     pub request_log: Arc<RequestLog>,
+    pub combo_resolver: Option<Arc<ComboResolver>>,
 }
 
 pub fn build_admin_router(state: AdminState) -> Router {

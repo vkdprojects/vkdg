@@ -16,3 +16,4 @@ tracing      = { workspace = true }
 serde_yaml   = { workspace = true }
 vkdg-config  = { workspace = true }
 reqwest      = { workspace = true }
+urlencoding = { workspace = true }

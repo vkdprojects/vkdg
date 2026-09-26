@@ -1,3 +1,9 @@
+pub mod session;
+pub mod quota;
+
+pub use session::{SessionPin, SessionRegistry};
+pub use quota::{QuotaTracker, QuotaWindow};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

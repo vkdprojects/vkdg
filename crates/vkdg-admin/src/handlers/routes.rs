@@ -31,9 +31,16 @@ struct ExcludedConn {
 }
 
 #[derive(Serialize)]
+struct ConnectionPreview {
+    id: String,
+    provider: String,
+}
+
+#[derive(Serialize)]
 struct RoutePreview {
     model: String,
-    eligible_connections: Vec<String>,
+    combo_id: Option<String>,
+    eligible_connections: Vec<ConnectionPreview>,
     excluded_connections: Vec<ExcludedConn>,
 }
 
@@ -47,6 +54,15 @@ fn strategy_str(s: &impl serde::Serialize) -> String {
         .ok()
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn provider_str(kind: &vkdg_connections::ProviderKind) -> String {
+    match kind {
+        vkdg_connections::ProviderKind::Anthropic => "anthropic".into(),
+        vkdg_connections::ProviderKind::OpenAI => "openai".into(),
+        vkdg_connections::ProviderKind::Google => "google".into(),
+        vkdg_connections::ProviderKind::Custom { .. } => "custom".into(),
+    }
 }
 
 pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) -> Response {
@@ -78,6 +94,9 @@ pub async fn preview_route(
             .into_response();
     }
     let snapshot = state.config_rx.borrow().clone();
+    let combo_id = state.combo_resolver.as_ref()
+        .and_then(|r| r.resolve(&q.model))
+        .map(|c| c.id.clone());
     let mut eligible = Vec::new();
     let mut excluded = Vec::new();
     for conn in snapshot.connections.iter() {
@@ -89,7 +108,10 @@ pub async fn preview_route(
             }
         });
         if matches {
-            eligible.push(conn.id.0.clone());
+            eligible.push(ConnectionPreview {
+                id: conn.id.0.clone(),
+                provider: provider_str(&conn.provider),
+            });
         } else {
             excluded.push(ExcludedConn {
                 id: conn.id.0.clone(),
@@ -99,6 +121,7 @@ pub async fn preview_route(
     }
     Json(RoutePreview {
         model: q.model,
+        combo_id,
         eligible_connections: eligible,
         excluded_connections: excluded,
     })
@@ -126,6 +149,7 @@ mod tests {
             started_at: Arc::new(Instant::now()),
             key_store: KeyStore::new(),
             request_log: RequestLog::new(),
+            combo_resolver: None,
         }
     }
 
@@ -157,6 +181,7 @@ mod tests {
             started_at: Arc::new(Instant::now()),
             key_store: KeyStore::new(),
             request_log: RequestLog::new(),
+            combo_resolver: None,
         }
     }
 
@@ -185,6 +210,7 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["eligible_connections"].as_array().unwrap().len(), 1);
-        assert_eq!(val["eligible_connections"][0], "conn-a");
+        assert_eq!(val["eligible_connections"][0]["id"], "conn-a");
+        assert_eq!(val["eligible_connections"][0]["provider"], "anthropic");
     }
 }

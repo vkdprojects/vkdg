@@ -62,6 +62,15 @@ enum RequestSub {
 #[derive(Subcommand)]
 enum ConfigSub {
     Check { path: String },
+    /// Simulate routing for a model using live eligibility logic.
+    Explain {
+        /// Model name or combo name to simulate routing for
+        #[arg(long)]
+        model: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -74,6 +83,9 @@ async fn main() -> Result<()> {
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
         Command::Config { sub: ConfigSub::Check { path } } => {
             vkdg_cli::commands::config_check::run(&path).await?;
+        }
+        Command::Config { sub: ConfigSub::Explain { model, json } } => {
+            vkdg_cli::commands::config_explain::run(&model, json).await?;
         }
         Command::Request { sub: RequestSub::Explain { id, json } } => {
             vkdg_cli::commands::explain::run(&id, json).await?;
@@ -145,6 +157,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         started_at: std::sync::Arc::new(std::time::Instant::now()),
         key_store: vkdg_admin::session::KeyStore::new(),
         request_log: vkdg_admin::handlers::requests::RequestLog::new(),
+        combo_resolver: None,
     };
     let admin_router = vkdg_admin::build_admin_router(admin_state);
     tokio::spawn(async move {

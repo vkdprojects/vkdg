@@ -1,0 +1,99 @@
+# VKDG Gateway Configuration
+# Full reference: https://github.com/vkdprojects/vkdg/blob/main/docs/sdk/config-reference.md
+#
+# Quick start:
+#   1. Copy this file: cp config.example.yaml vkdg.yaml
+#   2. Set your API keys as environment variables
+#   3. Run: vkdg serve --config vkdg.yaml
+
+# Data plane bind address
+listen: "0.0.0.0:8080"
+
+# ── Connections ──────────────────────────────────────────────────────────────
+# Each connection maps to one upstream provider account.
+# Multiple connections to the same provider = automatic failover/load balancing.
+
+connections:
+  # Anthropic — Claude models
+  - id: anthropic-default
+    provider: anthropic
+    auth:
+      type: api_key
+      env_var: ANTHROPIC_API_KEY       # export ANTHROPIC_API_KEY=sk-ant-...
+    models: ["claude-*"]
+    max_concurrent: 50
+    weight: 1
+    tags: [primary]
+
+  # OpenAI — GPT + o-series models
+  - id: openai-default
+    provider: openai
+    auth:
+      type: api_key
+      env_var: OPENAI_API_KEY          # export OPENAI_API_KEY=sk-...
+    models: ["gpt-*", "o1-*", "o3-*", "o4-*"]
+    max_concurrent: 50
+    weight: 1
+
+  # Groq — fast inference, free tier available
+  - id: groq-default
+    provider: groq
+    auth:
+      type: api_key
+      env_var: GROQ_API_KEY            # export GROQ_API_KEY=gsk_...
+    models: ["llama-*", "mixtral-*", "gemma-*"]
+    max_concurrent: 30
+    weight: 1
+    tags: [fast, cheap]
+
+  # Custom OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, etc.)
+  # - id: local-ollama
+  #   provider: "openai-compat"
+  #   base_url: "http://localhost:11434"
+  #   auth:
+  #     type: api_key
+  #     env_var: OLLAMA_API_KEY        # set to anything for keyless endpoints
+  #   models: ["llama3.3:70b", "qwen2.5:72b"]
+  #   max_concurrent: 4
+  #   weight: 1
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+# Routes map model name patterns to connection targets.
+# Requests for a model are routed to the first matching route.
+
+routes:
+  # Claude requests → Anthropic
+  - id: claude-route
+    match_models: ["claude-*"]
+    strategy: round_robin
+    targets: [anthropic-default]
+
+  # GPT/o-series → OpenAI
+  - id: openai-route
+    match_models: ["gpt-*", "o1-*", "o3-*", "o4-*"]
+    strategy: round_robin
+    targets: [openai-default]
+
+  # Fast/cheap models → Groq
+  - id: fast-route
+    match_models: ["llama-*", "mixtral-*"]
+    strategy: round_robin
+    targets: [groq-default]
+
+  # Catch-all fallback: try anthropic first, then openai
+  # - id: fallback
+  #   match_models: ["*"]
+  #   strategy: fallback_chain
+  #   targets: [anthropic-default, openai-default, groq-default]
+
+# ── Limits ───────────────────────────────────────────────────────────────────
+limits:
+  max_concurrent_requests: 1000
+
+# ── Observability ─────────────────────────────────────────────────────────────
+# observe:
+#   otlp_endpoint: "http://otel-collector:4317"  # OpenTelemetry collector
+
+# ── Optional: inject a system prompt on every request ────────────────────────
+# global_system_prompt: |
+#   You are a helpful assistant. Today's date is {date}.

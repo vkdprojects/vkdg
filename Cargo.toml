@@ -153,6 +153,10 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 regex            = "1.11"
 urlencoding      = "2.1"
 redis            = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+rust-embed   = { version = "8", features = ["mime-guess"] }
+axum-embed   = "0.1.0"
+inquire      = { version = "0.9.4", default-features = false, features = ["crossterm"] }
+self_update  = { version = "1.3.0", default-features = false, features = ["archive-tar", "compression-tar-gz", "rustls", "github", "reqwest"] }
 
 
 [workspace.lints.rust]

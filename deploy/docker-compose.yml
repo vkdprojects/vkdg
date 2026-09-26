@@ -1,0 +1,59 @@
+# VKDG production stack
+# Copy deploy/.env.example to deploy/.env and fill in your values, then:
+#   docker compose -f deploy/docker-compose.yml up -d
+services:
+  gateway:
+    image: ghcr.io/vkdprojects/vkdg:latest
+    # Or build locally:
+    # build:
+    #   context: ..
+    #   dockerfile: deploy/Dockerfile.gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+      - "${ADMIN_PORT:-9090}:9090"
+    environment:
+      VKDG_ADMIN_ADDR: "0.0.0.0:9090"
+      VKDG_BOOTSTRAP_TOKEN: "${VKDG_BOOTSTRAP_TOKEN:?VKDG_BOOTSTRAP_TOKEN is required}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GROQ_API_KEY: "${GROQ_API_KEY:-}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+    volumes:
+      - "./config.yaml:/etc/vkdg/config.yaml:ro"
+      - "vkdg-data:/var/lib/vkdg"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  console:
+    image: ghcr.io/vkdprojects/vkdg-console:latest
+    # Or build locally:
+    # build:
+    #   context: ../apps/console
+    #   dockerfile: ../deploy/Dockerfile.console
+    restart: unless-stopped
+    ports:
+      - "${CONSOLE_PORT:-9091}:3000"
+    environment:
+      VKDG_ADMIN_URL: "http://gateway:9090"
+      ORIGIN: "${ORIGIN:-http://localhost:9091}"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  vkdg-data:

@@ -32,6 +32,14 @@ use vkdg_provider_sdk::ProviderRegistry;
 use vkdg_provider_together::provider as together_provider;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 
+// ── Embedded console assets ───────────────────────────────────────────────────
+
+/// SvelteKit console — embedded at compile time in release builds,
+/// served from the filesystem in debug builds for fast iteration.
+#[derive(rust_embed::RustEmbed, Clone)]
+#[folder = "../../apps/console/build/"]
+struct ConsoleAssets;
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -69,6 +77,25 @@ enum Command {
         /// Start an in-process mock gateway instead of connecting to a running instance.
         #[arg(long)]
         self_test: bool,
+    },
+    /// First-run configuration wizard.
+    Setup,
+    /// Install VKDG as a systemd service (Linux only).
+    Install {
+        #[arg(long, default_value = "/etc/vkdg/config.yaml")]
+        config: String,
+        /// Install for current user only (no root required).
+        #[arg(long)]
+        user: bool,
+    },
+    /// Self-update to the latest release.
+    Update {
+        /// Skip confirmation prompt.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Update to specific version.
+        #[arg(long)]
+        version: Option<String>,
     },
 }
 
@@ -130,6 +157,9 @@ async fn main() -> Result<()> {
         } => {
             vkdg_cli::commands::replay::run(&fixture, base_url.as_deref(), self_test).await?;
         }
+        Command::Setup => cmd_setup()?,
+        Command::Install { config, user } => cmd_install(&config, user)?,
+        Command::Update { yes, version } => cmd_update(yes, version.as_deref())?,
     }
     Ok(())
 }
@@ -171,6 +201,9 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         build_pipeline_from_env(max_concurrent)
     };
 
+    // Extract catalog for admin API before pipeline is moved into AppState.
+    let admin_catalog = pipeline.as_ref().map(|p| Arc::clone(&p.catalog));
+
     let mut state = AppState::new(server_config.clone());
     if let Some(p) = pipeline {
         state = state.with_pipeline(Arc::new(p));
@@ -195,6 +228,14 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
         .route("/mcp", get(vkdg_http::mcp_discovery))
+        .nest_service(
+            "/",
+            axum_embed::ServeEmbed::<ConsoleAssets>::with_parameters(
+                Some("index.html".to_string()),
+                axum_embed::FallbackBehavior::Ok,
+                Some("index.html".to_string()),
+            ),
+        )
         .with_state(state);
 
     // ── Admin API on a separate port ───────────────────────────────────────────
@@ -213,7 +254,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         key_store: vkdg_admin::session::KeyStore::new(),
         request_log: vkdg_admin::handlers::requests::RequestLog::new(),
         combo_resolver: None,
-        catalog: None,
+        catalog: admin_catalog,
     };
     let admin_router = vkdg_admin::build_admin_router(admin_state);
     tokio::spawn(async move {
@@ -229,6 +270,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
 
     vkdg_http::serve(server_config, router).await
 }
+
 async fn health() -> impl axum::response::IntoResponse {
     axum::Json(serde_json::json!({"status": "ok"}))
 }
@@ -342,4 +384,232 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
     r.register(Arc::new(AntigravityAdapter));
     r.register(Arc::new(GitHubCopilotAdapter));
     Arc::new(r)
+}
+
+// ── Setup wizard ──────────────────────────────────────────────────────────────
+
+fn cmd_setup() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    use inquire::Confirm;
+    use inquire::{Select, Text};
+
+    println!("\n\x1b[1m\x1b[36m Welcome to VKDG Setup \x1b[0m\n");
+    println!("This wizard will create a configuration file for your gateway.\n");
+
+    // Config path
+    let config_path = Text::new("Config file path:")
+        .with_default("/etc/vkdg/config.yaml")
+        .with_help_message("Where to save the VKDG configuration file")
+        .prompt()?;
+
+    // Listen address
+    let listen = Text::new("Data API listen address:")
+        .with_default("0.0.0.0:8080")
+        .with_help_message("Port that AI clients will connect to")
+        .prompt()?;
+
+    // Provider selection
+    let providers = vec![
+        "anthropic",
+        "openai",
+        "groq (free tier available)",
+        "gemini",
+        "deepseek",
+        "mistral",
+        "custom (OpenAI-compatible endpoint)",
+    ];
+    let provider_choice = Select::new("First provider:", providers)
+        .with_help_message("You can add more providers by editing the config file")
+        .prompt()?;
+
+    let provider_id = provider_choice.split(' ').next().unwrap_or("anthropic");
+
+    let (provider_str, default_env, model_pattern) = match provider_id {
+        "anthropic" => ("anthropic", "ANTHROPIC_API_KEY", "claude-*"),
+        "openai" => ("openai", "OPENAI_API_KEY", "gpt-*"),
+        "groq" => ("groq", "GROQ_API_KEY", "llama-*"),
+        "gemini" => ("gemini", "GEMINI_API_KEY", "gemini-*"),
+        "deepseek" => ("deepseek", "DEEPSEEK_API_KEY", "deepseek-*"),
+        "mistral" => ("mistral", "MISTRAL_API_KEY", "mistral-*"),
+        _ => ("openai-compat", "API_KEY", "*"),
+    };
+
+    let base_url_opt = if provider_id == "custom" {
+        Some(
+            Text::new("Base URL:")
+                .with_placeholder("http://localhost:11434")
+                .prompt()?,
+        )
+    } else {
+        None
+    };
+
+    let env_var = Text::new("API key environment variable name:")
+        .with_default(default_env)
+        .prompt()?;
+
+    let max_concurrent: u32 = Text::new("Max concurrent requests:")
+        .with_default("100")
+        .prompt()?
+        .parse()
+        .unwrap_or(100);
+
+    // Build config YAML
+    let base_url_line = base_url_opt
+        .as_ref()
+        .map(|u| format!("    base_url: {u}\n"))
+        .unwrap_or_default();
+
+    let config_yaml = format!(
+        "# VKDG Configuration — generated by 'vkdg setup'\n\
+         # Edit this file to add more connections and routes.\n\
+         listen: \"{listen}\"\n\
+         connections:\n\
+         - id: {provider_str}-default\n\
+         {base_url_line}  provider: {provider_str}\n\
+           auth:\n\
+             type: api_key\n\
+             env_var: {env_var}\n\
+           models: [\"{model_pattern}\"]\n\
+           max_concurrent: {max_concurrent}\n\
+           weight: 1\n\
+         routes:\n\
+         - id: default\n\
+           match_models: [\"{model_pattern}\"]\n\
+           strategy: round_robin\n\
+           targets: [{provider_str}-default]\n\
+         limits:\n\
+           max_concurrent_requests: 1000\n"
+    );
+
+    // Create dir + write
+    let path = std::path::Path::new(&config_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| eprintln!("Warning: could not create dir: {e}"));
+    }
+
+    match std::fs::write(path, &config_yaml) {
+        Ok(()) => println!("\n\x1b[32m✓ Config written to {config_path}\x1b[0m"),
+        Err(e) => {
+            eprintln!("Could not write to {config_path}: {e}");
+            eprintln!("Config:\n{config_yaml}");
+        }
+    }
+
+    // Offer systemd install on Linux
+    #[cfg(target_os = "linux")]
+    if Confirm::new("Install as a systemd service?")
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false)
+    {
+        let user_mode = !is_root();
+        cmd_install(&config_path, user_mode)?;
+    }
+
+    println!("\n\x1b[1mNext steps:\x1b[0m");
+    println!("  export {env_var}=your-api-key-here");
+    println!("  vkdg serve --config {config_path}");
+    println!("  open http://localhost:9090  # admin console\n");
+
+    Ok(())
+}
+
+// ── Install (systemd) ─────────────────────────────────────────────────────────
+
+fn cmd_install(config_path: &str, user_mode: bool) -> Result<()> {
+    let binary_path =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("/usr/local/bin/vkdg"));
+
+    let unit = format!(
+        "[Unit]\n\
+         Description=VKDG AI Gateway\n\
+         After=network.target\n\
+         StartLimitIntervalSec=0\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         Restart=always\n\
+         RestartSec=5\n\
+         ExecStart={} serve --config {}\n\
+         EnvironmentFile=-/etc/vkdg/env\n\
+         StandardOutput=journal\n\
+         StandardError=journal\n\
+         SyslogIdentifier=vkdg\n\
+         \n\
+         [Install]\n\
+         WantedBy=multi-user.target\n",
+        binary_path.display(),
+        config_path,
+    );
+
+    let unit_dir = if user_mode {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+        std::path::PathBuf::from(home).join(".config/systemd/user")
+    } else {
+        std::path::PathBuf::from("/etc/systemd/system")
+    };
+
+    std::fs::create_dir_all(&unit_dir)?;
+    let unit_path = unit_dir.join("vkdg.service");
+    std::fs::write(&unit_path, unit)?;
+    println!("✓ Systemd unit written: {}", unit_path.display());
+
+    let systemctl_args: &[&str] = if user_mode { &["--user"] } else { &[] };
+    let reload = std::process::Command::new("systemctl")
+        .args(systemctl_args)
+        .arg("daemon-reload")
+        .status();
+    if reload.is_ok() {
+        let _ = std::process::Command::new("systemctl")
+            .args(systemctl_args)
+            .args(["enable", "--now", "vkdg"])
+            .status();
+        println!("✓ Service enabled and started.");
+        println!(
+            "  Check status: systemctl {}status vkdg",
+            if user_mode { "--user " } else { "" }
+        );
+    }
+
+    Ok(())
+}
+
+// ── Self-update ───────────────────────────────────────────────────────────────
+
+fn cmd_update(no_confirm: bool, version: Option<&str>) -> Result<()> {
+    println!("Checking for updates...");
+    let mut builder = self_update::backends::github::Update::configure();
+    builder
+        .repo_owner("vkdprojects")
+        .repo_name("vkdg")
+        .bin_name("vkdg")
+        .show_download_progress(true)
+        .no_confirm(no_confirm)
+        .current_version(env!("CARGO_PKG_VERSION"));
+    if let Some(v) = version {
+        builder.release_tag(v);
+    }
+    match builder.build()?.update()? {
+        self_update::VersionStatus::UpToDate(v) => println!("Already up to date (v{v})."),
+        self_update::VersionStatus::Updated(v) => {
+            println!("\x1b[32m✓ Updated to v{v}\x1b[0m");
+            println!("Restart the vkdg service to apply:");
+            println!("  systemctl restart vkdg");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+/// Returns true if the process can write to the system-wide systemd unit directory.
+fn is_root() -> bool {
+    std::path::Path::new("/etc/systemd/system").exists()
+        && std::fs::metadata("/etc/systemd/system")
+            .map(|m| !m.permissions().readonly())
+            .unwrap_or(false)
 }

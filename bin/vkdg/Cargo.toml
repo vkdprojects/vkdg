@@ -42,6 +42,10 @@ vkdg-provider-sdk        = { workspace = true }
 vkdg-config      = { workspace = true }
 vkdg-admin       = { workspace = true }
 uuid             = { workspace = true }
+rust-embed  = { workspace = true }
+axum-embed  = { workspace = true }
+inquire     = { workspace = true }
+self_update = { workspace = true }
 
 [lints]
 workspace = true

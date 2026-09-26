@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use vkdg_core::{ConnectionId, ExcludedCandidate, RequestEnvelope, Result, VkdgError};
+use vkdg_core::{ExcludedCandidate, RequestEnvelope, Result, VkdgError};
 
 use crate::scored::ScoredStrategy;
 use crate::strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};

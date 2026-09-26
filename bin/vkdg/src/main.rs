@@ -124,7 +124,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
                 let pipeline = build_pipeline_from_snapshot(&snap, max_concurrent);
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
-                let _ = vkdg_config::watch(path.clone(), tx, 1);
+                drop(vkdg_config::watch(path.clone(), tx, 1));
                 Some(pipeline)
             }
             Err(e) => {

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
-use vkdg_core::{CapabilitySet, ConnectionId, VkdgError};
+use vkdg_core::{CapabilitySet, ConnectionId};
 
-use super::connection::{Connection, ConnectionConfig, ConnectionState};
+use super::connection::{Connection, ConnectionConfig};
 
 pub struct ConnectionCatalog {
     connections: HashMap<ConnectionId, Arc<RwLock<Connection>>>,

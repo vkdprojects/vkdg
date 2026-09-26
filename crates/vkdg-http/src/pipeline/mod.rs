@@ -8,6 +8,5 @@ pub(crate) mod entry;
 pub(crate) mod helpers;
 pub(crate) mod inner;
 pub(crate) mod phases;
-pub(crate) mod provider;
 
 pub use entry::run_conversation_pipeline;

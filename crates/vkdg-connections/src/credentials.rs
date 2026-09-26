@@ -29,7 +29,7 @@ impl StoredToken {
 
 pub struct CredentialManager {
     /// Per-connection token cache.
-    pub(crate) tokens: RwLock<HashMap<ConnectionId, StoredToken>>,
+    tokens: RwLock<HashMap<ConnectionId, StoredToken>>,
     /// Per-connection singleflight: only one refresh runs at a time.
     refresh_locks: Mutex<HashMap<ConnectionId, Arc<tokio::sync::Mutex<()>>>>,
 }

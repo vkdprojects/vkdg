@@ -16,6 +16,8 @@ Product: AI gateway in Rust. Receives calls via native VKDG API and compatible p
 | Create/change native API, compatible protocol, converter, SSE, or capability matrix | `.agents/skills/vkdg-protocol/SKILL.md` |
 | Design/implement plugin, ABI, hooks, SDK, and install lifecycle | `.agents/skills/vkdg-plugin/SKILL.md` |
 | Change concurrency, OAuth, storage, routing, resilience, debug, or performance | `.agents/skills/vkdg-operate/SKILL.md` |
+| Rust DX and code quality — module organization, constructors, errors, naming, test patterns | `.agents/skills/vkdg-dx/SKILL.md` |
+| Write docs, READMEs, community files, release notes, or any user-facing copy | `.agents/skills/vkdg-copy/SKILL.md` |
 | Develop SvelteKit panel, admin API, web authentication, or BFF ↔ Rust contract | `VKDG-frontend-day0.md` and `.agents/skills/vkdg-test-first/SKILL.md` |
 
 Combine skills when a change crosses boundaries. For behavioral changes: record the observable contract, run the RED test for the correct reason, implement in the owning module, reach GREEN, refactor, and save evidence of the commands. Verify with a fake upstream and report limits. Prefer small, complete changes; avoid placeholders that promise compatibility not yet proven.

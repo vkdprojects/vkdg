@@ -4,7 +4,7 @@
 
 VKDG is an AI gateway for clients that speak different protocols and providers that behave differently. It receives a request, identifies the client, checks what the request needs, selects an eligible provider connection, translates only when the semantics can be preserved, and records why it made that choice.
 
-> **Status:** Phase D + parity sprint complete: 250 tests passing, 0 failing, 0 clippy warnings. 21 crates in production. Phase E (scale/release) in progress.
+> **Status:** Phase D + parity sprint complete: 247 tests passing, 0 failing, 0 clippy warnings. 21 crates in production. Phase E (scale/release) in progress.
 
 [The idea](#the-idea) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Endpoints](#endpoints) · [Protocols](#protocols-and-capabilities) · [Phases](#phases) · [Known gaps](#known-gaps) · [Development](#development) · [Architecture](VKDG-architecture-v0.md)
 
@@ -161,7 +161,7 @@ cargo clippy --workspace -- -D warnings
 ./target/release/vkdg config check --config vkdg.toml
 ```
 
-Current baseline: **250 tests, 0 failing, 0 clippy warnings** across 21 crates.
+Current baseline: **247 tests, 0 failing, 0 clippy warnings** across 21 crates.
 
 | Document | Read it for |
 | --- | --- |

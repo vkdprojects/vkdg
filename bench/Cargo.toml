@@ -17,7 +17,7 @@ vkdg-provider-anthropic = { workspace = true }
 tokio                = { workspace = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 [lints]
 workspace = true

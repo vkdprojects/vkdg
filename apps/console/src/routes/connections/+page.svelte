@@ -2,10 +2,10 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { ConnectionSummary } from '$lib/api.js';
-  import { Badge, StatusDot, EmptyState, Button, Input, Select, Spinner } from '$lib/components/index.js';
+  import { Badge, StatusDot, EmptyState, Button, Input, Select, Spinner, CopyButton } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
-  import { PlusIcon, XIcon } from 'lucide-svelte';
+  import { PlusIcon, XIcon, CheckIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let connections = $state<ConnectionSummary[]>([]);
@@ -15,19 +15,75 @@
   let provider = $state('openai-compat');
   let connId = $state('');
   let baseUrl = $state('');
-  let apiKey = $state('');
-  let submitting = $state(false);
+  let envVar = $state('');
+  let models = $state('');
+  let step = $state<'form' | 'yaml'>('form');
 
   const providerOptions = [
-    { value: 'openai-compat', label: 'OpenAI-compatible' },
+    { value: 'openai-compat', label: 'OpenAI-compatible (Ollama, vLLM, etc.)' },
     { value: 'anthropic-compat', label: 'Anthropic-compatible' },
-    { value: 'groq', label: 'Groq' },
-    { value: 'gemini', label: 'Gemini' },
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic',  label: 'Anthropic (Claude)' },
+    { value: 'openai',     label: 'OpenAI (GPT / o-series)' },
+    { value: 'groq',       label: 'Groq' },
+    { value: 'gemini',     label: 'Google Gemini' },
+    { value: 'deepseek',   label: 'DeepSeek' },
+    { value: 'mistral',    label: 'Mistral' },
+    { value: 'together',   label: 'Together AI' },
+    { value: 'fireworks',  label: 'Fireworks AI' },
+    { value: 'sambanova',  label: 'SambaNova (free tier)' },
+    { value: 'cerebras',   label: 'Cerebras (free tier)' },
+    { value: 'nvidia-nim', label: 'NVIDIA NIM' },
   ];
 
   const showBaseUrl = $derived(provider === 'openai-compat' || provider === 'anthropic-compat');
+
+  // Default env var per provider
+  const defaultEnvVar: Record<string, string> = {
+    'anthropic':     'ANTHROPIC_API_KEY',
+    'openai':        'OPENAI_API_KEY',
+    'groq':          'GROQ_API_KEY',
+    'gemini':        'GEMINI_API_KEY',
+    'deepseek':      'DEEPSEEK_API_KEY',
+    'mistral':       'MISTRAL_API_KEY',
+    'together':      'TOGETHER_API_KEY',
+    'fireworks':     'FIREWORKS_API_KEY',
+    'sambanova':     'SAMBANOVA_API_KEY',
+    'cerebras':      'CEREBRAS_API_KEY',
+    'nvidia-nim':    'NVIDIA_API_KEY',
+    'openai-compat': 'API_KEY',
+  };
+
+  const defaultModels: Record<string, string> = {
+    'anthropic':  'claude-*',
+    'openai':     'gpt-*, o1-*, o3-*',
+    'groq':       'llama-*, mixtral-*',
+    'gemini':     'gemini-*',
+    'deepseek':   'deepseek-*',
+    'mistral':    'mistral-*',
+    'together':   'meta-llama/*',
+    'fireworks':  'accounts/*',
+    'sambanova':  'Meta-Llama-*',
+    'cerebras':   'llama3.1-*',
+    'nvidia-nim': 'meta/llama-*',
+  };
+
+  $effect(() => {
+    if (provider in defaultEnvVar) envVar = defaultEnvVar[provider];
+    if (provider in defaultModels) models = defaultModels[provider];
+    if (!connId) connId = `${provider}-default`;
+  });
+
+  // Generate the YAML snippet the user needs to paste into vkdg.yaml
+  const yamlSnippet = $derived(() => {
+    const idLine     = `  - id: ${connId || provider + '-default'}`;
+    const provLine   = `    provider: ${provider}`;
+    const urlLine    = showBaseUrl && baseUrl ? `    base_url: ${baseUrl}\n` : '';
+    const envLine    = `    auth:\n      type: api_key\n      env_var: ${envVar || 'API_KEY'}`;
+    const modelList  = (models || '*').split(',').map(m => m.trim()).map(m => `"${m}"`).join(', ');
+    const modelsLine = `    models: [${modelList}]`;
+    const miscLines  = `    max_concurrent: 50\n    weight: 1`;
+    return `connections:\n${idLine}\n${provLine}\n${urlLine}    ${envLine}\n${modelsLine}\n${miscLines}`;
+  });
 
   onMount(async () => {
     try {
@@ -40,20 +96,28 @@
     }
   });
 
-  async function addConnection(e: Event) {
+  function openDialog() {
+    step = 'form';
+    connId = '';
+    baseUrl = '';
+    dialogOpen = true;
+  }
+
+  function handleFormSubmit(e: Event) {
     e.preventDefault();
-    submitting = true;
-    // Connection creation via UI is coming in the next release. Use vkdg.yaml for now.
-    toast.info('Connection creation via UI is coming in the next release. Use vkdg.yaml for now.');
-    submitting = false;
+    step = 'yaml';
+  }
+
+  function closeDialog() {
     dialogOpen = false;
+    step = 'form';
   }
 </script>
 
 <div class="page">
   <div class="page-header">
     <h1 class="page-title">{m.nav_connections()}</h1>
-    <Button variant="primary" size="sm" onclick={() => (dialogOpen = true)}>
+    <Button variant="primary" size="sm" onclick={openDialog}>
       <PlusIcon size={14} />
       {m.connection_add()}
     </Button>
@@ -97,50 +161,81 @@
   {/if}
 </div>
 
-<Dialog.Root bind:open={dialogOpen}>
+<Dialog.Root bind:open={dialogOpen} onOpenChange={(v) => { if (!v) step = 'form'; }}>
   <Dialog.Portal>
     <Dialog.Overlay class="dialog-overlay" />
     <Dialog.Content class="dialog-content" aria-describedby={undefined}>
       <div class="dialog-header">
-        <Dialog.Title class="dialog-title">{m.connection_add()}</Dialog.Title>
-        <Dialog.Close class="dialog-close" aria-label={m.common_cancel()}>
+        <Dialog.Title class="dialog-title">
+          {step === 'form' ? m.connection_add() : 'Add to your config'}
+        </Dialog.Title>
+        <button class="dialog-close" aria-label={m.common_cancel()} onclick={closeDialog}>
           <XIcon size={16} />
-        </Dialog.Close>
+        </button>
       </div>
 
-      <form onsubmit={addConnection}>
-        <div class="form-fields">
-          <Select
-            label={m.connection_provider()}
-            options={providerOptions}
-            bind:value={provider}
-          />
+      {#if step === 'form'}
+        <!-- Step 1: pick provider, enter details -->
+        <form onsubmit={handleFormSubmit}>
+          <div class="form-fields">
+            <Select
+              label={m.connection_provider()}
+              options={providerOptions}
+              bind:value={provider}
+            />
 
-          <div class="field">
-            <label for="conn-id">{m.connection_id()}</label>
-            <input id="conn-id" name="id" type="text" bind:value={connId} placeholder="my-openai" required />
-          </div>
-
-          {#if showBaseUrl}
             <div class="field">
-              <label for="conn-base-url">Base URL</label>
-              <input id="conn-base-url" name="base_url" type="text" bind:value={baseUrl} placeholder="https://api.openai.com/v1" />
+              <label for="conn-id">Connection ID</label>
+              <input id="conn-id" type="text" bind:value={connId} placeholder="{provider}-default" required />
             </div>
-          {/if}
 
-          <div class="field">
-            <label for="conn-api-key">API Key</label>
-            <input id="conn-api-key" name="api_key" type="password" bind:value={apiKey} placeholder="sk-…" autocomplete="off" />
+            {#if showBaseUrl}
+              <div class="field">
+                <label for="conn-base-url">Base URL</label>
+                <input id="conn-base-url" type="text" bind:value={baseUrl} placeholder="http://localhost:11434" />
+              </div>
+            {/if}
+
+            <div class="field">
+              <label for="conn-env">API key env var</label>
+              <input id="conn-env" type="text" bind:value={envVar} placeholder="MY_API_KEY" />
+              <span class="field-hint">Variable name — the key stays in your environment, not in the config</span>
+            </div>
+
+            <div class="field">
+              <label for="conn-models">Models (comma-separated globs)</label>
+              <input id="conn-models" type="text" bind:value={models} placeholder="claude-*, gpt-4*" />
+            </div>
           </div>
+
+          <div class="dialog-footer">
+            <Button variant="outline" type="button" onclick={closeDialog}>{m.common_cancel()}</Button>
+            <Button variant="primary" type="submit">Generate config snippet →</Button>
+          </div>
+        </form>
+
+      {:else}
+        <!-- Step 2: show the YAML snippet to paste into vkdg.yaml -->
+        <div class="yaml-step">
+          <p class="yaml-note">
+            Copy this into your <code>vkdg.yaml</code>. Hot-reload picks it up automatically — no restart needed.
+          </p>
+          <div class="yaml-block">
+            <pre class="yaml-code">{yamlSnippet()}</pre>
+            <CopyButton text={yamlSnippet()} />
+          </div>
+          <p class="yaml-env-note">
+            Set the environment variable before starting the gateway:
+            <br />
+            <code>export {envVar || 'API_KEY'}=your-key-here</code>
+          </p>
         </div>
 
         <div class="dialog-footer">
-          <Dialog.Close>
-            <Button variant="outline" type="button">{m.common_cancel()}</Button>
-          </Dialog.Close>
-          <Button variant="primary" type="submit" disabled={submitting}>{m.connection_add()}</Button>
+          <Button variant="outline" onclick={() => (step = 'form')}>← Back</Button>
+          <Button variant="primary" onclick={closeDialog}>Done</Button>
         </div>
-      </form>
+      {/if}
     </Dialog.Content>
   </Dialog.Portal>
 </Dialog.Root>

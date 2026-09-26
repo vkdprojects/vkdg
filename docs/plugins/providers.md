@@ -1,173 +1,182 @@
-# VKDG Providers
+# Providers
 
-A provider adapter translates VKDG's internal request format into whatever wire format the upstream API expects. The gateway core knows nothing about HTTP URLs, auth headers, or JSON schemas — that's entirely the provider's job.
+VKDG is a gateway, not a provider directory. It doesn't maintain a catalog of every AI API on the internet — that's not the point. The point is that you can connect **any** upstream you have access to, and route traffic across them intelligently.
 
----
+That said, VKDG ships with a set of official provider adapters for the most common APIs. These are compiled into the binary, maintained by the VKDG team, and get updates when provider APIs change.
 
-## What's a provider?
-
-When you send a request through VKDG, the gateway routes it to a connection. That connection references a provider. The provider takes the normalized internal request and turns it into a real HTTP call — the right URL, the right headers, the right body shape — then translates the response back.
-
-Every provider is an adapter. The core doesn't care whether the upstream speaks Anthropic Messages format, OpenAI Chat Completions, or something proprietary. It just hands the provider a request and expects a response.
+Everything else — including thousands of OpenAI-compatible endpoints — works via config alone, no code needed. And if you need a custom integration, the [plugin system](./registry.md) covers that too.
 
 ---
 
-## Two kinds of adapters
+## How providers work
 
-**Compiled-in** — Rust crate in `plugins/providers/`. Bundled with the binary, zero latency, full async Rust. These are the official providers that ship with every VKDG build.
+When a request arrives at VKDG, the router selects a connection. The connection references a provider. The provider's job is exactly one thing: translate VKDG's internal request format into a real HTTP call and parse the response back.
 
-**WASM plugin** — a `.wasm` file installed separately via `vkdg plugin install`. Any language that compiles to `wasm32-wasip2`. Sandboxed (no filesystem, no outbound calls), hot-loadable without a rebuild. Community providers live here.
+The gateway owns the HTTP client, TLS, retries, auth injection, and backpressure. The provider only transforms bytes. This separation means you can add a new provider without touching the core at all.
 
-**Config-only** — for any OpenAI-compatible or Anthropic-compatible endpoint. No code at all. Set `provider: openai-compat` and point it at a base URL. Works for Ollama, vLLM, LM Studio, OpenRouter, and hundreds of others.
-
-If the API you want to connect speaks `/v1/chat/completions`, you almost certainly don't need to write a plugin.
+```
+Request → Router → Connection → Provider adapter → HTTP → Upstream API
+                                     ↑
+            translates: model name, messages, tools, streaming
+```
 
 ---
 
 ## Official providers
 
-These ship with every VKDG binary. No install needed — just configure a connection.
+These ship with every VKDG binary. We maintain the adapters — when an API changes, we update the adapter and release a new version.
 
-### API key providers
+**Why "official" matters:** these adapters handle edge cases that a simple OpenAI proxy misses — Anthropic's tool call format, streaming error injection, OAuth token refresh for code agents, per-provider capability detection.
 
-| Name | ID | Base URL | Notes |
-|------|----|----------|-------|
-| Anthropic | `anthropic` | `https://api.anthropic.com` | Native Anthropic Messages format |
-| OpenAI | `openai` | `https://api.openai.com` | Chat Completions + Images |
-| Google Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` | OpenAI-compat endpoint |
-| Groq | `groq` | `https://api.groq.com/openai` | OpenAI-compat, very fast inference |
-| DeepSeek | `deepseek` | `https://api.deepseek.com` | OpenAI-compat |
-| Mistral | `mistral` | `https://api.mistral.ai` | OpenAI-compat |
-| Together AI | `together` | `https://api.together.xyz` | OpenAI-compat |
-| Fireworks AI | `fireworks` | `https://api.fireworks.ai/inference` | OpenAI-compat |
+### API key
 
-Auth for all of these is an API key in an environment variable:
+| Provider | ID | Free tier | Notes |
+|----------|----|-----------|-------|
+| Anthropic | `anthropic` | — | Native Messages format. Claude family. |
+| OpenAI | `openai` | — | Chat Completions + Images + o-series |
+| Google Gemini | `gemini` | ✓ limited | OpenAI-compat endpoint |
+| Groq | `groq` | ✓ generous | Very fast inference. Llama, Mixtral, Gemma. |
+| DeepSeek | `deepseek` | ✓ limited | Very cheap. Strong at code. |
+| Mistral | `mistral` | — | OpenAI-compat. Good European alternative. |
+| Together AI | `together` | — | Large model catalog. OpenAI-compat. |
+| Fireworks AI | `fireworks` | — | Fast inference. OpenAI-compat. |
 
 ```yaml
+# Example: API key connection
 connections:
-  - id: anthropic-main
-    provider: anthropic
+  - id: groq-main
+    provider: groq
     auth:
       type: api_key
-      env_var: ANTHROPIC_API_KEY
-    models: ["claude-*"]
+      env_var: GROQ_API_KEY
+    models: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"]
+    max_concurrent: 30
 ```
 
-### OAuth providers (code agents)
+### OAuth / device code (code agents)
 
-These are AI coding agents that use OAuth instead of API keys. You authenticate once; VKDG stores the token in `~/.config/vkdg/vault/` and refreshes it automatically.
+These are AI coding tools that don't use API keys — they use OAuth. You authenticate once and VKDG stores and refreshes the token automatically.
 
-| Name | ID | Auth flow | Notes |
-|------|----|-----------|-------|
-| Claude Code | `claude-code` | OAuth PKCE | Requires `CLAUDE_OAUTH_CLIENT_ID` |
-| OpenAI Codex | `codex` | OAuth PKCE | Requires `CODEX_OAUTH_CLIENT_ID` |
-| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | Per-connection client registration |
-| Kimi Coding | `kimi-coding` | Device code | Requires stable device ID |
-| GitHub Copilot | `github-copilot` | Device code | Short-lived copilot tokens, auto-refreshed |
-| Antigravity | `antigravity` | Google OAuth | Requires GCP project onboarding |
+| Provider | ID | Flow | What it is |
+|----------|----|------|------------|
+| Claude Code | `claude-code` | OAuth PKCE | Anthropic's Claude as a CLI agent |
+| OpenAI Codex | `codex` | OAuth PKCE | OpenAI's Codex CLI |
+| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | AWS's AI coding assistant |
+| Kimi Coding | `kimi-coding` | Device code | Moonshot AI's coding agent |
+| GitHub Copilot | `github-copilot` | Device code | GitHub's Copilot (short-lived tokens, auto-refreshed) |
+| Antigravity | `antigravity` | Google OAuth | Google Cloud Code (requires GCP project) |
 
-To set up an OAuth provider, use `vkdg setup` — it walks you through the full flow interactively (see [Connecting an OAuth provider](#connecting-an-oauth-provider) below).
+```bash
+# Connect an OAuth provider
+vkdg setup
+# → picks the provider → walks through auth flow
+# → token stored in ~/.config/vkdg/vault/ (encrypted)
+# → auto-refreshed forever
+```
+
+After setup, the connection works with no `auth` block in your config — VKDG finds the stored token by provider ID.
 
 ---
 
-## Custom OpenAI-compatible endpoint (zero code)
+## Free tier providers — zero API key required
 
-Any API that speaks `/v1/chat/completions` works as a config-only connection:
+Some providers offer a free tier generous enough for real usage. For most of these, VKDG works as a config-only connection (no plugin needed — they all speak OpenAI-compat).
+
+```yaml
+# SambaNova — free Llama inference
+connections:
+  - id: sambanova
+    provider: openai-compat
+    base_url: https://api.sambanova.ai
+    auth: { type: api_key, env_var: SAMBANOVA_API_KEY }  # free at cloud.sambanova.ai
+    models: ["Meta-Llama-3.1-405B-Instruct", "Meta-Llama-3.1-70B-Instruct"]
+
+# Cerebras — fast free inference
+connections:
+  - id: cerebras
+    provider: openai-compat
+    base_url: https://api.cerebras.ai/v1
+    auth: { type: api_key, env_var: CEREBRAS_API_KEY }   # free at inference.cerebras.ai
+    models: ["llama3.1-70b", "llama3.1-8b"]
+
+# Cloudflare AI — free inference via Workers AI
+connections:
+  - id: cloudflare
+    provider: openai-compat
+    base_url: https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1
+    auth: { type: api_key, env_var: CLOUDFLARE_API_TOKEN }
+    models: ["@cf/meta/llama-3.1-70b-instruct"]
+
+# OpenRouter — 200+ models, many with free tiers
+connections:
+  - id: openrouter
+    provider: openai-compat
+    base_url: https://openrouter.ai/api
+    auth: { type: api_key, env_var: OPENROUTER_API_KEY }  # free tier available
+    models: ["*"]  # route any model name through OpenRouter
+```
+
+---
+
+## Any OpenAI-compatible endpoint
+
+If an API serves `/v1/chat/completions`, connect it as `openai-compat`:
 
 ```yaml
 connections:
-  - id: my-ollama
+  - id: local-ollama
     provider: openai-compat
     base_url: http://localhost:11434
-    auth:
-      type: api_key
-      env_var: OLLAMA_KEY   # set to any non-empty value for keyless endpoints
+    auth: { type: api_key, env_var: OLLAMA_KEY }  # any value; Ollama ignores it
     models: ["llama3.3:70b", "qwen2.5-coder:32b"]
     max_concurrent: 4
 ```
 
-Works for: Ollama, vLLM, LM Studio, LocalAI, Open WebUI, OpenRouter, DeepInfra, and anything else that implements the OpenAI spec.
+Works for: Ollama, vLLM, LM Studio, LocalAI, Open WebUI, any self-hosted model.
 
-For Anthropic-compatible endpoints (e.g., a proxy that wraps the Messages API), use `provider: anthropic-compat` instead.
-
----
-
-## Connecting an OAuth provider
-
-```bash
-vkdg setup
-```
-
-Pick your provider from the list. Then:
-
-1. VKDG prints an auth URL (PKCE) or a device code
-2. Complete auth in your browser, or enter the code on the device
-3. Token lands in `~/.config/vkdg/vault/` — encrypted at rest
-4. VKDG refreshes it automatically; you never touch it again
-
-After setup, the connection is ready to use in your config:
-
-```yaml
-connections:
-  - id: copilot
-    provider: github-copilot
-    models: ["gpt-4o", "claude-*"]
-```
-
-No `auth` block needed — VKDG finds the stored token by provider ID.
+For Anthropic-compatible endpoints (proxies that implement the Messages API), use `provider: anthropic-compat`.
 
 ---
 
-## Adding a provider yourself
+## Adding a provider
 
-Three paths, roughly in order of effort:
+VKDG is designed so that adding a provider never requires touching the core. Three paths:
 
-**Config-only** — If the API is OpenAI or Anthropic compatible, just write a YAML connection. No code, no build. Works today.
+**Config-only** — the fastest path. If the API speaks `/v1/chat/completions` or `/v1/messages`, write a YAML connection. Done. No code, no build, no restart needed.
 
-**WASM plugin** — Implement `provider.wit`, compile to `.wasm`, install with `vkdg plugin install`. Any language. No VKDG rebuild. The right choice for community providers and private integrations.
+**WASM plugin** — write an adapter in any language that compiles to `wasm32-wasip2`. Implements the `provider.wit` interface. Install with `vkdg plugin install`. Runs sandboxed (no filesystem access, no outbound calls — the gateway owns the HTTP client). The right choice for:
+- Private/internal APIs
+- Providers with proprietary protocols
+- Community contributions without a VKDG rebuild
 
-**Contribute to `plugins/`** — Submit a Rust crate to `plugins/providers/` in the VKDG repo. Gets compiled into the binary and shipped with VKDG. The right choice for widely-used providers that warrant first-party support.
+**Rust crate** — add a Rust crate to `plugins/providers/` in the VKDG repo. Gets compiled into the binary and ships with VKDG. The right choice for widely-used providers that warrant first-party support and maintenance.
 
-Full details on all three paths: [adding-a-provider.md](../sdk/adding-a-provider.md).
+→ Full guide: [adding-a-provider.md](../sdk/adding-a-provider.md)
 
 ---
 
 ## Community providers
 
-The [plugin registry](./registry.md) lists community-maintained provider plugins. Install any of them with:
+The [plugin registry](./registry.md) lists community-maintained provider plugins. If a provider isn't in the official list and isn't OpenAI-compat, it might already exist as a community plugin:
 
 ```bash
+vkdg plugin search <provider-name>
 vkdg plugin install <name>
 ```
 
-If you've built a provider plugin, submit it to the registry — see [registry.md](./registry.md) for the manifest format and PR process.
+If you've built a provider adapter, submit it to the registry — it takes one YAML manifest file and a PR.
 
 ---
 
-## Provider config reference
+## The bigger picture
 
-All fields for a connection entry in `vkdg.yaml`:
+VKDG ships adapters for the providers we actually use and can maintain. The list will grow, but it will always be curated — we'd rather have 20 adapters that work correctly than 200 that might be stale.
 
-```yaml
-connections:
-  - id: string            # unique; referenced in routes.targets[]
-    provider: string      # official provider ID, or installed plugin name
-    base_url: string      # override the provider's default URL (optional)
-    auth:
-      type: api_key | oauth2
-      env_var: string     # api_key only: name of the env var holding the key
-    models: [string]      # glob patterns this connection serves, e.g. "claude-*"
-    max_concurrent: int   # max parallel in-flight requests (default: 100)
-    weight: int           # for weighted load balancing across connections (default: 1)
-    tags: [string]        # for tag-based routing rules
-    capabilities:         # override auto-detected capabilities
-      vision: bool
-      tools: bool
-      streaming: bool
-```
+The design is explicitly modular: the provider list is not hard-coded into the core. Every official provider is a separate Rust crate in `plugins/providers/`. Adding one doesn't change any core routing, admission, or streaming logic.
 
-`models` is used by the router to match incoming model names to connections. Globs are supported (`claude-*`, `gpt-4*`, `*`). A connection with `models: ["*"]` is a catch-all fallback.
+If you need a provider that isn't here:
+- OpenAI-compat endpoint? Config-only, works now.
+- Custom protocol? WASM plugin, no VKDG rebuild.
+- Widely used and want to contribute? PR to `plugins/providers/`.
 
-`weight` only applies when multiple connections match the same request — higher weight means more traffic. A connection with `weight: 2` gets twice the requests of one with `weight: 1`.
-
-`capabilities` is optional. VKDG auto-detects capabilities for official providers. Override it if you're using a custom endpoint that doesn't support everything the provider usually does (or supports more than VKDG knows about).
+The registry tracks what the community builds. The core stays minimal.

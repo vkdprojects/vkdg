@@ -39,6 +39,9 @@ members = [
     "plugins/providers/kimi-coding",
     "plugins/providers/antigravity",
     "plugins/providers/github-copilot",
+    "plugins/providers/sambanova",
+    "plugins/providers/cerebras",
+    "plugins/providers/nvidia-nim",
     "bench",
 ]
 [workspace.package]
@@ -145,8 +148,11 @@ vkdg-provider-claude-code  = { path = "plugins/providers/claude-code" }
 vkdg-provider-codex     = { path = "plugins/providers/codex" }
 vkdg-provider-kiro      = { path = "plugins/providers/kiro" }
 vkdg-provider-kimi-coding  = { path = "plugins/providers/kimi-coding" }
-vkdg-provider-antigravity  = { path = "plugins/providers/antigravity" }
+vkdg-provider-antigravity   = { path = "plugins/providers/antigravity" }
 vkdg-provider-github-copilot = { path = "plugins/providers/github-copilot" }
+vkdg-provider-sambanova      = { path = "plugins/providers/sambanova" }
+vkdg-provider-cerebras       = { path = "plugins/providers/cerebras" }
+vkdg-provider-nvidia-nim     = { path = "plugins/providers/nvidia-nim" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }

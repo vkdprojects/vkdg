@@ -17,6 +17,7 @@ use vkdg_observe::{init_tracing, DecisionRecordExporter, ObserveConfig};
 use vkdg_operations::CapabilitySet;
 use vkdg_provider_anthropic::AnthropicAdapter;
 use vkdg_provider_antigravity::AntigravityAdapter;
+use vkdg_provider_cerebras::provider as cerebras_provider;
 use vkdg_provider_claude_code::ClaudeCodeAdapter;
 use vkdg_provider_codex::CodexAdapter;
 use vkdg_provider_deepseek::provider as deepseek_provider;
@@ -27,7 +28,9 @@ use vkdg_provider_groq::provider as groq_provider;
 use vkdg_provider_kimi_coding::KimiCodingAdapter;
 use vkdg_provider_kiro::KiroAdapter;
 use vkdg_provider_mistral::provider as mistral_provider;
+use vkdg_provider_nvidia_nim::provider as nvidia_nim_provider;
 use vkdg_provider_openai::OpenAIAdapter;
+use vkdg_provider_sambanova::provider as sambanova_provider;
 use vkdg_provider_sdk::ProviderRegistry;
 use vkdg_provider_together::provider as together_provider;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
@@ -538,6 +541,9 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
     r.register(Arc::new(KimiCodingAdapter));
     r.register(Arc::new(AntigravityAdapter));
     r.register(Arc::new(GitHubCopilotAdapter));
+    r.register(Arc::new(sambanova_provider()));
+    r.register(Arc::new(cerebras_provider()));
+    r.register(Arc::new(nvidia_nim_provider()));
     Arc::new(r)
 }
 

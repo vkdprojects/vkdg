@@ -16,7 +16,13 @@
 
 ---
 
+**Gateway startup:**
+
 ![VKDG terminal startup banner showing the gateway URL and bootstrap token](assets/demo.gif)
+
+**First-time setup wizard (`vkdg setup`):**
+
+![VKDG setup wizard](assets/demo-setup.gif)
 
 ---
 
@@ -27,15 +33,20 @@ One 13MB binary. No Node, no Python, no Docker required. Run it on a $4/month VP
 ## Quick start
 
 ```bash
-# macOS / Linux — download the latest release
+# Download and install
 curl -fsSL https://raw.githubusercontent.com/vkdprojects/vkdg/main/install.sh | sh
 
 # Or build from source
-git clone https://github.com/vkdprojects/vkdg
-cd vkdg && just build
+git clone https://github.com/vkdprojects/vkdg && cd vkdg && just build
 ```
 
-Start it:
+Connect your first provider:
+
+```bash
+vkdg setup  # interactive wizard — picks provider, writes config, tests connection
+```
+
+Or start directly with an API key:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -94,6 +105,9 @@ Built in:
 | Mistral | Antigravity (Google Cloud Code) |
 | Together AI | |
 | Fireworks AI | |
+| SambaNova (free tier) | |
+| Cerebras (free tier) | |
+| NVIDIA NIM (free tier) | |
 
 Any OpenAI-compatible endpoint also works as a connection — Ollama, vLLM, LM Studio, custom deployments.
 

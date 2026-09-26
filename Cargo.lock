@@ -4149,6 +4149,7 @@ dependencies = [
  "vkdg-operations",
  "vkdg-provider-anthropic",
  "vkdg-provider-antigravity",
+ "vkdg-provider-cerebras",
  "vkdg-provider-claude-code",
  "vkdg-provider-codex",
  "vkdg-provider-deepseek",
@@ -4159,7 +4160,9 @@ dependencies = [
  "vkdg-provider-kimi-coding",
  "vkdg-provider-kiro",
  "vkdg-provider-mistral",
+ "vkdg-provider-nvidia-nim",
  "vkdg-provider-openai",
+ "vkdg-provider-sambanova",
  "vkdg-provider-sdk",
  "vkdg-provider-together",
  "vkdg-routing",
@@ -4482,6 +4485,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vkdg-provider-cerebras"
+version = "0.1.0"
+dependencies = [
+ "vkdg-provider-sdk",
+]
+
+[[package]]
 name = "vkdg-provider-claude-code"
 version = "0.1.0"
 dependencies = [
@@ -4584,6 +4594,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "vkdg-provider-nvidia-nim"
+version = "0.1.0"
+dependencies = [
+ "vkdg-provider-sdk",
+]
+
+[[package]]
 name = "vkdg-provider-openai"
 version = "0.1.0"
 dependencies = [
@@ -4595,6 +4612,13 @@ dependencies = [
  "vkdg-connections",
  "vkdg-core",
  "vkdg-operations",
+ "vkdg-provider-sdk",
+]
+
+[[package]]
+name = "vkdg-provider-sambanova"
+version = "0.1.0"
+dependencies = [
  "vkdg-provider-sdk",
 ]
 

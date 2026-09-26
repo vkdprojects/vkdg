@@ -61,6 +61,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         provider_adapter: Arc::new(AnthropicAdapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     })
 }
 

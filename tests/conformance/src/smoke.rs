@@ -57,6 +57,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         provider_adapter: Arc::new(AnthropicAdapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     })
 }
 
@@ -349,6 +350,7 @@ where
         provider_adapter: Arc::new(adapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     })
 }
 
@@ -403,6 +405,7 @@ where
         provider_adapter: Arc::new(adapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     })
 }
 

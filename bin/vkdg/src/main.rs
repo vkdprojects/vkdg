@@ -166,6 +166,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         provider_adapter: Arc::new(AnthropicAdapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     }
 }
 
@@ -209,5 +210,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         provider_adapter: Arc::new(AnthropicAdapter),
         cache: None,
         combo_resolver: None,
+        compressor: None,
     })
 }

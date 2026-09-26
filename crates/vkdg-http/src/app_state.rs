@@ -10,6 +10,7 @@ use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
 use vkdg_cache::CacheBackend;
 use vkdg_combos::ComboResolver;
+use vkdg_policy_compress::Compressor;
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
 /// injected into AppState; optional so unit tests that only exercise admission
@@ -26,6 +27,8 @@ pub struct PipelineState {
     pub cache: Option<Arc<dyn CacheBackend>>,
     /// Optional combo resolver.  None = no combo expansion for this pipeline.
     pub combo_resolver: Option<Arc<ComboResolver>>,
+    /// Optional compressor.  None = compression disabled for this pipeline.
+    pub compressor: Option<Arc<dyn Compressor>>,
 }
 
 #[derive(Clone)]

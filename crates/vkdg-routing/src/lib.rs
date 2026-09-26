@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use vkdg_core::{ConnectionId, ExcludedCandidate, RequestEnvelope, Result, VkdgError};
+pub mod scorer;
+pub use scorer::{CandidateSignals, ScoringWeights, rank_candidates};
 
 // ── Newtypes ──────────────────────────────────────────────────────────────────
 
@@ -39,6 +41,9 @@ pub enum StrategyKind {
     PowerOfTwoChoices,
     FallbackChain,
     LastKnownGood,
+    /// Multi-factor scored strategy.
+    /// mode_pack: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
+    Scored { mode_pack: String },
 }
 
 // ── Route config ──────────────────────────────────────────────────────────────

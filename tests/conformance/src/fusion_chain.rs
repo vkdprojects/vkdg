@@ -20,6 +20,8 @@ use vkdg_operations::{
     CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
 };
 use vkdg_provider_anthropic::AnthropicAdapter;
+use vkdg_provider_openai::OpenAIAdapter;
+use vkdg_provider_sdk::ProviderRegistry;
 use vkdg_routing::{
     ChainStep, InjectMode, PluginHooks, RouteConfig, RouteId, Router, StrategyKind,
 };
@@ -108,7 +110,12 @@ fn make_two_connection_pipeline(
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(AnthropicAdapter),
+        {
+            let mut r = ProviderRegistry::empty();
+            r.register(Arc::new(AnthropicAdapter));
+            r.register(Arc::new(OpenAIAdapter));
+            Arc::new(r)
+        },
     ))
 }
 

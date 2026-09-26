@@ -27,6 +27,7 @@ reqwest = { workspace = true }
 http-body = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
 vkdg-provider-openai = { workspace = true }
+vkdg-provider-sdk = { workspace = true }
 
 [lints]
 workspace = true

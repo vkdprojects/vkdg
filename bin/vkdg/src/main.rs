@@ -16,6 +16,20 @@ use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_observe::{init_tracing, DecisionRecordExporter, ObserveConfig};
 use vkdg_operations::CapabilitySet;
 use vkdg_provider_anthropic::AnthropicAdapter;
+use vkdg_provider_antigravity::AntigravityAdapter;
+use vkdg_provider_claude_code::ClaudeCodeAdapter;
+use vkdg_provider_codex::CodexAdapter;
+use vkdg_provider_deepseek::provider as deepseek_provider;
+use vkdg_provider_fireworks::provider as fireworks_provider;
+use vkdg_provider_gemini::provider as gemini_provider;
+use vkdg_provider_github_copilot::GitHubCopilotAdapter;
+use vkdg_provider_groq::provider as groq_provider;
+use vkdg_provider_kimi_coding::KimiCodingAdapter;
+use vkdg_provider_kiro::KiroAdapter;
+use vkdg_provider_mistral::provider as mistral_provider;
+use vkdg_provider_openai::OpenAIAdapter;
+use vkdg_provider_sdk::ProviderRegistry;
+use vkdg_provider_together::provider as together_provider;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -240,7 +254,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         credentials: Arc::new(CredentialManager::new()),
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(AnthropicAdapter),
+        provider_registry: build_provider_registry(),
         cache: None,
         combo_resolver: None,
         compressor: None,
@@ -295,7 +309,7 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         credentials: Arc::new(CredentialManager::new()),
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(AnthropicAdapter),
+        provider_registry: build_provider_registry(),
         cache: None,
         combo_resolver: None,
         compressor: None,
@@ -309,4 +323,23 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         eval_enabled: false,
         relay_enabled: false,
     })
+}
+
+fn build_provider_registry() -> Arc<ProviderRegistry> {
+    let mut r = ProviderRegistry::empty();
+    r.register(Arc::new(AnthropicAdapter));
+    r.register(Arc::new(OpenAIAdapter));
+    r.register(Arc::new(gemini_provider()));
+    r.register(Arc::new(groq_provider()));
+    r.register(Arc::new(together_provider()));
+    r.register(Arc::new(fireworks_provider()));
+    r.register(Arc::new(deepseek_provider()));
+    r.register(Arc::new(mistral_provider()));
+    r.register(Arc::new(ClaudeCodeAdapter));
+    r.register(Arc::new(CodexAdapter));
+    r.register(Arc::new(KiroAdapter));
+    r.register(Arc::new(KimiCodingAdapter));
+    r.register(Arc::new(AntigravityAdapter));
+    r.register(Arc::new(GitHubCopilotAdapter));
+    Arc::new(r)
 }

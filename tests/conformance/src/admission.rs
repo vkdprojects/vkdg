@@ -21,6 +21,7 @@ use vkdg_operations::{
     CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
 };
 use vkdg_provider_anthropic::AnthropicAdapter;
+use vkdg_provider_sdk::ProviderRegistry;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
 
 /// Build a router wired to the real ingress handler, with a real pipeline
@@ -55,7 +56,11 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
         credentials: Arc::new(CredentialManager::new()),
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(AnthropicAdapter),
+        provider_registry: {
+            let mut r = ProviderRegistry::empty();
+            r.register(std::sync::Arc::new(AnthropicAdapter));
+            std::sync::Arc::new(r)
+        },
         cache: None,
         combo_resolver: None,
         compressor: None,
@@ -172,7 +177,11 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(AnthropicAdapter),
+        {
+            let mut r = ProviderRegistry::empty();
+            r.register(Arc::new(AnthropicAdapter));
+            Arc::new(r)
+        },
     );
     // Allowlist contains only "10.0.0.1"; any other IP is blocked.
     pipeline.ip_policy = Some(Arc::new(IpPolicy {

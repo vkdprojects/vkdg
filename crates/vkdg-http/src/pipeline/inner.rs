@@ -272,7 +272,7 @@ pub(super) async fn run_pipeline_inner(
             .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
     }
     // 5. Prepare operation (compression + system prompt + memory injection) ────
-    let (op, _compress_metrics) = prepare_operation(
+    let (op, compress_metrics) = prepare_operation(
         pipeline,
         operation,
         &ctx.envelope,
@@ -337,8 +337,16 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // 8. Build upstream request via provider adapter ───────────────────────────
-    let prepared = pipeline
-        .provider_adapter
+    let adapter = pipeline
+        .provider_registry
+        .get(config.provider.adapter_id())
+        .ok_or_else(|| {
+            VkdgError::Internal(format!(
+                "no provider adapter registered for '{}'",
+                config.provider.adapter_id()
+            ))
+        })?;
+    let prepared = adapter
         .prepare(&operation, &config, &token)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
@@ -399,9 +407,18 @@ pub(super) async fn run_pipeline_inner(
             complete_body = Some(body.clone());
             let status_code =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
-            axum::response::Response::builder()
+            let mut builder = axum::response::Response::builder()
                 .status(status_code)
-                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(m) = &compress_metrics {
+                if m.estimated_tokens_removed > 0 {
+                    builder = builder.header(
+                        "x-vkdg-tokens-saved",
+                        m.estimated_tokens_removed.to_string(),
+                    );
+                }
+            }
+            builder
                 .body(axum::body::Body::from(body))
                 .unwrap_or_else(|_| {
                     error_response(VkdgError::Internal("response builder failed".into()))
@@ -418,12 +435,21 @@ pub(super) async fn run_pipeline_inner(
             // Guard: if upstream closes before [DONE], inject error event so
             // clients can detect the incomplete response (instead of silent 200).
             let guarded_body = crate::with_termination_guard(filtered_body);
-            axum::response::Response::builder()
+            let mut builder = axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
-                .header("x-vkdg-stream-guard", "active")
+                .header("x-vkdg-stream-guard", "active");
+            if let Some(m) = &compress_metrics {
+                if m.estimated_tokens_removed > 0 {
+                    builder = builder.header(
+                        "x-vkdg-tokens-saved",
+                        m.estimated_tokens_removed.to_string(),
+                    );
+                }
+            }
+            builder
                 .body(axum::body::Body::from_stream(guarded_body))
                 .unwrap_or_else(|_| {
                     error_response(VkdgError::Internal(
@@ -511,8 +537,16 @@ async fn fusion_one_target(
 
     let token = pipeline.credentials.get_token(&config).await?;
 
-    let prepared = pipeline
-        .provider_adapter
+    let adapter = pipeline
+        .provider_registry
+        .get(config.provider.adapter_id())
+        .ok_or_else(|| {
+            VkdgError::Internal(format!(
+                "no provider adapter registered for '{}'",
+                config.provider.adapter_id()
+            ))
+        })?;
+    let prepared = adapter
         .prepare(&operation, &config, &token)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
@@ -715,11 +749,13 @@ mod tests {
     use crate::provider::{PreparedRequest, ProviderAdapter};
     use crate::upstream::HttpClient;
     use crate::{AdmissionGuard, PipelineState};
+    use vkdg_provider_sdk::ProviderRegistry;
 
     struct StubAdapter;
     impl ProviderAdapter for StubAdapter {
         fn id(&self) -> &str {
-            "stub"
+            // Registered under "openai" so Custom connections (adapter_id() = "openai") resolve it.
+            "openai"
         }
         fn display_name(&self) -> &str {
             "Stub"
@@ -735,6 +771,8 @@ mod tests {
     }
 
     fn make_pipeline(admission_limit: usize) -> Arc<PipelineState> {
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
         Arc::new(PipelineState::minimal(
             Arc::new(AdmissionGuard::new(admission_limit)),
             Arc::new(VkdgRouter::new(vec![])),
@@ -742,7 +780,7 @@ mod tests {
             Arc::new(CredentialManager::new()),
             Arc::new(HttpClient::new()),
             Arc::new(DecisionRecordExporter::new()),
-            Arc::new(StubAdapter),
+            Arc::new(r),
         ))
     }
 
@@ -859,6 +897,8 @@ mod tests {
     #[tokio::test]
     async fn pipeline_with_compressor_threshold_not_met_skips_compression() {
         use vkdg_policy_compress::CavemanCompressor;
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
         let mut state = PipelineState::minimal(
             Arc::new(AdmissionGuard::new(100)),
             Arc::new(VkdgRouter::new(vec![])),
@@ -866,7 +906,7 @@ mod tests {
             Arc::new(CredentialManager::new()),
             Arc::new(HttpClient::new()),
             Arc::new(DecisionRecordExporter::new()),
-            Arc::new(StubAdapter),
+            Arc::new(r),
         );
         state.compressor = Some(Arc::new(CavemanCompressor));
         let pipeline = Arc::new(state);
@@ -914,6 +954,8 @@ mod tests {
             budget: None,
             mode_pack: None,
         };
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
         let mut state = PipelineState::minimal(
             Arc::new(AdmissionGuard::new(100)),
             Arc::new(VkdgRouter::new(vec![])),
@@ -921,7 +963,7 @@ mod tests {
             Arc::new(CredentialManager::new()),
             Arc::new(HttpClient::new()),
             Arc::new(DecisionRecordExporter::new()),
-            Arc::new(StubAdapter),
+            Arc::new(r),
         );
         state.combo_resolver = Some(Arc::new(ComboResolver::new(vec![combo])));
         state.compressor = Some(Arc::new(CavemanCompressor));
@@ -987,6 +1029,8 @@ mod tests {
             }),
             mode_pack: None,
         };
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
         let mut state = PipelineState::minimal(
             Arc::new(AdmissionGuard::new(100)),
             Arc::new(VkdgRouter::new(vec![])),
@@ -994,7 +1038,7 @@ mod tests {
             Arc::new(CredentialManager::new()),
             Arc::new(HttpClient::new()),
             Arc::new(DecisionRecordExporter::new()),
-            Arc::new(StubAdapter),
+            Arc::new(r),
         );
         state.combo_resolver = Some(Arc::new(ComboResolver::new(vec![combo])));
         let pipeline = Arc::new(state);
@@ -1058,6 +1102,8 @@ mod tests {
             plugin_hooks: Default::default(),
         };
 
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
         let pipeline = Arc::new(PipelineState::minimal(
             Arc::new(AdmissionGuard::new(100)),
             Arc::new(VkdgRouter::new(vec![route])),
@@ -1065,7 +1111,7 @@ mod tests {
             Arc::new(CredentialManager::new()),
             Arc::new(HttpClient::new()),
             Arc::new(DecisionRecordExporter::new()),
-            Arc::new(StubAdapter),
+            Arc::new(r),
         ));
 
         let ctx = make_ctx("stub-model");

@@ -26,6 +26,14 @@ use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
 use crate::fake_upstream::{FakeUpstream, FakeUpstreamBehavior};
 use vkdg_provider_anthropic::AnthropicAdapter;
 use vkdg_provider_openai::OpenAIAdapter;
+use vkdg_provider_sdk::ProviderRegistry;
+
+fn test_registry() -> Arc<ProviderRegistry> {
+    let mut r = ProviderRegistry::empty();
+    r.register(Arc::new(AnthropicAdapter));
+    r.register(Arc::new(OpenAIAdapter));
+    Arc::new(r)
+}
 
 fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> {
     let conn_id = ConnectionId("fake".into());
@@ -55,7 +63,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(AnthropicAdapter),
+        test_registry(),
     ))
 }
 
@@ -371,10 +379,11 @@ async fn pipeline_cancellation_releases_on_drop() {
 // ── OpenAI path smoke tests ───────────────────────────────────────────────────
 
 /// Helper: build a pipeline using a custom adapter and a single connection.
-fn make_pipeline_with<A>(base_url: String, adapter: A, model_pattern: &str) -> Arc<PipelineState>
-where
-    A: vkdg_http::provider::ProviderAdapter + 'static,
-{
+fn make_pipeline_with<A: vkdg_http::provider::ProviderAdapter + 'static>(
+    base_url: String,
+    _adapter: A,
+    model_pattern: &str,
+) -> Arc<PipelineState> {
     let conn_id = ConnectionId("fake".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
@@ -402,22 +411,19 @@ where
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(adapter),
+        test_registry(),
     ))
 }
 
 /// Helper: build a pipeline with two connections using the same adapter.
 /// First connection is at `first_url`, second at `second_url`.
 /// The router uses RoundRobin; exclusion makes it fall through to the second on retry.
-fn make_pipeline_two_connections<A>(
+fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'static>(
     first_url: String,
     second_url: String,
-    adapter: A,
+    _adapter: A,
     model_pattern: &str,
-) -> Arc<PipelineState>
-where
-    A: vkdg_http::provider::ProviderAdapter + 'static,
-{
+) -> Arc<PipelineState> {
     let id1 = ConnectionId("conn-1".into());
     let id2 = ConnectionId("conn-2".into());
     let cfg1 = ConnectionConfig {
@@ -462,7 +468,7 @@ where
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(adapter),
+        test_registry(),
     ))
 }
 
@@ -602,7 +608,7 @@ async fn session_stickiness_stale_pin_falls_through_to_routing() {
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(AnthropicAdapter),
+        test_registry(),
     );
     // SessionRegistry::new() already returns Arc<Self>; no extra wrapping needed.
     pipeline.session_registry = Some(registry);
@@ -674,7 +680,7 @@ async fn auto_routing_zero_config_routes_without_explicit_route() {
         Arc::new(CredentialManager::new()),
         Arc::new(HttpClient::new()),
         Arc::new(DecisionRecordExporter::new()),
-        Arc::new(AnthropicAdapter),
+        test_registry(),
     ));
 
     let (ctx, op) = make_ctx("claude-3-5-haiku-20241022");

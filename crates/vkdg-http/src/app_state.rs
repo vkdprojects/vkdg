@@ -9,12 +9,12 @@ use vkdg_routing::Router as VkdgRouter;
 use crate::admission::{AdmissionGuard, IpPolicy};
 use crate::dedup::DedupTable;
 use crate::frontdoor::{FrontDoor, ServerConfig};
-use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
 use vkdg_cache::CacheBackend;
 use vkdg_combos::ComboResolver;
 use vkdg_memory::MemoryStore;
 use vkdg_policy_compress::Compressor;
+use vkdg_provider_sdk::ProviderRegistry;
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
 /// injected into AppState; optional so unit tests that only exercise admission
@@ -26,7 +26,7 @@ pub struct PipelineState {
     pub credentials: Arc<CredentialManager>,
     pub http_client: Arc<HttpClient>,
     pub exporter: Arc<DecisionRecordExporter>,
-    pub provider_adapter: Arc<dyn ProviderAdapter>,
+    pub provider_registry: Arc<ProviderRegistry>,
     /// Optional cache backend.  None = cache disabled for this pipeline.
     pub cache: Option<Arc<dyn CacheBackend>>,
     /// Optional combo resolver.  None = no combo expansion for this pipeline.
@@ -65,7 +65,7 @@ impl PipelineState {
         credentials: Arc<CredentialManager>,
         http_client: Arc<HttpClient>,
         exporter: Arc<DecisionRecordExporter>,
-        provider_adapter: Arc<dyn ProviderAdapter>,
+        provider_registry: Arc<ProviderRegistry>,
     ) -> Self {
         Self {
             admission,
@@ -74,7 +74,7 @@ impl PipelineState {
             credentials,
             http_client,
             exporter,
-            provider_adapter,
+            provider_registry,
             cache: None,
             combo_resolver: None,
             compressor: None,

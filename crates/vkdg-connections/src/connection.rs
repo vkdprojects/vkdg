@@ -25,6 +25,17 @@ impl ProviderKind {
             ProviderKind::Custom { base_url } => base_url.as_str(),
         }
     }
+
+    /// Returns the registry key used to look up a [`ProviderAdapter`] for this kind.
+    /// `Custom` connections use the OpenAI-compatible adapter by default.
+    pub fn adapter_id(&self) -> &str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAI => "openai",
+            ProviderKind::Google => "google",
+            ProviderKind::Custom { .. } => "openai",
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderKind {

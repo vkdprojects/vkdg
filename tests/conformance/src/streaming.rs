@@ -29,6 +29,8 @@ use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
 
 use crate::fake_upstream::{FakeUpstream, FakeUpstreamBehavior};
 use vkdg_provider_anthropic::AnthropicAdapter;
+use vkdg_provider_openai::OpenAIAdapter;
+use vkdg_provider_sdk::ProviderRegistry;
 
 // ── Shared helpers for pipeline tests ─────────────────────────────────────────
 
@@ -60,7 +62,12 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         credentials: Arc::new(CredentialManager::new()),
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(AnthropicAdapter),
+        provider_registry: {
+            let mut r = ProviderRegistry::empty();
+            r.register(Arc::new(AnthropicAdapter));
+            r.register(Arc::new(OpenAIAdapter));
+            Arc::new(r)
+        },
         cache: None,
         combo_resolver: None,
         compressor: None,

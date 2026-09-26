@@ -132,7 +132,7 @@ mod tests {
     fn new_starts_at_received_with_one_transition() {
         let ctx = PipelineCtx::new(make_envelope());
         assert_eq!(ctx.state, AttemptState::Received);
-        assert_eq!(ctx.committed, false);
+        assert!(!ctx.committed);
         assert_eq!(
             ctx.transitions.len(),
             1,

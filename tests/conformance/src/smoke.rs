@@ -5,16 +5,12 @@
 // Plausible wrong impl defeated: pipeline never reaches upstream (returns error first),
 // or upstream is called but the response is dropped or corrupted.
 
-use axum::response::IntoResponse;
-use bytes::Bytes;
 use std::sync::Arc;
 use vkdg_connections::{
     AuthKind, Connection, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
 use vkdg_core::pipeline::PipelineCtx;
-use vkdg_core::{
-    ApiType, AttemptState, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId,
-};
+use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::upstream::HttpClient;
 use vkdg_http::{AdmissionGuard, PipelineState};

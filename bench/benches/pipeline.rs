@@ -78,11 +78,22 @@ fn bench_admission_routing(c: &mut Criterion) {
         api_type: ApiType::AnthropicMessages,
         model_requested: "claude-3-5-haiku-20241022".into(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
+        client_ip: None,
     };
 
     c.bench_function("admission_routing", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = router.route(&envelope, &EligibilityFilter::default()).await;
+            let result = router
+                .route(
+                    &envelope,
+                    &EligibilityFilter::default(),
+                    &vkdg_routing::RoutingHints::default(),
+                )
+                .await;
             criterion::black_box(result)
         })
     });

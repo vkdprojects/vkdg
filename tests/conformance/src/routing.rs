@@ -5,10 +5,7 @@
 // Most PASS — routing is implemented in Phase A.
 
 use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId, VkdgError};
-use vkdg_routing::{
-    ConnectionWeight, EligibilityFilter, FallbackChainStrategy, RoundRobinStrategy, RouteConfig,
-    RouteId, Router, RoutingHints, Strategy, StrategyKind,
-};
+use vkdg_routing::{EligibilityFilter, RouteConfig, RouteId, Router, RoutingHints, StrategyKind};
 
 fn make_envelope(model: &str) -> RequestEnvelope {
     RequestEnvelope {

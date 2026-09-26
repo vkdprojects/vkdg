@@ -16,7 +16,7 @@ use vkdg_connections::{
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
 use vkdg_http::pipeline::run_conversation_pipeline;
-use vkdg_http::sse::{SseEvent, SseParser};
+use vkdg_http::sse::SseParser;
 use vkdg_http::upstream::HttpClient;
 use vkdg_http::{AdmissionGuard, PipelineState};
 use vkdg_ingress_anthropic::encode_event;

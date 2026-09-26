@@ -344,12 +344,9 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use vkdg_connections::{
-        AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
-    };
+    use vkdg_connections::{ConnectionCatalog, CredentialManager};
     use vkdg_core::{
-        pipeline::PipelineCtx, ApiType, AttemptState, ClientId, ConnectionId, RequestEnvelope,
-        RequestId, TenantId,
+        pipeline::PipelineCtx, ApiType, ClientId, RequestEnvelope, RequestId, TenantId,
     };
     use vkdg_observe::DecisionRecordExporter;
     use vkdg_operations::{CapabilitySet, ConversationRequest, Operation};

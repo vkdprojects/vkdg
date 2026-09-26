@@ -199,7 +199,7 @@ impl Compressor for RtkCompressor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vkdg_operations::{CapabilitySet, ContentBlock, Message, MessageContent, Role, Tool};
+    use vkdg_operations::{CapabilitySet, ContentBlock, Message, MessageContent, Role};
 
     fn tool_result_req(content: &str) -> ConversationRequest {
         ConversationRequest {

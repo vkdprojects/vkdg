@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::{extract::State, response::IntoResponse, routing::post, Router};
-use bytes::Bytes;
 use http::StatusCode;
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -19,6 +18,9 @@ use tokio::net::TcpListener;
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 /// What the fake upstream returns for any incoming request.
+// ConnectionReset and OpenAI429 are infrastructure variants — available for tests
+// that need them but not constructed in the current suite.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum FakeUpstreamBehavior {
     /// Return a static JSON body with the given status.

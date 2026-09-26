@@ -259,6 +259,8 @@ async fn serve(
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
 
+    let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
+
     let pipeline = if let Some(path) = &config_path {
         match load_and_validate(path, 1) {
             Ok(snap) => {
@@ -266,6 +268,7 @@ async fn serve(
                 let pipeline = build_pipeline_from_snapshot(&snap, max_concurrent);
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
+                admin_config_rx = Some(tx.subscribe());
                 drop(vkdg_config::watch(path.clone(), tx, 1));
                 Some(pipeline)
             }
@@ -320,8 +323,10 @@ async fn serve(
             }
         }
     };
-    let dummy_snap = vkdg_config::ConfigSnapshot::default_empty();
-    let (_config_tx, config_rx) = vkdg_config::config_channel(dummy_snap);
+    let config_rx = admin_config_rx.unwrap_or_else(|| {
+        let (_tx, rx) = vkdg_config::config_channel(vkdg_config::ConfigSnapshot::default_empty());
+        rx
+    });
     let admin_state = vkdg_admin::AdminState {
         sessions: vkdg_admin::session::SessionStore::new(bootstrap_token),
         config_rx,

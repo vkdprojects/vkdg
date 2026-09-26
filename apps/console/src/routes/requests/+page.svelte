@@ -1,13 +1,47 @@
 <script lang="ts">
-  import type { PageData, ActionData } from './$types';
-  import { Badge, EmptyState } from '$lib/components/index.js';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { RequestSummary } from '$lib/api.js';
+  import { Badge, EmptyState, Spinner } from '$lib/components/index.js';
+  import { toast } from 'svelte-sonner';
 
-  let { data, form }: { data: PageData; form: ActionData } = $props();
+  let requests = $state<RequestSummary[]>([]);
+  let loading = $state(true);
+  let searchId = $state('');
+  let searching = $state(false);
+  let searchError = $state('');
+  let detail = $state<RequestSummary | null>(null);
 
-  function fmtDuration(ms: number | null): string {
-    if (ms === null) return 'pending';
+  function fmtDuration(ms: number | null | undefined): string {
+    if (ms === null || ms === undefined) return 'pending';
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(2)}s`;
+  }
+
+  onMount(async () => {
+    try {
+      const res = await api.listRequests(50);
+      requests = res.items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loading = false;
+    }
+  });
+
+  async function search(e: Event) {
+    e.preventDefault();
+    if (!searchId.trim()) { searchError = 'Request ID is required'; return; }
+    searching = true;
+    searchError = '';
+    detail = null;
+    try {
+      detail = await api.getRequest(searchId.trim());
+    } catch (err) {
+      searchError = (err as Error).message;
+    } finally {
+      searching = false;
+    }
   }
 </script>
 
@@ -16,20 +50,20 @@
 
   <section aria-labelledby="search-heading">
     <h2 id="search-heading">Look up request</h2>
-    <form method="POST" action="?/search" class="search-form">
+    <form onsubmit={search} class="search-form">
       <label>
         Request ID
-        <input type="text" name="id" placeholder="req_..." />
+        <input type="text" bind:value={searchId} placeholder="req_..." />
       </label>
-      <button type="submit">Search</button>
+      <button type="submit" disabled={searching}>Search</button>
     </form>
 
-    {#if form?.error}
-      <p class="error-msg" role="alert">{form.error}</p>
+    {#if searchError}
+      <p class="error-msg" role="alert">{searchError}</p>
     {/if}
 
-    {#if form?.detail}
-      {@const d = form.detail}
+    {#if detail}
+      {@const d = detail}
       <div class="detail-card">
         <dl class="info-grid">
           <dt>Request ID</dt><dd class="mono">{d.request_id}</dd>
@@ -45,8 +79,10 @@
   </section>
 
   <section aria-labelledby="recent-heading">
-    <h2 id="recent-heading">Recent requests ({data.requests.length})</h2>
-    {#if data.requests.length === 0}
+    <h2 id="recent-heading">Recent requests ({requests.length})</h2>
+    {#if loading}
+      <div class="loading"><Spinner size="sm" /> Loading…</div>
+    {:else if requests.length === 0}
       <EmptyState title="No requests recorded yet." description="Requests will appear here once your gateway receives traffic." />
     {:else}
       <table>
@@ -60,7 +96,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each data.requests as r (r.request_id)}
+          {#each requests as r (r.request_id)}
             <tr>
               <td class="mono">{r.request_id}</td>
               <td>{r.model}</td>
@@ -76,6 +112,15 @@
 </div>
 
 <style>
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-3);
+    font-size: 0.875rem;
+    padding: 16px 0;
+  }
+
   .search-form {
     display: flex;
     gap: 0.75rem;
@@ -125,8 +170,19 @@
     white-space: nowrap;
   }
 
-  .search-form button:hover {
+  .search-form button:hover:not(:disabled) {
     background: var(--accent-hover);
+  }
+
+  .search-form button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .error-msg {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+    color: var(--danger);
   }
 
   .detail-card {
@@ -153,5 +209,10 @@
   dd {
     margin: 0;
     color: var(--text-2);
+  }
+
+  .mono {
+    font-family: monospace;
+    font-size: 0.8125rem;
   }
 </style>

@@ -1,44 +1,78 @@
 <script lang="ts">
-  import type { PageData, ActionData } from './$types';
-  import { EmptyState } from '$lib/components/index.js';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { RouteSummary, RoutePreview } from '$lib/api.js';
+  import { EmptyState, Spinner } from '$lib/components/index.js';
+  import { toast } from 'svelte-sonner';
 
-  let { data, form }: { data: PageData; form: ActionData } = $props();
+  let routes = $state<RouteSummary[]>([]);
+  let loading = $state(true);
+  let previewModel = $state('');
+  let previewing = $state(false);
+  let previewError = $state('');
+  let preview = $state<RoutePreview | null>(null);
+
+  onMount(async () => {
+    try {
+      const res = await api.listRoutes();
+      routes = res.items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loading = false;
+    }
+  });
+
+  async function doPreview(e: Event) {
+    e.preventDefault();
+    if (!previewModel.trim()) { previewError = 'Model is required'; return; }
+    previewing = true;
+    previewError = '';
+    preview = null;
+    try {
+      preview = await api.previewRoute(previewModel.trim());
+    } catch (err) {
+      previewError = (err as Error).message;
+    } finally {
+      previewing = false;
+    }
+  }
 </script>
 
 <div class="page">
-  <h1>Routes ({data.routes.length})</h1>
+  <h1>Routes ({routes.length})</h1>
 
   <section aria-labelledby="preview-heading">
     <h2 id="preview-heading">Preview routing for model</h2>
-    <form method="POST" action="?/preview" class="preview-form">
+    <form onsubmit={doPreview} class="preview-form">
       <label>
         Model name
-        <input type="text" name="model" placeholder="e.g. claude-3-5-sonnet-20241022" />
+        <input type="text" bind:value={previewModel} placeholder="e.g. claude-3-5-sonnet-20241022" />
       </label>
-      <button type="submit">Preview</button>
+      <button type="submit" disabled={previewing}>Preview</button>
     </form>
 
-    {#if form?.error}
-      <p class="error-msg" role="alert">{form.error}</p>
+    {#if previewError}
+      <p class="error-msg" role="alert">{previewError}</p>
     {/if}
 
-    {#if form?.preview}
+    {#if preview}
       <div class="preview-result">
-        <p><strong>Model:</strong> {form.preview.model}</p>
+        <p><strong>Model:</strong> {preview.model}</p>
         <p><strong>Eligible connections:</strong></p>
-        {#if form.preview.eligible_connections.length === 0}
+        {#if preview.eligible_connections.length === 0}
           <p class="muted">None</p>
         {:else}
           <ul>
-            {#each form.preview.eligible_connections as id}
+            {#each preview.eligible_connections as id}
               <li>{id}</li>
             {/each}
           </ul>
         {/if}
-        {#if form.preview.excluded_connections.length > 0}
+        {#if preview.excluded_connections.length > 0}
           <p><strong>Excluded:</strong></p>
           <ul>
-            {#each form.preview.excluded_connections as ex}
+            {#each preview.excluded_connections as ex}
               <li>{ex.id} — {ex.reason}</li>
             {/each}
           </ul>
@@ -49,7 +83,9 @@
 
   <section aria-labelledby="routes-heading">
     <h2 id="routes-heading">All routes</h2>
-    {#if data.routes.length === 0}
+    {#if loading}
+      <div class="loading"><Spinner size="sm" /> Loading…</div>
+    {:else if routes.length === 0}
       <EmptyState title="No routes configured." description="Routes define how models are matched to connection combos." />
     {:else}
       <table>
@@ -62,7 +98,7 @@
           </tr>
         </thead>
         <tbody>
-          {#each data.routes as r (r.id)}
+          {#each routes as r (r.id)}
             <tr>
               <td>{r.id}</td>
               <td>{r.strategy}</td>
@@ -77,6 +113,15 @@
 </div>
 
 <style>
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-3);
+    font-size: 0.875rem;
+    padding: 16px 0;
+  }
+
   .preview-form {
     display: flex;
     gap: 0.75rem;
@@ -125,8 +170,19 @@
     transition: background 0.1s;
   }
 
-  .preview-form button:hover {
+  .preview-form button:hover:not(:disabled) {
     background: var(--accent-hover);
+  }
+
+  .preview-form button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .error-msg {
+    margin-top: 8px;
+    font-size: 0.8125rem;
+    color: var(--danger);
   }
 
   .preview-result {

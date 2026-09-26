@@ -1,11 +1,18 @@
 <script lang="ts">
-  import type { PageData } from './$types';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { ConnectionSummary } from '$lib/api.js';
   import { Button, EmptyState, Spinner } from '$lib/components/index.js';
   import { SendHorizonal, ChevronDown, ChevronUp } from 'lucide-svelte';
+  import { toast } from 'svelte-sonner';
 
-  let { data }: { data: PageData } = $props();
+  const GATEWAY = import.meta.env.VITE_GATEWAY_URL ?? 'http://localhost:8080';
 
-  let selectedConnection = $state(data.connections[0]?.id ?? '');
+  let connections = $state<ConnectionSummary[]>([]);
+  let loadingConnections = $state(true);
+
+  let apiKey = $state('');
+  let selectedConnection = $state('');
   let model = $state('');
   let systemPrompt = $state('');
   let systemOpen = $state(false);
@@ -21,6 +28,18 @@
   let tokenCount = $state<number | null>(null);
   let hasResult = $state(false);
 
+  onMount(async () => {
+    try {
+      const res = await api.listConnections();
+      connections = res.items;
+      if (connections.length > 0) selectedConnection = connections[0].id;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loadingConnections = false;
+    }
+  });
+
   async function send() {
     if (!userMessage.trim()) return;
     sending = true;
@@ -33,8 +52,7 @@
 
     const start = Date.now();
     const body = {
-      connection_id: selectedConnection,
-      model: model.trim() || undefined,
+      model: model.trim() || 'default',
       messages: [
         ...(systemPrompt.trim() ? [{ role: 'system', content: systemPrompt }] : []),
         { role: 'user', content: userMessage },
@@ -43,11 +61,14 @@
       stream: useStreaming,
     };
 
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (apiKey.trim()) headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+
     let resp: Response;
     try {
-      resp = await fetch('/playground/chat', {
+      resp = await fetch(`${GATEWAY}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(body),
       });
     } catch (e) {
@@ -104,12 +125,26 @@
     <!-- Left: controls -->
     <aside class="controls">
       <div class="field-group">
-        <label for="connection">Connection</label>
-        {#if data.connections.length === 0}
-          <p class="hint">No connections available.</p>
+        <label for="api-key">API Key</label>
+        <input
+          id="api-key"
+          type="password"
+          bind:value={apiKey}
+          placeholder="vkdg_…"
+          autocomplete="off"
+        />
+        <p class="hint">Your VKDG API key. Leave blank if the gateway allows unauthenticated access.</p>
+      </div>
+
+      <div class="field-group">
+        <label for="connection">Connection <span class="optional">optional</span></label>
+        {#if loadingConnections}
+          <p class="hint"><Spinner size="sm" /> Loading…</p>
+        {:else if connections.length === 0}
+          <p class="hint">No connections configured.</p>
         {:else}
           <select id="connection" bind:value={selectedConnection}>
-            {#each data.connections as conn (conn.id)}
+            {#each connections as conn (conn.id)}
               <option value={conn.id}>{conn.id} ({conn.provider})</option>
             {/each}
           </select>
@@ -190,7 +225,7 @@
       <Button
         variant="primary"
         size="lg"
-        disabled={sending || !userMessage.trim() || data.connections.length === 0}
+        disabled={sending || !userMessage.trim()}
         onclick={send}
       >
         {#if sending}<Spinner size="sm" />{/if}
@@ -278,12 +313,50 @@
     font-size: 0.8125rem;
     color: var(--text-3);
     margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .optional {
     font-weight: 400;
     color: var(--text-3);
     font-size: 0.75rem;
+  }
+
+  .field-group label {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-2);
+  }
+
+  .field-group input[type="text"],
+  .field-group input[type="password"],
+  .field-group select,
+  .field-group textarea {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    font-size: 0.875rem;
+    padding: 0.4375rem 0.625rem;
+    transition: border-color 0.15s;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: inherit;
+    resize: vertical;
+  }
+
+  .field-group input:focus,
+  .field-group select:focus,
+  .field-group textarea:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  .field-group input::placeholder,
+  .field-group textarea::placeholder {
+    color: var(--text-3);
   }
 
   .collapse-toggle {

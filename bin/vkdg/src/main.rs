@@ -228,23 +228,18 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
         .route("/mcp", get(vkdg_http::mcp_discovery))
-        .nest_service(
-            "/",
-            axum_embed::ServeEmbed::<ConsoleAssets>::with_parameters(
-                Some("index.html".to_string()),
-                axum_embed::FallbackBehavior::Ok,
-                Some("index.html".to_string()),
-            ),
-        )
         .with_state(state);
 
     // ── Admin API on a separate port ───────────────────────────────────────────
     let admin_addr = std::env::var("VKDG_ADMIN_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".into());
-    let bootstrap_token = std::env::var("VKDG_BOOTSTRAP_TOKEN").unwrap_or_else(|_| {
-        let t = uuid::Uuid::new_v4().to_string();
-        println!("Bootstrap token (one-time): {t}");
-        t
-    });
+    let (bootstrap_token, auto_token): (String, Option<String>) =
+        match std::env::var("VKDG_BOOTSTRAP_TOKEN") {
+            Ok(t) => (t, None),
+            Err(_) => {
+                let t = uuid::Uuid::new_v4().to_string();
+                (t.clone(), Some(t))
+            }
+        };
     let dummy_snap = vkdg_config::ConfigSnapshot::default_empty();
     let (_config_tx, config_rx) = vkdg_config::config_channel(dummy_snap);
     let admin_state = vkdg_admin::AdminState {
@@ -256,7 +251,17 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         combo_resolver: None,
         catalog: admin_catalog,
     };
-    let admin_router = vkdg_admin::build_admin_router(admin_state);
+    // Console SPA served as fallback on the admin port (9090).
+    // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.
+    let admin_router =
+        vkdg_admin::build_admin_router(admin_state).fallback_service(axum_embed::ServeEmbed::<
+            ConsoleAssets,
+        >::with_parameters(
+            Some("index.html".to_string()),
+            axum_embed::FallbackBehavior::Ok,
+            Some("index.html".to_string()),
+        ));
+    let admin_addr_banner = admin_addr.clone();
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(&admin_addr)
             .await
@@ -265,10 +270,75 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         axum::serve(listener, admin_router).await.ok();
     });
 
-    println!("VKDG gateway listening on {listen}");
+    print_startup_banner(&listen, &admin_addr_banner, auto_token.as_deref());
     tracing::info!(addr = %listen, "vkdg starting");
 
     vkdg_http::serve(server_config, router).await
+}
+
+fn print_startup_banner(gateway_addr: &str, admin_addr: &str, auto_token: Option<&str>) {
+    use std::io::IsTerminal;
+
+    let color = std::env::var("NO_COLOR").is_err() && std::io::stdout().is_terminal();
+    let (teal, bold, dim, yellow, reset) = if color {
+        ("\x1b[36m", "\x1b[1m", "\x1b[2m", "\x1b[33m", "\x1b[0m")
+    } else {
+        ("", "", "", "", "")
+    };
+
+    fn normalize(addr: &str) -> String {
+        addr.replace("0.0.0.0:", "localhost:")
+            .replace("127.0.0.1:", "localhost:")
+    }
+
+    let gw = format!("http://{}", normalize(gateway_addr));
+    let con = format!("http://{}", normalize(admin_addr));
+
+    const W: usize = 54;
+    let top = format!("╔{}╗", "═".repeat(W));
+    let mid = format!("╠{}╣", "═".repeat(W));
+    let bot = format!("╚{}╝", "═".repeat(W));
+    let empty = format!("║{}║", " ".repeat(W));
+
+    // Pad visible content to W, then wrap with colored border chars.
+    let pad = |s: &str| " ".repeat(W.saturating_sub(s.chars().count()));
+
+    let title = "   ▶  VKDG  v0.1.0";
+    let gw_vis = format!("   Gateway   {}", gw);
+    let con_vis = format!("   Console   {}", con);
+
+    println!();
+    println!("  {teal}{top}{reset}");
+    println!("  {teal}{empty}{reset}");
+    println!(
+        "  {teal}║{reset}{bold}{title}{reset}{teal}{}║{reset}",
+        pad(title)
+    );
+    println!("  {teal}{empty}{reset}");
+    println!("  {teal}{mid}{reset}");
+    println!("  {teal}{empty}{reset}");
+    println!("  {teal}║{reset}{gw_vis}{teal}{}║{reset}", pad(&gw_vis));
+    println!("  {teal}║{reset}{con_vis}{teal}{}║{reset}", pad(&con_vis));
+    println!("  {teal}{empty}{reset}");
+
+    if let Some(token) = auto_token {
+        let tok_label = "   Bootstrap token (use once to sign in):";
+        let tok_val = format!("   {}", token);
+        println!("  {teal}{mid}{reset}");
+        println!("  {teal}{empty}{reset}");
+        println!(
+            "  {teal}║{reset}{dim}{tok_label}{reset}{teal}{}║{reset}",
+            pad(tok_label)
+        );
+        println!(
+            "  {teal}║{reset}{yellow}{tok_val}{reset}{teal}{}║{reset}",
+            pad(&tok_val)
+        );
+        println!("  {teal}{empty}{reset}");
+    }
+
+    println!("  {teal}{bot}{reset}");
+    println!();
 }
 
 async fn health() -> impl axum::response::IntoResponse {

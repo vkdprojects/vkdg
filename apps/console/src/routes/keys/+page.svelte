@@ -1,9 +1,19 @@
 <script lang="ts">
-  import type { PageData, ActionData } from './$types';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { ClientKey, CreatedKey } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { CopyButton, EmptyState, Button } from '$lib/components/index.js';
+  import { CopyButton, EmptyState, Button, Spinner } from '$lib/components/index.js';
+  import { toast } from 'svelte-sonner';
 
-  let { data, form }: { data: PageData; form: ActionData } = $props();
+  let keys = $state<ClientKey[]>([]);
+  let loading = $state(true);
+  let submitting = $state(false);
+  let formError = $state('');
+  let createdKey = $state<CreatedKey | null>(null);
+
+  let keyName = $state('');
+  let keyRole = $state('viewer');
 
   function formatDate(iso: string): string {
     return new Intl.DateTimeFormat(undefined, {
@@ -14,6 +24,45 @@
       minute: '2-digit',
     }).format(new Date(iso));
   }
+
+  onMount(async () => {
+    try {
+      const res = await api.listKeys();
+      keys = res.items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loading = false;
+    }
+  });
+
+  async function createKey(e: Event) {
+    e.preventDefault();
+    if (!keyName.trim()) { formError = 'Name is required'; return; }
+    submitting = true;
+    formError = '';
+    createdKey = null;
+    try {
+      const result = await api.createKey(keyName.trim(), keyRole);
+      createdKey = result;
+      keyName = '';
+      const res = await api.listKeys();
+      keys = res.items;
+    } catch (err) {
+      formError = (err as Error).message;
+    } finally {
+      submitting = false;
+    }
+  }
+
+  async function revokeKey(id: string) {
+    try {
+      await api.revokeKey(id);
+      keys = keys.filter(k => k.id !== id);
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  }
 </script>
 
 <div class="page">
@@ -23,30 +72,30 @@
 
   <section aria-labelledby="create-heading" class="create-section">
     <h2 id="create-heading">{m.key_create()}</h2>
-    <form method="POST" action="?/create" class="create-form">
+    <form onsubmit={createKey} class="create-form">
       <div class="field">
         <label for="key-name">{m.key_name()}</label>
-        <input id="key-name" type="text" name="name" required placeholder="e.g. ci-runner" />
+        <input id="key-name" type="text" bind:value={keyName} required placeholder="e.g. ci-runner" />
       </div>
 
       <fieldset class="role-group">
         <legend>{m.key_role()}</legend>
         <label class="role-option">
-          <input type="radio" name="role" value="viewer" checked />
+          <input type="radio" name="role" value="viewer" bind:group={keyRole} />
           <span class="role-info">
             <span class="role-label">{m.key_role_viewer()}</span>
             <span class="role-desc">{m.key_role_viewer_desc()}</span>
           </span>
         </label>
         <label class="role-option">
-          <input type="radio" name="role" value="operator" />
+          <input type="radio" name="role" value="operator" bind:group={keyRole} />
           <span class="role-info">
             <span class="role-label">{m.key_role_operator()}</span>
             <span class="role-desc">{m.key_role_operator_desc()}</span>
           </span>
         </label>
         <label class="role-option">
-          <input type="radio" name="role" value="admin" />
+          <input type="radio" name="role" value="admin" bind:group={keyRole} />
           <span class="role-info">
             <span class="role-label">{m.key_role_admin()}</span>
             <span class="role-desc">{m.key_role_admin_desc()}</span>
@@ -54,14 +103,14 @@
         </label>
       </fieldset>
 
-      <Button type="submit">{m.key_create()}</Button>
+      <Button type="submit" disabled={submitting}>{m.key_create()}</Button>
     </form>
 
-    {#if form?.error}
-      <p class="error-msg" role="alert">{form.error}</p>
+    {#if formError}
+      <p class="error-msg" role="alert">{formError}</p>
     {/if}
 
-    {#if form?.created}
+    {#if createdKey}
       <div class="created-key" role="alert">
         <div class="created-header">
           <svg class="warning-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -71,18 +120,20 @@
           <strong class="created-notice">{m.key_store_warning()}</strong>
         </div>
         <div class="key-box">
-          <code class="key-value">{form.created.key}</code>
+          <code class="key-value">{createdKey.key}</code>
         </div>
         <div class="key-copy-row">
-          <CopyButton text={form.created.key} />
+          <CopyButton text={createdKey.key} />
         </div>
       </div>
     {/if}
   </section>
 
   <section aria-labelledby="keys-heading">
-    <h2 id="keys-heading">{m.nav_keys()} ({data.keys.length})</h2>
-    {#if data.keys.length === 0}
+    <h2 id="keys-heading">{m.nav_keys()} ({keys.length})</h2>
+    {#if loading}
+      <div class="loading"><Spinner size="sm" /> Loading…</div>
+    {:else if keys.length === 0}
       <EmptyState title={m.key_empty()} description="Create a key to authenticate API clients." />
     {:else}
       <table>
@@ -96,17 +147,14 @@
           </tr>
         </thead>
         <tbody>
-          {#each data.keys as k (k.id)}
+          {#each keys as k (k.id)}
             <tr>
               <td class="key-name-cell">{k.name}</td>
               <td><span class="role-badge role-{k.role}">{k.role}</span></td>
               <td class="date-cell">{formatDate(k.created_at)}</td>
               <td class="date-cell">{k.last_used_at ? formatDate(k.last_used_at) : m.key_never()}</td>
               <td class="action-cell">
-                <form method="POST" action="?/revoke">
-                  <input type="hidden" name="id" value={k.id} />
-                  <Button variant="danger" size="sm" type="submit">{m.key_revoke()}</Button>
-                </form>
+                <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)}>{m.key_revoke()}</Button>
               </td>
             </tr>
           {/each}
@@ -125,6 +173,15 @@
 </div>
 
 <style>
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-3);
+    font-size: 0.875rem;
+    padding: 16px 0;
+  }
+
   .create-section {
     margin-bottom: 36px;
   }
@@ -169,7 +226,6 @@
     color: var(--text-3);
   }
 
-  /* Role radio group */
   .role-group {
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -220,7 +276,6 @@
     color: var(--text-3);
   }
 
-  /* One-time key display */
   .created-key {
     margin-top: 16px;
     background: color-mix(in oklch, var(--warning) 8%, transparent);
@@ -270,14 +325,12 @@
     display: flex;
   }
 
-  /* Error */
   .error-msg {
     margin-top: 8px;
     font-size: 0.8125rem;
     color: var(--danger);
   }
 
-  /* Table */
   .key-name-cell {
     font-weight: 500;
   }
@@ -292,7 +345,6 @@
     text-align: right;
   }
 
-  /* Role badge */
   .role-badge {
     display: inline-flex;
     align-items: center;
@@ -317,7 +369,6 @@
     color: var(--warning);
   }
 
-  /* Instructions */
   .instructions {
     font-size: 0.875rem;
     color: var(--text-2);

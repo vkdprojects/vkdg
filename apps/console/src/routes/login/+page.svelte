@@ -1,8 +1,37 @@
 <script lang="ts">
-  import type { ActionData } from './$types';
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { api } from '$lib/api.js';
   import { Logo } from '$lib/components/index.js';
 
-  let { form }: { form: ActionData } = $props();
+  let token = $state('');
+  let loading = $state(false);
+  let error = $state('');
+
+  onMount(async () => {
+    // Already logged in? Redirect to home.
+    try {
+      await api.me();
+      goto('/');
+    } catch {
+      // not authenticated, stay on login
+    }
+  });
+
+  async function handleSubmit(e: Event) {
+    e.preventDefault();
+    if (!token.trim()) return;
+    loading = true;
+    error = '';
+    try {
+      await api.login(token.trim());
+      goto('/');
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      loading = false;
+    }
+  }
 </script>
 
 <div class="login-shell">
@@ -12,7 +41,7 @@
       <span class="brand-name">VKDG</span>
     </div>
     <h1>Sign in</h1>
-    <form method="POST">
+    <form onsubmit={handleSubmit}>
       <label for="token">Bootstrap token</label>
       <input
         id="token"
@@ -20,78 +49,82 @@
         name="token"
         required
         autocomplete="off"
-        aria-describedby={form?.error ? 'login-error' : undefined}
+        bind:value={token}
+        disabled={loading}
+        aria-describedby={error ? 'login-error' : undefined}
       />
-      {#if form?.error}
-        <p id="login-error" class="error-msg" role="alert">{form.error}</p>
+      {#if error}
+        <p id="login-error" class="error-msg" role="alert">{error}</p>
       {/if}
-      <button type="submit">Sign in</button>
+      <button type="submit" disabled={loading}>
+        {loading ? 'Signing in…' : 'Sign in'}
+      </button>
     </form>
   </div>
 </div>
 
 <style>
   .login-shell {
+    min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 100vh;
     background: var(--bg-base);
+    padding: 24px;
   }
 
   .login-card {
     width: 100%;
-    max-width: 360px;
-    background: var(--bg-surface);
+    max-width: 380px;
+    background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 2rem;
+    border-radius: var(--radius-lg);
+    padding: 36px 32px;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 24px;
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-weight: 700;
-    font-size: 15px;
-    color: var(--text-1);
-    letter-spacing: 0.04em;
+    gap: 10px;
   }
 
+  .brand-name {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--text-1);
+    letter-spacing: -0.02em;
+  }
 
   h1 {
-    font-size: 1.125rem;
+    font-size: 1.25rem;
     font-weight: 600;
-    margin: 0;
     color: var(--text-1);
+    margin: 0;
   }
 
   form {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 12px;
   }
 
   label {
-    display: block;
     font-size: 0.8125rem;
     font-weight: 500;
     color: var(--text-2);
-    margin-bottom: 0.25rem;
   }
 
   input {
-    display: block;
     width: 100%;
-    padding: 0.4375rem 0.625rem;
-    background: var(--bg-elevated);
+    background: var(--bg-base);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--text-1);
-    font-size: 0.875rem;
+    font-size: 0.9375rem;
+    padding: 0.5625rem 0.75rem;
     transition: border-color 0.15s;
     box-sizing: border-box;
   }
@@ -101,26 +134,35 @@
     outline: none;
   }
 
-  button {
-    width: 100%;
-    padding: 0.5625rem;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 0.875rem;
-    font-weight: 500;
-    transition: background 0.1s;
-  }
-
-  button:hover {
-    background: var(--accent-hover);
+  input:disabled {
+    opacity: 0.5;
   }
 
   .error-msg {
     color: var(--danger);
     font-size: 0.8125rem;
     margin: 0;
+  }
+
+  button[type='submit'] {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    padding: 0.5625rem 1rem;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 4px;
+  }
+
+  button[type='submit']:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  button[type='submit']:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 </style>

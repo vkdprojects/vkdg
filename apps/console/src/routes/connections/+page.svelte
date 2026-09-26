@@ -1,19 +1,22 @@
 <script lang="ts">
-  import type { PageData } from './$types';
-  import { enhance } from '$app/forms';
-  import { Badge, StatusDot, EmptyState, Button, Input, Select } from '$lib/components/index.js';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { ConnectionSummary } from '$lib/api.js';
+  import { Badge, StatusDot, EmptyState, Button, Input, Select, Spinner } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
   import { PlusIcon, XIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
-  let { data }: { data: PageData } = $props();
+  let connections = $state<ConnectionSummary[]>([]);
+  let loading = $state(true);
 
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
   let connId = $state('');
   let baseUrl = $state('');
   let apiKey = $state('');
+  let submitting = $state(false);
 
   const providerOptions = [
     { value: 'openai-compat', label: 'OpenAI-compatible' },
@@ -25,6 +28,26 @@
   ];
 
   const showBaseUrl = $derived(provider === 'openai-compat' || provider === 'anthropic-compat');
+
+  onMount(async () => {
+    try {
+      const res = await api.listConnections();
+      connections = res.items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loading = false;
+    }
+  });
+
+  async function addConnection(e: Event) {
+    e.preventDefault();
+    submitting = true;
+    // Connection creation via UI is coming in the next release. Use vkdg.yaml for now.
+    toast.info('Connection creation via UI is coming in the next release. Use vkdg.yaml for now.');
+    submitting = false;
+    dialogOpen = false;
+  }
 </script>
 
 <div class="page">
@@ -36,7 +59,9 @@
     </Button>
   </div>
 
-  {#if data.connections.length === 0}
+  {#if loading}
+    <div class="loading"><Spinner size="sm" /> Loading…</div>
+  {:else if connections.length === 0}
     <EmptyState
       title={m.connection_empty()}
       description="Add a provider connection to start routing requests."
@@ -53,7 +78,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each data.connections as conn (conn.id)}
+        {#each connections as conn (conn.id)}
           <tr>
             <td class="mono">{conn.id}</td>
             <td>{conn.provider}</td>
@@ -83,28 +108,13 @@
         </Dialog.Close>
       </div>
 
-      <form
-        method="POST"
-        action="?/add"
-        use:enhance={() => {
-          return async ({ result }) => {
-            if (result.type === 'success' && result.data && !result.data.success) {
-              toast.info(result.data.error as string);
-            } else if (result.type === 'failure') {
-              toast.error(m.common_error());
-            }
-            dialogOpen = false;
-          };
-        }}
-      >
+      <form onsubmit={addConnection}>
         <div class="form-fields">
           <Select
             label={m.connection_provider()}
             options={providerOptions}
             bind:value={provider}
           />
-
-          <input type="hidden" name="provider" value={provider} />
 
           <div class="field">
             <label for="conn-id">{m.connection_id()}</label>
@@ -128,7 +138,7 @@
           <Dialog.Close>
             <Button variant="outline" type="button">{m.common_cancel()}</Button>
           </Dialog.Close>
-          <Button variant="primary" type="submit">{m.connection_add()}</Button>
+          <Button variant="primary" type="submit" disabled={submitting}>{m.connection_add()}</Button>
         </div>
       </form>
     </Dialog.Content>
@@ -136,6 +146,15 @@
 </Dialog.Root>
 
 <style>
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-3);
+    font-size: 0.875rem;
+    padding: 32px 0;
+  }
+
   :global(.dialog-overlay) {
     position: fixed;
     inset: 0;

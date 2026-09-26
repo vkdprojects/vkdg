@@ -1,9 +1,14 @@
 <script lang="ts">
-  import type { PageData, ActionData } from './$types';
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api.js';
+  import type { ComboSummary } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, EmptyState, Button, Select } from '$lib/components/index.js';
+  import { Badge, EmptyState, Button, Select, Spinner } from '$lib/components/index.js';
+  import { toast } from 'svelte-sonner';
 
-  let { data, form }: { data: PageData; form: ActionData } = $props();
+  let combos = $state<ComboSummary[]>([]);
+  let loading = $state(true);
+  let formError = $state('');
 
   let dialogEl = $state<HTMLDialogElement | null>(null);
   let name = $state('');
@@ -34,15 +39,35 @@
     { value: 'prompt_chain', label: m.combo_strategy_prompt_chain() },
     { value: 'auto', label: m.combo_strategy_auto() },
   ];
+
+  onMount(async () => {
+    try {
+      const res = await api.listCombos();
+      combos = res.items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      loading = false;
+    }
+  });
+
+  async function createCombo(e: Event) {
+    e.preventDefault();
+    formError = 'Not yet implemented';
+    toast.info('Combo creation via UI is coming in the next release. Use vkdg.yaml for now.');
+    closeDialog();
+  }
 </script>
 
 <div class="page">
   <div class="page-header">
-    <h1 class="page-title">{m.nav_combos()} ({data.combos.length})</h1>
+    <h1 class="page-title">{m.nav_combos()} ({combos.length})</h1>
     <Button onclick={openDialog}>{m.combo_create()}</Button>
   </div>
 
-  {#if data.combos.length === 0}
+  {#if loading}
+    <div class="loading"><Spinner size="sm" /> Loading…</div>
+  {:else if combos.length === 0}
     <EmptyState title={m.combo_empty()} description="Create a combo to define routing strategy across connections." />
   {:else}
     <table>
@@ -56,7 +81,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each data.combos as c (c.id)}
+        {#each combos as c (c.id)}
           <tr>
             <td>{c.id}</td>
             <td>{c.strategy}</td>
@@ -75,22 +100,18 @@
   {/if}
 </div>
 
-<!-- Create combo dialog -->
 <dialog bind:this={dialogEl} class="modal" aria-labelledby="dialog-title">
   <div class="modal-header">
     <h2 id="dialog-title">{m.combo_create()}</h2>
     <button class="close-btn" onclick={closeDialog} aria-label={m.common_cancel()}>✕</button>
   </div>
 
-  <form method="POST" action="?/create" class="modal-form">
-    <input type="hidden" name="strategy" value={strategy} />
-
+  <form onsubmit={createCombo} class="modal-form">
     <div class="field">
       <label for="name-input">{m.combo_name_label()}</label>
       <input
         id="name-input"
         type="text"
-        name="name"
         bind:value={name}
         placeholder={m.combo_name_placeholder()}
         required
@@ -102,7 +123,6 @@
       <input
         id="patterns-input"
         type="text"
-        name="patterns"
         bind:value={patterns}
         placeholder={m.combo_patterns_placeholder()}
       />
@@ -120,15 +140,14 @@
       <input
         id="targets-input"
         type="text"
-        name="targets"
         bind:value={targets}
         placeholder={m.combo_targets_placeholder()}
       />
       <p class="hint">{m.combo_targets_hint()}</p>
     </div>
 
-    {#if form?.error}
-      <p class="form-error" role="alert">{form.error}</p>
+    {#if formError}
+      <p class="form-error" role="alert">{formError}</p>
     {/if}
 
     <div class="modal-actions">
@@ -139,6 +158,15 @@
 </dialog>
 
 <style>
+  .loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-3);
+    font-size: 0.875rem;
+    padding: 16px 0;
+  }
+
   .badges {
     display: flex;
     gap: 4px;
@@ -149,7 +177,6 @@
     color: var(--text-3);
   }
 
-  /* Dialog */
   .modal {
     background: var(--bg-surface);
     border: 1px solid var(--border);

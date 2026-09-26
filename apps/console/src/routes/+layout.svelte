@@ -1,19 +1,24 @@
 <script lang="ts">
   import '../app.css';
   import type { Snippet } from 'svelte';
+  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { m } from '$lib/paraglide/messages.js';
   import { getLocale, setLocale } from '$lib/paraglide/runtime.js';
   import { Toaster } from 'svelte-sonner';
   import { Home, Plug, Combine, Route, List, Gamepad2, Key, Settings } from 'lucide-svelte';
   import { Logo } from '$lib/components/index.js';
-  import type { SessionUser, SystemInfo } from '$lib/server/vkdg/client';
+  import { api } from '$lib/api.js';
+  import type { SessionUser, SystemInfo } from '$lib/api.js';
 
   interface Props {
-    data: { user: SessionUser | null; system: SystemInfo | null };
     children: Snippet;
   }
-  let { data, children }: Props = $props();
+  let { children }: Props = $props();
+
+  let user = $state<SessionUser | null>(null);
+  let system = $state<SystemInfo | null>(null);
 
   const navGroups = [
     {
@@ -46,6 +51,22 @@
     if (href === '/') return path === '/';
     return path === href || path.startsWith(href + '/');
   }
+
+  async function signOut() {
+    try { await api.logout(); } catch { /* ignore */ }
+    goto('/login');
+  }
+
+  onMount(async () => {
+    const isLoginPage = page.url.pathname === '/login' || page.url.pathname === '/logout';
+    try {
+      const [me, sys] = await Promise.all([api.me(), api.system()]);
+      user = me;
+      system = sys;
+    } catch {
+      if (!isLoginPage) goto('/login');
+    }
+  });
 </script>
 
 <div class="shell">
@@ -86,15 +107,13 @@
         >PT</button>
       </div>
 
-      {#if data.user}
-        <span class="user-role">{data.user.role}</span>
-        <form method="POST" action="/logout">
-          <button type="submit" class="signout">{m.nav_sign_out()}</button>
-        </form>
+      {#if user}
+        <span class="user-role">{user.role}</span>
+        <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
       {/if}
 
-      {#if data.system?.version}
-        <span class="version">v{data.system.version}</span>
+      {#if system?.version}
+        <span class="version">v{system.version}</span>
       {/if}
     </div>
   </aside>

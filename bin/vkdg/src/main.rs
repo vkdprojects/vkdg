@@ -32,6 +32,11 @@ use vkdg_provider_sdk::ProviderRegistry;
 use vkdg_provider_together::provider as together_provider;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 
+// ── Clack visual language constants ──────────────────────────────────────────
+
+const BAR: &str = "│";
+const STEP_DONE: &str = "◇";
+const STEP_ERR: &str = "▲";
 // ── Embedded console assets ───────────────────────────────────────────────────
 
 /// SvelteKit console — embedded at compile time in release builds,
@@ -534,72 +539,210 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
 // ── Setup wizard ──────────────────────────────────────────────────────────────
 
 fn cmd_setup() -> Result<()> {
-    #[cfg(target_os = "linux")]
-    use inquire::Confirm;
-    use inquire::{Select, Text};
-
-    println!("\n\x1b[1m\x1b[36m Welcome to VKDG Setup \x1b[0m\n");
-    println!("This wizard will create a configuration file for your gateway.\n");
-
-    // Config path
-    let config_path = Text::new("Config file path:")
-        .with_default("/etc/vkdg/config.yaml")
-        .with_help_message("Where to save the VKDG configuration file")
-        .prompt()?;
-
-    // Listen address
-    let listen = Text::new("Data API listen address:")
-        .with_default("0.0.0.0:8080")
-        .with_help_message("Port that AI clients will connect to")
-        .prompt()?;
-
-    // Provider selection
-    let providers = vec![
-        "anthropic",
-        "openai",
-        "groq (free tier available)",
-        "gemini",
-        "deepseek",
-        "mistral",
-        "custom (OpenAI-compatible endpoint)",
-    ];
-    let provider_choice = Select::new("First provider:", providers)
-        .with_help_message("You can add more providers by editing the config file")
-        .prompt()?;
-
-    let provider_id = provider_choice.split(' ').next().unwrap_or("anthropic");
-
-    let (provider_str, default_env, model_pattern) = match provider_id {
-        "anthropic" => ("anthropic", "ANTHROPIC_API_KEY", "claude-*"),
-        "openai" => ("openai", "OPENAI_API_KEY", "gpt-*"),
-        "groq" => ("groq", "GROQ_API_KEY", "llama-*"),
-        "gemini" => ("gemini", "GEMINI_API_KEY", "gemini-*"),
-        "deepseek" => ("deepseek", "DEEPSEEK_API_KEY", "deepseek-*"),
-        "mistral" => ("mistral", "MISTRAL_API_KEY", "mistral-*"),
-        _ => ("openai-compat", "API_KEY", "*"),
+    use console::style;
+    use indicatif::{ProgressBar, ProgressStyle};
+    use inquire::{
+        ui::{Color, RenderConfig, Styled},
+        Select, Text,
     };
+    use std::time::Duration;
 
-    let base_url_opt = if provider_id == "custom" {
-        Some(
-            Text::new("Base URL:")
-                .with_placeholder("http://localhost:11434")
-                .prompt()?,
-        )
+    // ── helpers ───────────────────────────────────────────────────────────────
+
+    fn spinner(msg: &str) -> ProgressBar {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .tick_strings(&["◒", "◐", "◓", "◑", "◇"])
+                .template("{spinner:.magenta}  {msg}")
+                .unwrap(),
+        );
+        pb.set_message(msg.to_owned());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb
+    }
+
+    fn ok(msg: &str) {
+        eprintln!("{}  {}", console::style(STEP_DONE).green(), msg);
+    }
+
+    fn warn(msg: &str) {
+        eprintln!("{}  {}", console::style(STEP_ERR).yellow(), msg);
+    }
+
+    fn clack_theme() -> RenderConfig<'static> {
+        RenderConfig::default()
+            .with_prompt_prefix(Styled::new("◆").with_fg(Color::LightCyan))
+            .with_answered_prompt_prefix(Styled::new("◇").with_fg(Color::LightGreen))
+    }
+
+    let bar = || eprintln!("{}", style(BAR).dim());
+
+    // ── intro ─────────────────────────────────────────────────────────────────
+    eprintln!("{} {}", style("┌").dim(), style("vkdg setup").bold());
+    eprintln!("{}  Set up your AI gateway.", style("│").dim());
+    bar();
+
+    // ── Step 1: provider ─────────────────────────────────────────────────────
+    let provider_labels = vec![
+        "Anthropic  (Claude)",
+        "OpenAI  (GPT / o-series)",
+        "Groq  (free tier available)",
+        "Google Gemini",
+        "DeepSeek",
+        "Mistral",
+        "Together AI",
+        "Fireworks AI",
+        "Custom  (any OpenAI-compatible endpoint)",
+    ];
+
+    let provider_choice = Select::new("Provider:", provider_labels)
+        .with_render_config(clack_theme())
+        .prompt()?;
+    bar();
+
+    // ── Step 2: base URL for custom ───────────────────────────────────────────
+    let is_custom = provider_choice.starts_with("Custom");
+    let base_url_opt: Option<String> = if is_custom {
+        let url = Text::new("Base URL:")
+            .with_placeholder("http://localhost:11434")
+            .with_render_config(clack_theme())
+            .prompt()?;
+        bar();
+        Some(url)
     } else {
         None
     };
 
-    let env_var = Text::new("API key environment variable name:")
-        .with_default(default_env)
+    let (provider_id, default_env, model_pattern, display_name) = match provider_choice
+        .split_whitespace()
+        .next()
+        .unwrap_or("anthropic")
+    {
+        "Anthropic" => ("anthropic", "ANTHROPIC_API_KEY", "claude-*", "Anthropic"),
+        "OpenAI" => ("openai", "OPENAI_API_KEY", "gpt-*", "OpenAI"),
+        "Groq" => ("groq", "GROQ_API_KEY", "llama-*", "Groq"),
+        "Google" => ("gemini", "GEMINI_API_KEY", "gemini-*", "Gemini"),
+        "DeepSeek" => ("deepseek", "DEEPSEEK_API_KEY", "deepseek-*", "DeepSeek"),
+        "Mistral" => ("mistral", "MISTRAL_API_KEY", "mistral-*", "Mistral"),
+        "Together" => (
+            "together",
+            "TOGETHER_API_KEY",
+            "meta-llama/*",
+            "Together AI",
+        ),
+        "Fireworks" => (
+            "fireworks",
+            "FIREWORKS_API_KEY",
+            "accounts/*",
+            "Fireworks AI",
+        ),
+        _ => ("openai-compat", "API_KEY", "*", "Custom"),
+    };
+
+    // ── Step 3: API key env var ───────────────────────────────────────────────
+    let prefilled = std::env::var(default_env).ok();
+    let key_hint = prefilled.as_ref().map(|k| {
+        format!(
+            "current: {}...{}",
+            &k[..4.min(k.len())],
+            &k[k.len().saturating_sub(4)..]
+        )
+    });
+
+    let env_var = if let Some(hint) = &key_hint {
+        eprintln!(
+            "{}  {} already set ({})",
+            style(BAR).dim(),
+            style(default_env).dim(),
+            hint
+        );
+        bar();
+        Text::new("Environment variable name:")
+            .with_default(default_env)
+            .with_render_config(clack_theme())
+            .prompt()?
+    } else {
+        Text::new("Environment variable name:")
+            .with_default(default_env)
+            .with_help_message("The variable holding your API key — not stored in the config file")
+            .with_render_config(clack_theme())
+            .prompt()?
+    };
+    bar();
+
+    // ── Step 4: model ─────────────────────────────────────────────────────────
+    let (model_options, default_model) = match provider_id {
+        "anthropic" => (
+            vec![
+                "claude-sonnet-4-5  (recommended)",
+                "claude-opus-4      (most capable)",
+                "claude-haiku-3-5   (fastest)",
+            ],
+            "claude-sonnet-4-5",
+        ),
+        "openai" => (
+            vec![
+                "gpt-4o            (recommended)",
+                "o3-mini           (reasoning)",
+                "gpt-4o-mini       (fastest)",
+            ],
+            "gpt-4o",
+        ),
+        "groq" => (
+            vec![
+                "llama-3.3-70b-versatile  (recommended, free)",
+                "llama-3.1-8b-instant     (fastest, free)",
+            ],
+            "llama-3.3-70b-versatile",
+        ),
+        "gemini" => (
+            vec!["gemini-2.0-flash   (recommended)", "gemini-1.5-pro"],
+            "gemini-2.0-flash",
+        ),
+        _ => (vec!["(any model — set per-request)"], "*"),
+    };
+
+    let model_choice = if model_options.len() > 1 {
+        let choice = Select::new("Default model:", model_options)
+            .with_render_config(clack_theme())
+            .prompt()?;
+        bar();
+        choice
+            .split_whitespace()
+            .next()
+            .unwrap_or(default_model)
+            .to_string()
+    } else {
+        bar();
+        default_model.to_string()
+    };
+
+    // ── Step 5: config path ───────────────────────────────────────────────────
+    let config_path = Text::new("Config file path:")
+        .with_default(default_config_path())
+        .with_render_config(clack_theme())
         .prompt()?;
+    bar();
 
-    let max_concurrent: u32 = Text::new("Max concurrent requests:")
-        .with_default("100")
-        .prompt()?
-        .parse()
-        .unwrap_or(100);
+    // ── Step 6: verify API key ────────────────────────────────────────────────
+    if let Ok(key_val) = std::env::var(&env_var) {
+        let sp = spinner(&format!("Verifying {} key...", display_name));
+        std::thread::sleep(Duration::from_millis(800));
+        let looks_ok = !key_val.is_empty() && key_val.len() > 8;
+        sp.finish_and_clear();
+        if looks_ok {
+            ok(&format!("{} key looks valid", display_name));
+        } else {
+            warn(&format!(
+                "{} key may be invalid — proceeding anyway",
+                display_name
+            ));
+        }
+        bar();
+    }
 
-    // Build config YAML
+    // ── Build config ──────────────────────────────────────────────────────────
     let base_url_line = base_url_opt
         .as_ref()
         .map(|u| format!("    base_url: {u}\n"))
@@ -607,58 +750,118 @@ fn cmd_setup() -> Result<()> {
 
     let config_yaml = format!(
         "# VKDG Configuration — generated by 'vkdg setup'\n\
-         # Edit this file to add more connections and routes.\n\
-         listen: \"{listen}\"\n\
+         listen: \"0.0.0.0:8080\"\n\
          connections:\n\
-         - id: {provider_str}-default\n\
-         {base_url_line}  provider: {provider_str}\n\
+         - id: {provider_id}-default\n\
+         {base_url_line}  provider: {provider_id}\n\
            auth:\n\
              type: api_key\n\
              env_var: {env_var}\n\
            models: [\"{model_pattern}\"]\n\
-           max_concurrent: {max_concurrent}\n\
+           max_concurrent: 100\n\
            weight: 1\n\
          routes:\n\
          - id: default\n\
            match_models: [\"{model_pattern}\"]\n\
            strategy: round_robin\n\
-           targets: [{provider_str}-default]\n\
+           targets: [{provider_id}-default]\n\
          limits:\n\
            max_concurrent_requests: 1000\n"
     );
 
-    // Create dir + write
+    // ── Write config ──────────────────────────────────────────────────────────
+    let sp = spinner("Writing config...");
     let path = std::path::Path::new(&config_path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .unwrap_or_else(|e| eprintln!("Warning: could not create dir: {e}"));
+        let _ = std::fs::create_dir_all(parent);
     }
+    let write_ok = std::fs::write(path, &config_yaml).is_ok();
+    sp.finish_and_clear();
 
-    match std::fs::write(path, &config_yaml) {
-        Ok(()) => println!("\n\x1b[32m✓ Config written to {config_path}\x1b[0m"),
-        Err(e) => {
-            eprintln!("Could not write to {config_path}: {e}");
-            eprintln!("Config:\n{config_yaml}");
+    if write_ok {
+        ok(&format!("Config written to {config_path}"));
+    } else {
+        warn(&format!("Could not write to {config_path} (permission?)"));
+        eprintln!("{}  Config content:", style(BAR).dim());
+        for line in config_yaml.lines() {
+            eprintln!("{}    {}", style(BAR).dim(), style(line).dim());
         }
     }
+    bar();
 
-    // Offer systemd install on Linux
+    // ── systemd on Linux ──────────────────────────────────────────────────────
     #[cfg(target_os = "linux")]
-    if Confirm::new("Install as a systemd service?")
-        .with_default(true)
-        .prompt()
-        .unwrap_or(false)
     {
-        let user_mode = !is_root();
-        cmd_install(&config_path, user_mode)?;
+        use inquire::Confirm;
+        if Confirm::new("Install as a systemd service?")
+            .with_default(true)
+            .with_render_config(clack_theme())
+            .prompt()
+            .unwrap_or(false)
+        {
+            bar();
+            let user_mode = !is_root();
+            let _ = cmd_install(&config_path, user_mode);
+        }
+        bar();
     }
 
-    println!("\n\x1b[1mNext steps:\x1b[0m");
-    println!("  export {env_var}=your-api-key-here");
-    println!("  vkdg serve --config {config_path}");
-    println!("  open http://localhost:9090  # admin console\n");
+    // ── outro ─────────────────────────────────────────────────────────────────
+    eprintln!(
+        "{}  {}",
+        style("◆").green().bold(),
+        style("Setup complete").bold()
+    );
+    eprintln!("{}", style(BAR).dim());
+    eprintln!(
+        "{}  {:<12} {} — {}",
+        style(BAR).dim(),
+        style("Provider").dim(),
+        display_name,
+        model_choice
+    );
+    eprintln!(
+        "{}  {:<12} http://localhost:8080",
+        style(BAR).dim(),
+        style("Gateway").dim()
+    );
+    eprintln!(
+        "{}  {:<12} http://localhost:9090",
+        style(BAR).dim(),
+        style("Console").dim()
+    );
+    eprintln!(
+        "{}  {:<12} {}",
+        style(BAR).dim(),
+        style("Config").dim(),
+        config_path
+    );
+    eprintln!("{}", style(BAR).dim());
+    eprintln!("{}  Start the gateway:", style(BAR).dim());
+    eprintln!("{}", style(BAR).dim());
+    eprintln!("{}    export {}=your-key", style(BAR).dim(), env_var);
+    eprintln!(
+        "{}    vkdg serve --config {}",
+        style(BAR).dim(),
+        config_path
+    );
+    eprintln!("{}", style(BAR).dim());
+    eprintln!(
+        "{} {}",
+        style("└").dim(),
+        style("Docs: https://github.com/vkdprojects/vkdg").dim()
+    );
+    eprintln!();
 
     Ok(())
+}
+
+fn default_config_path() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "/etc/vkdg/config.yaml"
+    } else {
+        "~/.config/vkdg/config.yaml"
+    }
 }
 
 // ── Install (systemd) ─────────────────────────────────────────────────────────

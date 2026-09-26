@@ -47,6 +47,8 @@ axum-embed  = { workspace = true }
 inquire     = { workspace = true }
 self_update = { workspace = true }
 serde_yaml  = { workspace = true }
+console     = { workspace = true }
+indicatif   = { workspace = true }
 
 [lints]
 workspace = true

@@ -59,6 +59,9 @@ enum Command {
         /// Bootstrap token (overrides VKDG_BOOTSTRAP_TOKEN env var).
         #[arg(long)]
         token: Option<String>,
+        /// Suppress INFO logs (RUST_LOG=warn). Errors and warnings still show.
+        #[arg(long)]
+        quiet: bool,
     },
     Doctor,
     Config {
@@ -187,7 +190,8 @@ async fn main() -> Result<()> {
             config,
             listen,
             token,
-        } => serve(config, listen, token).await?,
+            quiet,
+        } => serve(config, listen, token, quiet).await?,
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
         Command::Config {
             sub: ConfigSub::Check { path },
@@ -225,9 +229,18 @@ async fn serve(
     config_path: Option<String>,
     listen: String,
     token_override: Option<String>,
+    quiet: bool,
 ) -> Result<()> {
+    // --quiet: suppress INFO logs; RUST_LOG always wins if explicitly set.
+    // Pass through ObserveConfig rather than mutating env (no unsafe needed).
+    let log_level = if quiet && std::env::var("RUST_LOG").is_err() {
+        "warn".to_string()
+    } else {
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string())
+    };
     let _ = init_tracing(&ObserveConfig {
         otlp_endpoint: None,
+        log_level,
         ..Default::default()
     });
 

@@ -27,7 +27,7 @@ pub struct ObserveConfig {
 }
 
 fn default_log_level() -> String {
-    "warn".to_string()
+    "info".to_string()
 }
 
 impl Default for ObserveConfig {

@@ -14,8 +14,6 @@ tracing-opentelemetry = { workspace = true }
 opentelemetry      = { workspace = true }
 opentelemetry_sdk  = { workspace = true }
 opentelemetry-otlp = { workspace = true }
-chrono             = { workspace = true }
-tokio              = { workspace = true }
 anyhow             = { workspace = true }
 
 [lib]

@@ -14,8 +14,6 @@ bytes            = { workspace = true }
 futures          = { workspace = true }
 http             = { workspace = true }
 axum             = { workspace = true }
-tracing          = { workspace = true }
-tokio            = { workspace = true }
 
 [lib]
 doctest = false

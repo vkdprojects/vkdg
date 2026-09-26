@@ -14,9 +14,7 @@ vkdg-http            = { workspace = true }
 vkdg-connections     = { workspace = true }
 vkdg-routing         = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
-vkdg-observe         = { workspace = true }
 tokio                = { workspace = true }
-bytes                = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

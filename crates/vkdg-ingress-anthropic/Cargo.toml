@@ -7,7 +7,6 @@ license.workspace = true
 [dependencies]
 vkdg-core       = { workspace = true }
 vkdg-operations = { workspace = true }
-vkdg-observe    = { workspace = true }
 vkdg-http       = { workspace = true }
 
 serde       = { workspace = true }
@@ -17,7 +16,6 @@ axum        = { workspace = true }
 http        = { workspace = true }
 bytes       = { workspace = true }
 futures     = { workspace = true }
-tracing     = { workspace = true }
 
 [lib]
 doctest = false

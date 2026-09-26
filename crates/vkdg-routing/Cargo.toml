@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 vkdg-core       = { workspace = true }
-vkdg-operations = { workspace = true }
 serde           = { workspace = true }
 async-trait     = { workspace = true }
 tokio           = { workspace = true }

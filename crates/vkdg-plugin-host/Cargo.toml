@@ -19,3 +19,8 @@ doctest = false
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# These deps are used by Wasmtime internals, WASM component loading,
+# or test fixtures — machete cannot detect macro/indirect usage.
+ignored = ["anyhow", "bytes", "serde_json", "tokio", "vkdg-core", "vkdg-operations"]

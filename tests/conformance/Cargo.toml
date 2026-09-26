@@ -18,20 +18,15 @@ vkdg-ingress-anthropic = { workspace = true }
 vkdg-observe = { workspace = true }
 tokio = { workspace = true }
 serde_yaml = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http = { workspace = true }
 bytes = { workspace = true }
-futures = { workspace = true }
 reqwest = { workspace = true }
 http-body = { workspace = true }
-http-body-util = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
 vkdg-provider-openai = { workspace = true }
-vkdg-combos = { workspace = true }
-vkdg-ingress-openai = { workspace = true }
 
 [lints]
 workspace = true

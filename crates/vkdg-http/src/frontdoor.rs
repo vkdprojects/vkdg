@@ -59,3 +59,29 @@ impl FrontDoor {
         }
     }
 }
+
+/// Extract the client's IP address from request headers.
+///
+/// Prefers `X-Forwarded-For` (first entry, behind a proxy), then `X-Real-IP`.
+/// Returns `None` when neither header is present or parseable.
+pub fn extract_client_ip(headers: &http::HeaderMap) -> Option<String> {
+    if let Some(xff) = headers.get("x-forwarded-for") {
+        if let Ok(val) = xff.to_str() {
+            if let Some(first) = val.split(',').next() {
+                let ip = first.trim().to_string();
+                if !ip.is_empty() {
+                    return Some(ip);
+                }
+            }
+        }
+    }
+    if let Some(xri) = headers.get("x-real-ip") {
+        if let Ok(val) = xri.to_str() {
+            let ip = val.trim().to_string();
+            if !ip.is_empty() {
+                return Some(ip);
+            }
+        }
+    }
+    None
+}

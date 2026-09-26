@@ -35,6 +35,8 @@ impl ConfigSnapshot {
             max_concurrent_requests: None,
             max_body_bytes: None,
             request_timeout_secs: None,
+            ip_allowlist: vec![],
+            ip_blocklist: vec![],
         }));
         let observe = Arc::new(cfg.observe.clone().unwrap_or(ObserveDef {
             otlp_endpoint: None,
@@ -72,6 +74,8 @@ impl ConfigSnapshot {
                 max_concurrent_requests: None,
                 max_body_bytes: None,
                 request_timeout_secs: None,
+                ip_allowlist: vec![],
+                ip_blocklist: vec![],
             }),
             observe: Arc::new(ObserveDef {
                 otlp_endpoint: None,

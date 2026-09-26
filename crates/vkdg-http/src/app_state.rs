@@ -5,7 +5,7 @@ use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
 use crate::dedup::DedupTable;
-use crate::admission::AdmissionGuard;
+use crate::admission::{AdmissionGuard, IpPolicy};
 use crate::frontdoor::{FrontDoor, ServerConfig};
 use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
@@ -39,6 +39,8 @@ pub struct PipelineState {
     /// Global system prompt prepended to every conversation request.
     /// None = no injection.
     pub global_system_prompt: Option<String>,
+    /// Optional IP allowlist/blocklist policy.  None = all IPs allowed.
+    pub ip_policy: Option<Arc<IpPolicy>>,
 }
 
 #[derive(Clone)]

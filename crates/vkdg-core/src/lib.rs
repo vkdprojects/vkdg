@@ -77,8 +77,11 @@ pub struct RequestEnvelope {
     pub compression_override: Option<String>, // X-VKDG-Compression: "none"|"caveman"|"rtk"|"stacked"
     pub cache_bypass: bool,                   // X-VKDG-Cache: none
     pub include_think_tags: bool,             // X-VKDG-Think-Tags: include
+    /// Extracted client IP address (from X-Forwarded-For, X-Real-IP, or peer).
+    /// None when the ingress layer cannot determine the IP (e.g. unit tests).
+    #[serde(default)]
+    pub client_ip: Option<String>,
 }
-
 // ── Decision record ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

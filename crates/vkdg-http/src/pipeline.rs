@@ -111,6 +111,16 @@ async fn run_pipeline_inner(
     mut operation: Operation,
     excluded: &[ConnectionId],
 ) -> Result<Response, VkdgError> {
+    // 0. IP policy ─────────────────────────────────────────────────────────────
+    // Checked before admission so blocked IPs don't consume capacity slots.
+    if let Some(ip_policy) = &pipeline.ip_policy {
+        if let Some(client_ip) = &ctx.envelope.client_ip {
+            if !ip_policy.allows(client_ip) {
+                return Err(VkdgError::Unauthorized);
+            }
+        }
+    }
+
     // 1. Admission ─────────────────────────────────────────────────────────────
     // Must be the very first step: any failure before this would leak requests
     // past the capacity limit.
@@ -619,6 +629,7 @@ mod tests {
             session_registry: None,
             quota_tracker: None,
             global_system_prompt: None,
+            ip_policy: None,
         })
     }
 
@@ -635,6 +646,7 @@ mod tests {
             compression_override: None,
             cache_bypass: false,
             include_think_tags: false,
+            client_ip: None,
         };
         PipelineCtx::new(envelope)
     }
@@ -749,6 +761,7 @@ mod tests {
             session_registry: None,
             quota_tracker: None,
             global_system_prompt: None,
+            ip_policy: None,
         });
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.

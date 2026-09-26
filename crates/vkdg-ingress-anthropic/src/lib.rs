@@ -12,7 +12,7 @@ use std::convert::Infallible;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_http::AppState;
-use vkdg_http::pipeline::run_conversation_pipeline;
+use vkdg_http::{extract_client_ip, pipeline::run_conversation_pipeline};
 use vkdg_operations::{
     CapabilitySet, ContentBlock, ConversationEvent, ConversationRequest, ImageData, Message,
     MessageContent, Operation, Role, Tool,
@@ -331,6 +331,7 @@ pub async fn handle_messages(
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     // Extract per-request override headers (all are optional).
     envelope.mode_pack_override = headers
@@ -351,6 +352,7 @@ pub async fn handle_messages(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.eq_ignore_ascii_case("include"))
         .unwrap_or(false);
+    envelope.client_ip = extract_client_ip(headers);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     // VkdgError::Internal would map to 500 — wrong semantics.

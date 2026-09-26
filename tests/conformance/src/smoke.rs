@@ -62,6 +62,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: None,
+        ip_policy: None,
     })
 }
 
@@ -78,6 +79,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -152,6 +154,7 @@ async fn smoke_pipeline_streaming_ok() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -367,6 +370,7 @@ where
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: None,
+        ip_policy: None,
     })
 }
 
@@ -426,6 +430,7 @@ where
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: None,
+        ip_policy: None,
     })
 }
 
@@ -454,6 +459,7 @@ async fn smoke_pipeline_openai_streaming_ok() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -522,6 +528,7 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {

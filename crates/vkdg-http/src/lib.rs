@@ -10,9 +10,9 @@ pub mod dedup;
 pub mod external_service;
 
 // Re-exports for stable public API
-pub use admission::AdmissionGuard;
+pub use admission::{AdmissionGuard, IpPolicy};
 pub use app_state::{AppState, PipelineState};
-pub use frontdoor::{FrontDoor, ServerConfig};
+pub use frontdoor::{FrontDoor, ServerConfig, extract_client_ip};
 pub use server::{build_router, serve};
 pub use dedup::DedupTable;
 pub use upstream::HttpClient;

@@ -64,6 +64,7 @@ mod tests {
             compression_override: None,
             cache_bypass: false,
             include_think_tags: false,
+            client_ip: None,
         }
     }
 

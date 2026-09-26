@@ -45,6 +45,14 @@ enum Command {
         #[command(subcommand)]
         sub: RequestSub,
     },
+    /// Replay a recorded request fixture against the gateway.
+    Replay {
+        /// Path to the YAML fixture file.
+        fixture: String,
+        /// Override the gateway base URL (default: VKDG_BASE_URL or http://127.0.0.1:8080).
+        #[arg(long)]
+        base_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -89,6 +97,9 @@ async fn main() -> Result<()> {
         }
         Command::Request { sub: RequestSub::Explain { id, json } } => {
             vkdg_cli::commands::explain::run(&id, json).await?;
+        }
+        Command::Replay { fixture, base_url } => {
+            vkdg_cli::commands::replay::run(&fixture, base_url.as_deref()).await?;
         }
     }
     Ok(())
@@ -204,6 +215,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: snap.gateway.global_system_prompt.clone(),
+        ip_policy: None,
     }
 }
 
@@ -252,5 +264,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: None,
+        ip_policy: None,
     })
 }

@@ -66,6 +66,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: None,
+        ip_policy: None,
     })
 }
 
@@ -310,6 +311,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
+        client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {

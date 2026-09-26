@@ -47,26 +47,15 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         targets: vec![conn_id],
         plugin_hooks: PluginHooks::default(),
     };
-    Arc::new(PipelineState {
-        admission: Arc::new(AdmissionGuard::new(max_concurrent)),
-        router: Arc::new(Router::new(vec![route])),
-        catalog: Arc::new(ConnectionCatalog::new(vec![config])),
-        credentials: Arc::new(CredentialManager::new()),
-        http_client: Arc::new(HttpClient::new()),
-        exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(AnthropicAdapter),
-        cache: None,
-        combo_resolver: None,
-        compressor: None,
-        dedup_table: None,
-        session_registry: None,
-        quota_tracker: None,
-        global_system_prompt: None,
-        ip_policy: None,
-        latency_tracker: None,
-        memory_store: None,
-        eval_enabled: false,
-    })
+    Arc::new(PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(max_concurrent)),
+        Arc::new(Router::new(vec![route])),
+        Arc::new(ConnectionCatalog::new(vec![config])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(AnthropicAdapter),
+    ))
 }
 
 fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
@@ -93,6 +82,37 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         max_tokens: Some(10),
         temperature: None,
         stream: false,
+        system: None,
+        required_capabilities: CapabilitySet::default(),
+    });
+    (PipelineCtx::new(envelope), op)
+}
+
+/// Same as make_ctx but with stream: true for testing SSE passthrough.
+fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation) {
+    let envelope = RequestEnvelope {
+        request_id: RequestId::new(),
+        client_id: ClientId("smoke".into()),
+        tenant_id: TenantId("default".into()),
+        session_key: None,
+        api_type,
+        model_requested: model.into(),
+        deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
+        client_ip: None,
+    };
+    let op = Operation::Conversation(ConversationRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("ping".into()),
+        }],
+        tools: vec![],
+        max_tokens: Some(10),
+        temperature: None,
+        stream: true,
         system: None,
         required_capabilities: CapabilitySet::default(),
     });
@@ -145,33 +165,7 @@ async fn smoke_pipeline_streaming_ok() {
     .await;
 
     let pipeline = make_pipeline(fake.base_url.clone(), 10);
-    let envelope = RequestEnvelope {
-        request_id: RequestId::new(),
-        client_id: ClientId("smoke".into()),
-        tenant_id: TenantId("default".into()),
-        session_key: None,
-        api_type: ApiType::AnthropicMessages,
-        model_requested: "claude-3-5-haiku-20241022".into(),
-        deadline: None,
-        mode_pack_override: None,
-        compression_override: None,
-        cache_bypass: false,
-        include_think_tags: false,
-        client_ip: None,
-    };
-    let op = Operation::Conversation(ConversationRequest {
-        messages: vec![Message {
-            role: Role::User,
-            content: MessageContent::Text("ping".into()),
-        }],
-        tools: vec![],
-        max_tokens: Some(10),
-        temperature: None,
-        stream: true, // streaming request
-        system: None,
-        required_capabilities: CapabilitySet::default(),
-    });
-    let ctx = PipelineCtx::new(envelope);
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
 
     let response = run_conversation_pipeline(pipeline, ctx, op).await;
     let status = response.status();
@@ -358,26 +352,15 @@ where
         targets: vec![conn_id],
         plugin_hooks: PluginHooks::default(),
     };
-    Arc::new(PipelineState {
-        admission: Arc::new(AdmissionGuard::new(10)),
-        router: Arc::new(Router::new(vec![route])),
-        catalog: Arc::new(ConnectionCatalog::new(vec![config])),
-        credentials: Arc::new(CredentialManager::new()),
-        http_client: Arc::new(HttpClient::new()),
-        exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(adapter),
-        cache: None,
-        combo_resolver: None,
-        compressor: None,
-        dedup_table: None,
-        session_registry: None,
-        quota_tracker: None,
-        global_system_prompt: None,
-        ip_policy: None,
-        latency_tracker: None,
-        memory_store: None,
-        eval_enabled: false,
-    })
+    Arc::new(PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(10)),
+        Arc::new(Router::new(vec![route])),
+        Arc::new(ConnectionCatalog::new(vec![config])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(adapter),
+    ))
 }
 
 /// Helper: build a pipeline with two connections using the same adapter.
@@ -421,26 +404,15 @@ where
         targets: vec![id1, id2],
         plugin_hooks: PluginHooks::default(),
     };
-    Arc::new(PipelineState {
-        admission: Arc::new(AdmissionGuard::new(10)),
-        router: Arc::new(Router::new(vec![route])),
-        catalog: Arc::new(ConnectionCatalog::new(vec![cfg1, cfg2])),
-        credentials: Arc::new(CredentialManager::new()),
-        http_client: Arc::new(HttpClient::new()),
-        exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_adapter: Arc::new(adapter),
-        cache: None,
-        combo_resolver: None,
-        compressor: None,
-        dedup_table: None,
-        session_registry: None,
-        quota_tracker: None,
-        global_system_prompt: None,
-        ip_policy: None,
-        latency_tracker: None,
-        memory_store: None,
-        eval_enabled: false,
-    })
+    Arc::new(PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(10)),
+        Arc::new(Router::new(vec![route])),
+        Arc::new(ConnectionCatalog::new(vec![cfg1, cfg2])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(adapter),
+    ))
 }
 
 /// Smoke: pipeline with OpenAI provider returns SSE stream from fake OpenAI upstream.
@@ -456,33 +428,7 @@ async fn smoke_pipeline_openai_streaming_ok() {
     .await;
 
     let pipeline = make_pipeline_with(fake.base_url.clone(), OpenAIAdapter, "gpt-*");
-    let envelope = RequestEnvelope {
-        request_id: RequestId::new(),
-        client_id: ClientId("smoke".into()),
-        tenant_id: TenantId("default".into()),
-        session_key: None,
-        api_type: ApiType::AnthropicMessages,
-        model_requested: "gpt-4o".into(),
-        deadline: None,
-        mode_pack_override: None,
-        compression_override: None,
-        cache_bypass: false,
-        include_think_tags: false,
-        client_ip: None,
-    };
-    let op = Operation::Conversation(ConversationRequest {
-        messages: vec![Message {
-            role: Role::User,
-            content: MessageContent::Text("ping".into()),
-        }],
-        tools: vec![],
-        max_tokens: Some(10),
-        temperature: None,
-        stream: true,
-        system: None,
-        required_capabilities: CapabilitySet::default(),
-    });
-    let ctx = PipelineCtx::new(envelope);
+    let (ctx, op) = make_ctx_streaming("gpt-4o", ApiType::AnthropicMessages);
 
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;
 
@@ -525,33 +471,7 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
         "claude-*",
     );
 
-    let envelope = RequestEnvelope {
-        request_id: RequestId::new(),
-        client_id: ClientId("smoke".into()),
-        tenant_id: TenantId("default".into()),
-        session_key: None,
-        api_type: ApiType::AnthropicMessages,
-        model_requested: "claude-3-5-haiku-20241022".into(),
-        deadline: None,
-        mode_pack_override: None,
-        compression_override: None,
-        cache_bypass: false,
-        include_think_tags: false,
-        client_ip: None,
-    };
-    let op = Operation::Conversation(ConversationRequest {
-        messages: vec![Message {
-            role: Role::User,
-            content: MessageContent::Text("ping".into()),
-        }],
-        tools: vec![],
-        max_tokens: Some(10),
-        temperature: None,
-        stream: true,
-        system: None,
-        required_capabilities: CapabilitySet::default(),
-    });
-    let ctx = PipelineCtx::new(envelope);
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
 
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;
 

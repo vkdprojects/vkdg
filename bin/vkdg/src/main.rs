@@ -216,6 +216,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         quota_tracker: None,
         global_system_prompt: snap.gateway.global_system_prompt.clone(),
         ip_policy: None,
+        latency_tracker: None,
     }
 }
 
@@ -265,5 +266,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         quota_tracker: None,
         global_system_prompt: None,
         ip_policy: None,
+        latency_tracker: None,
     })
 }

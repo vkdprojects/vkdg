@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use vkdg_connections::{ConnectionCatalog, CredentialManager, SessionRegistry, QuotaTracker};
+use vkdg_connections::{ConnectionCatalog, CredentialManager, LatencyTracker, SessionRegistry, QuotaTracker};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
@@ -36,6 +36,8 @@ pub struct PipelineState {
     pub session_registry: Option<Arc<SessionRegistry>>,
     /// Optional quota tracker.  None = no quota tracking.
     pub quota_tracker: Option<Arc<QuotaTracker>>,
+    /// Optional latency tracker.  None = no latency recording.
+    pub latency_tracker: Option<Arc<LatencyTracker>>,
     /// Global system prompt prepended to every conversation request.
     /// None = no injection.
     pub global_system_prompt: Option<String>,

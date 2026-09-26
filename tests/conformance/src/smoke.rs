@@ -63,6 +63,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         quota_tracker: None,
         global_system_prompt: None,
         ip_policy: None,
+        latency_tracker: None,
     })
 }
 
@@ -371,6 +372,7 @@ where
         quota_tracker: None,
         global_system_prompt: None,
         ip_policy: None,
+        latency_tracker: None,
     })
 }
 
@@ -431,6 +433,7 @@ where
         quota_tracker: None,
         global_system_prompt: None,
         ip_policy: None,
+        latency_tracker: None,
     })
 }
 

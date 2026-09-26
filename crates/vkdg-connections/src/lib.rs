@@ -1,5 +1,8 @@
 pub mod session;
 pub mod quota;
+pub mod latency;
+
+pub use latency::{EwmaLatency, LatencyTracker};
 
 pub use session::{SessionPin, SessionRegistry};
 pub use quota::{QuotaTracker, QuotaWindow};

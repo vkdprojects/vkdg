@@ -67,6 +67,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         quota_tracker: None,
         global_system_prompt: None,
         ip_policy: None,
+        latency_tracker: None,
     })
 }
 

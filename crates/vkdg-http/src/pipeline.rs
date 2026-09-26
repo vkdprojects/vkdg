@@ -11,6 +11,8 @@ use serde_json::json;
 use vkdg_cache::{CacheEntry, CacheResult, cache_key};
 use vkdg_core::{AttemptResult, AttemptState, ConnectionId, DecisionRecord, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
+use vkdg_eval::{EvalScorer, LatencyMetrics};
+use vkdg_memory::{MemoryRecord, extract_facts, inject_memories};
 use vkdg_operations::{ContentBlock, MessageContent, Operation, Role};
 use vkdg_routing::{EligibilityFilter, RoutingHints};
 
@@ -334,6 +336,25 @@ async fn run_pipeline_inner(
         });
     }
 
+    // 4.65. Memory injection ───────────────────────────────────────────────────
+    // Retrieve relevant memories for this tenant and prepend them to the
+    // conversation context so the model has prior-session facts available.
+    if let (Some(memory_store), Operation::Conversation(conv_req)) =
+        (&pipeline.memory_store, &mut operation)
+    {
+        let query = conv_req.messages.last()
+            .and_then(|m| match &m.content {
+                MessageContent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let memories = memory_store.retrieve(&ctx.envelope.tenant_id.0, query, 5).await;
+        if !memories.is_empty() {
+            *conv_req = inject_memories(conv_req.clone(), &memories);
+            tracing::debug!(count = memories.len(), "memories injected");
+        }
+    }
+
     // 4.7. Request deduplication ───────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
     // we still proceed (Phase D: register-and-proceed).  Phase E will add the
@@ -437,6 +458,55 @@ async fn run_pipeline_inner(
                 let cache = Arc::clone(cache);
                 let key = key.clone();
                 tokio::spawn(async move { let _ = cache.store(&key, entry).await; });
+            }
+            // 8b. Memory extraction (fire-and-forget) ─────────────────────────
+            // Extract facts from the completed conversation and store them for
+            // future injection.  Runs async so it never blocks the response.
+            if let (Some(memory_store), Operation::Conversation(conv_req)) =
+                (&pipeline.memory_store, &operation)
+            {
+                let facts = extract_facts(&conv_req.messages);
+                if !facts.is_empty() {
+                    let tenant = ctx.envelope.tenant_id.0.clone();
+                    let session = ctx.envelope.session_key.as_ref().map(|s| s.0.clone());
+                    let memory_store = Arc::clone(memory_store);
+                    tokio::spawn(async move {
+                        for fact in facts {
+                            memory_store.store(MemoryRecord {
+                                id: uuid::Uuid::new_v4(),
+                                tenant_id: tenant.clone(),
+                                session_id: session.clone(),
+                                fact,
+                                source: "conversation".into(),
+                                created_at: chrono::Utc::now(),
+                                expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
+                                tags: vec![],
+                            }).await;
+                        }
+                    });
+                }
+            }
+            // 8c. Eval scoring ─────────────────────────────────────────────────
+            // Score response quality based on latency and content heuristics.
+            // Fire-and-forget: only tracing output in Phase D.
+            if pipeline.eval_enabled {
+                let metrics = LatencyMetrics {
+                    latency_ms: start_time.elapsed().as_millis() as u32,
+                    ttft_ms: None, // Phase E: track TTFT in streaming
+                    token_count: (body.len() / 4) as u32,
+                };
+                let eval = EvalScorer::score(
+                    &ctx.envelope.request_id.0.to_string(),
+                    ctx.connection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
+                    &String::from_utf8_lossy(&body),
+                    metrics,
+                );
+                tracing::debug!(
+                    score = eval.score,
+                    status = ?eval.status,
+                    latency_ms = eval.latency_ms,
+                    "eval score",
+                );
             }
             response_body_len = Some(body.len());
             let status_code =
@@ -673,6 +743,8 @@ mod tests {
             global_system_prompt: None,
             ip_policy: None,
             latency_tracker: None,
+            memory_store: None,
+            eval_enabled: false,
         })
     }
 
@@ -806,6 +878,8 @@ mod tests {
             global_system_prompt: None,
             ip_policy: None,
             latency_tracker: None,
+            memory_store: None,
+            eval_enabled: false,
         });
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.
@@ -868,6 +942,8 @@ mod tests {
             global_system_prompt: None,
             ip_policy: None,
             latency_tracker: None,
+            memory_store: None,
+            eval_enabled: false,
         });
         // Request for the combo name — resolver matches; step 1.5b reads threshold=100.
         // Empty request → estimated tokens = 0 < 100 → compression skipped.

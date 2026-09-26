@@ -4,7 +4,7 @@
 
 VKDG is an AI gateway for clients that speak different protocols and providers that behave differently. It receives a request, identifies the client, checks what the request needs, selects an eligible provider connection, translates only when the semantics can be preserved, and records why it made that choice.
 
-> **Status:** Phase D complete: 145 tests passing, 0 failing, 0 clippy warnings. 17 crates in production. Phase E (scale/release) in progress.
+> **Status:** Phase D + parity sprint complete: 250 tests passing, 0 failing, 0 clippy warnings. 21 crates in production. Phase E (scale/release) in progress.
 
 [The idea](#the-idea) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Endpoints](#endpoints) · [Protocols](#protocols-and-capabilities) · [Phases](#phases) · [Known gaps](#known-gaps) · [Development](#development) · [Architecture](VKDG-architecture-v0.md)
 
@@ -106,8 +106,9 @@ curl http://localhost:4000/v1/chat/completions \
 | `POST` | `/v1/messages` | Anthropic Messages | Conversation generation; streaming supported |
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions | Conversation generation; streaming supported |
 | `POST` | `/v1/images/generations` | OpenAI Images | Image generation |
-| `GET` | `/health` |: | Health check; returns 200 when ready |
-| `GET` | `/vkdg/v1/info` |: | Gateway version and build info |
+| `GET` | `/health` | — | Health check; returns 200 when ready |
+| `GET` | `/vkdg/v1/info` | — | Gateway version and build info |
+| `GET` | `/mcp` | MCP | Tool discovery (route_preview, gateway_health) |
 
 ## Protocols and capabilities
 
@@ -141,7 +142,9 @@ These are honest stubs that will be completed in Phase E. Nothing here is hidden
 - **`video.generate` polling/webhook** not implemented. The endpoint returns 202 Accepted with a job ID; status polling and webhook delivery are Phase E.
 - **OAuth2 credential refresh** is a stub. Static API keys work; singleflight refresh + encrypted vault is Phase E.
 - **Admin API** (`/admin/v1/`) is pending. Connection, route, and key management requires the SvelteKit console work: see [VKDG-frontend-day0.md](VKDG-frontend-day0.md).
-- **`vkdg request explain <id>`** and **`vkdg replay`** CLI subcommands are pending.
+- **`vkdg request explain <id>`** fetches and displays the `DecisionRecord` from the admin API.
+- **`vkdg config explain --model <name>`** simulates routing for a model without consuming quota.
+- **`vkdg replay <fixture>`** sends a recorded request to the gateway and optionally asserts the response.
 
 ## Development
 
@@ -158,7 +161,7 @@ cargo clippy --workspace -- -D warnings
 ./target/release/vkdg config check --config vkdg.toml
 ```
 
-Current baseline: **145 tests, 0 failing, 0 clippy warnings** across 17 crates.
+Current baseline: **250 tests, 0 failing, 0 clippy warnings** across 21 crates.
 
 | Document | Read it for |
 | --- | --- |

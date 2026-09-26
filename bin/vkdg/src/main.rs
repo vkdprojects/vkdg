@@ -150,6 +150,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         .route("/v1/images/generations", post(vkdg_ingress_openai::handle_image_generations))
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
+        .route("/mcp", get(vkdg_http::mcp_discovery))
         .with_state(state);
 
     // ── Admin API on a separate port ───────────────────────────────────────────
@@ -217,6 +218,8 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         global_system_prompt: snap.gateway.global_system_prompt.clone(),
         ip_policy: None,
         latency_tracker: None,
+        memory_store: None,
+        eval_enabled: false,
     }
 }
 
@@ -267,5 +270,7 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         global_system_prompt: None,
         ip_policy: None,
         latency_tracker: None,
+        memory_store: None,
+        eval_enabled: false,
     })
 }

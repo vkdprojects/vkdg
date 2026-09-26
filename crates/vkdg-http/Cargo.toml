@@ -13,6 +13,8 @@ vkdg-observe    = { workspace = true }
 vkdg-cache      = { workspace = true }
 vkdg-combos     = { workspace = true }
 vkdg-policy-compress = { workspace = true }
+vkdg-memory     = { workspace = true }
+vkdg-eval       = { workspace = true }
 
 serde       = { workspace = true }
 serde_json  = { workspace = true }
@@ -32,3 +34,4 @@ tracing     = { workspace = true }
 anyhow      = { workspace = true }
 reqwest         = { workspace = true }
 parking_lot = { workspace = true }
+chrono      = { workspace = true }

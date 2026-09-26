@@ -64,6 +64,8 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         global_system_prompt: None,
         ip_policy: None,
         latency_tracker: None,
+        memory_store: None,
+        eval_enabled: false,
     })
 }
 
@@ -373,6 +375,8 @@ where
         global_system_prompt: None,
         ip_policy: None,
         latency_tracker: None,
+        memory_store: None,
+        eval_enabled: false,
     })
 }
 
@@ -434,6 +438,8 @@ where
         global_system_prompt: None,
         ip_policy: None,
         latency_tracker: None,
+        memory_store: None,
+        eval_enabled: false,
     })
 }
 

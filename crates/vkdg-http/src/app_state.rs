@@ -11,7 +11,9 @@ use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
 use vkdg_cache::CacheBackend;
 use vkdg_combos::ComboResolver;
+use vkdg_memory::MemoryStore;
 use vkdg_policy_compress::Compressor;
+
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
 /// injected into AppState; optional so unit tests that only exercise admission
@@ -41,6 +43,11 @@ pub struct PipelineState {
     /// Global system prompt prepended to every conversation request.
     /// None = no injection.
     pub global_system_prompt: Option<String>,
+    /// Optional memory store for conversational memory injection/extraction.
+    /// None = memory disabled for this pipeline.
+    pub memory_store: Option<Arc<MemoryStore>>,
+    /// Enable quality scoring via vkdg-eval after each complete response.
+    pub eval_enabled: bool,
     /// Optional IP allowlist/blocklist policy.  None = all IPs allowed.
     pub ip_policy: Option<Arc<IpPolicy>>,
 }

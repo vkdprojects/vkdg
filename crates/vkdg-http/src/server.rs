@@ -56,12 +56,49 @@ async fn info() -> impl IntoResponse {
     Json(json!({"version": "0.1.0"}))
 }
 
+pub async fn mcp_discovery() -> impl IntoResponse {
+    // Minimal MCP server discovery response.
+    // Phase E: full MCP tool registry with provider, admin, and routing tools.
+    Json(json!({
+        "protocol_version": "2024-11-05",
+        "server_info": {
+            "name": "vkdg",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+        "capabilities": {
+            "tools": {"listChanged": false}
+        },
+        "tools": [
+            {
+                "name": "route_preview",
+                "description": "Preview which provider connection would handle a model request",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string", "description": "Model name or combo ID"}
+                    },
+                    "required": ["model"]
+                }
+            },
+            {
+                "name": "gateway_health",
+                "description": "Check gateway status and active connections",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        ]
+    }))
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/messages", post(handle_messages))
         .route("/v1/chat/completions", post(stub_501))
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
+        .route("/mcp", get(mcp_discovery))
         .with_state(state)
 }
 

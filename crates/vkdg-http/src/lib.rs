@@ -13,6 +13,6 @@ pub mod external_service;
 pub use admission::{AdmissionGuard, IpPolicy};
 pub use app_state::{AppState, PipelineState};
 pub use frontdoor::{FrontDoor, ServerConfig, extract_client_ip};
-pub use server::{build_router, serve};
+pub use server::{build_router, serve, mcp_discovery};
 pub use dedup::DedupTable;
 pub use upstream::HttpClient;

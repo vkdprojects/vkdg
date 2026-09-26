@@ -1,0 +1,188 @@
+openapi: "3.1.0"
+info:
+  title: VKDG Admin API
+  version: "0.1.0"
+  description: |
+    Administrative API for the VKDG gateway. Separate from the data plane.
+    All endpoints require an authenticated session unless noted otherwise.
+    Errors follow { code, message, request_id, details? }.
+
+servers:
+  - url: http://127.0.0.1:9090/admin/v1
+    description: Local admin listener (default)
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: vkdg_session
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:        { type: string }
+        message:     { type: string }
+        request_id:  { type: string, format: uuid }
+        details:     { type: object, nullable: true }
+
+    SystemInfo:
+      type: object
+      required: [version, status, config_revision, uptime_secs]
+      properties:
+        version:          { type: string, example: "0.1.0-rc1" }
+        status:           { type: string, enum: [ok, degraded], example: ok }
+        config_revision:  { type: integer, example: 3 }
+        uptime_secs:      { type: integer, example: 7200 }
+        connection_count: { type: integer, example: 2 }
+        active_requests:  { type: integer, example: 4 }
+
+    SessionUser:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id:  { type: string }
+        role:     { type: string, enum: [viewer, operator, admin] }
+
+    LoginRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, description: "Bootstrap token from vkdg doctor or first-boot output" }
+
+    ConnectionSummary:
+      type: object
+      required: [id, provider, status, model_count]
+      properties:
+        id:           { type: string, example: "anthropic-default" }
+        provider:     { type: string, example: "anthropic" }
+        status:       { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
+        model_count:  { type: integer, example: 3 }
+        active_requests: { type: integer, example: 1 }
+
+    ConnectionList:
+      type: object
+      required: [items, total]
+      properties:
+        items:  { type: array, items: { $ref: "#/components/schemas/ConnectionSummary" } }
+        total:  { type: integer }
+
+security:
+  - sessionCookie: []
+
+paths:
+  # ── System ──────────────────────────────────────────────────────────────────
+
+  /system:
+    get:
+      operationId: getSystem
+      summary: Gateway version, health, and active config state
+      description: |
+        No authentication required. Returns the running version, health status,
+        active config revision, and a few live counters. Use this to verify
+        the gateway is reachable before attempting authenticated operations.
+      security: []
+      responses:
+        "200":
+          description: System info
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemInfo" }
+
+  # ── Session ─────────────────────────────────────────────────────────────────
+
+  /session:
+    post:
+      operationId: login
+      summary: Exchange a bootstrap token for a session cookie
+      description: |
+        The bootstrap token is printed to stdout on first boot, or retrieved
+        via `cargo run -p vkdg -- doctor --bootstrap-token`. It is invalidated
+        after one successful use. Subsequent logins use the credentials set
+        during the bootstrap exchange (not yet implemented — Phase D admin).
+        On success, sets the HttpOnly `vkdg_session` cookie.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionUser" }
+        "401":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: logout
+      summary: Revoke the current session
+      responses:
+        "204":
+          description: Session revoked, cookie cleared
+
+  /session/me:
+    get:
+      operationId: getMe
+      summary: Current session identity and role
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionUser" }
+        "401":
+          description: No active session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Connections ──────────────────────────────────────────────────────────────
+
+  /connections:
+    get:
+      operationId: listConnections
+      summary: List all configured provider connections
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
+          required: false
+      responses:
+        "200":
+          description: Connection list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionList" }
+        "403":
+          description: Insufficient role (viewer can list; operator and admin can mutate)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /connections/{id}:
+    get:
+      operationId: getConnection
+      summary: Get a single connection's status and config (secrets excluded)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Connection detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectionSummary" }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }

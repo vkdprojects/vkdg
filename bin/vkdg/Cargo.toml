@@ -26,3 +26,5 @@ clap             = { workspace = true }
 tracing          = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
 vkdg-config      = { workspace = true }
+vkdg-admin       = { workspace = true }
+uuid             = { workspace = true }

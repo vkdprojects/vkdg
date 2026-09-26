@@ -51,8 +51,35 @@ impl ConfigSnapshot {
             observe,
         })
     }
-}
 
+    /// Returns an empty snapshot with version 0, suitable for testing and
+    /// admin API bootstrap before a config file is loaded.
+    pub fn default_empty() -> Self {
+        let gateway = GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![],
+            routes: vec![],
+            limits: None,
+            observe: None,
+        };
+        Self {
+            version: 0,
+            gateway: Arc::new(gateway),
+            connections: Arc::new(vec![]),
+            routes: Arc::new(vec![]),
+            limits: Arc::new(LimitsDef {
+                max_concurrent_requests: None,
+                max_body_bytes: None,
+                request_timeout_secs: None,
+            }),
+            observe: Arc::new(ObserveDef {
+                otlp_endpoint: None,
+                log_level: None,
+                log_format: None,
+            }),
+        }
+    }
+}
 /// A sender/receiver pair for atomic config swaps.
 /// Receivers hold a strong Arc reference so the old snapshot stays alive
 /// until every in-flight request using it completes.

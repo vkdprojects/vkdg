@@ -109,13 +109,35 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         .route("/vkdg/v1/info", get(info))
         .with_state(state);
 
+    // ── Admin API on a separate port ───────────────────────────────────────────
+    let admin_addr = std::env::var("VKDG_ADMIN_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:9090".into());
+    let bootstrap_token = std::env::var("VKDG_BOOTSTRAP_TOKEN").unwrap_or_else(|_| {
+        let t = uuid::Uuid::new_v4().to_string();
+        println!("Bootstrap token (one-time): {t}");
+        t
+    });
+    let dummy_snap = vkdg_config::ConfigSnapshot::default_empty();
+    let (_config_tx, config_rx) = vkdg_config::config_channel(dummy_snap);
+    let admin_state = vkdg_admin::AdminState {
+        sessions: vkdg_admin::session::SessionStore::new(bootstrap_token),
+        config_rx,
+        started_at: std::sync::Arc::new(std::time::Instant::now()),
+    };
+    let admin_router = vkdg_admin::build_admin_router(admin_state);
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(&admin_addr)
+            .await
+            .expect("bind admin listener");
+        tracing::info!(addr = %admin_addr, "admin API listening");
+        axum::serve(listener, admin_router).await.ok();
+    });
+
     println!("VKDG gateway listening on {listen}");
     tracing::info!(addr = %listen, "vkdg starting");
 
     vkdg_http::serve(server_config, router).await
 }
-
-
 async fn health() -> impl axum::response::IntoResponse {
     axum::Json(serde_json::json!({"status": "ok"}))
 }

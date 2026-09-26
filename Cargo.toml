@@ -19,9 +19,9 @@ members = [
     "crates/vkdg-artifacts",
     "crates/vkdg-policy-compress",
     "crates/vkdg-config",
+    "crates/vkdg-admin",
     "bench",
 ]
-
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
@@ -83,6 +83,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 futures = "0.3"
 pin-project-lite = "0.2"
 async-trait = "0.1"
+parking_lot = "0.12"
+
 
 # internal crates
 vkdg-core        = { path = "crates/vkdg-core" }
@@ -103,6 +105,7 @@ vkdg-jobs        = { path = "crates/vkdg-jobs" }
 vkdg-artifacts   = { path = "crates/vkdg-artifacts" }
 vkdg-policy-compress = { path = "crates/vkdg-policy-compress" }
 vkdg-config      = { path = "crates/vkdg-config" }
+vkdg-admin       = { path = "crates/vkdg-admin" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }

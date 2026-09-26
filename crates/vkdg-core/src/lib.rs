@@ -72,6 +72,11 @@ pub struct RequestEnvelope {
     pub api_type: ApiType,
     pub model_requested: String,
     pub deadline: Option<DateTime<Utc>>,
+    // Per-request overrides from X-VKDG-* headers
+    pub mode_pack_override: Option<String>,   // X-VKDG-Mode
+    pub compression_override: Option<String>, // X-VKDG-Compression: "none"|"caveman"|"rtk"|"stacked"
+    pub cache_bypass: bool,                   // X-VKDG-Cache: none
+    pub include_think_tags: bool,             // X-VKDG-Think-Tags: include
 }
 
 // ── Decision record ───────────────────────────────────────────────────────────

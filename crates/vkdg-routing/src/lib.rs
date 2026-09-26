@@ -157,6 +157,50 @@ impl Strategy for FallbackChainStrategy {
             .ok_or(VkdgError::NoEligibleConnection)
     }
 }
+// ── ScoredStrategy ────────────────────────────────────────────────────────────
+
+pub struct ScoredStrategy {
+    pub mode_pack: String,
+}
+
+#[async_trait]
+impl Strategy for ScoredStrategy {
+    fn name(&self) -> &str {
+        "scored"
+    }
+
+    async fn select(
+        &self,
+        candidates: &[ConnectionId],
+        _envelope: &RequestEnvelope,
+        filter: &EligibilityFilter,
+    ) -> Result<ConnectionId> {
+        let signals: Vec<scorer::CandidateSignals> = candidates
+            .iter()
+            .filter(|id| !filter.is_excluded(id))
+            .map(|id| scorer::CandidateSignals {
+                connection_id: id.0.clone(),
+                health: 1.0,
+                quota_headroom: None,
+                cost_per_ktoken: None,
+                latency_p50_ms: None,
+                instability_events: 0,
+            })
+            .collect();
+
+        if signals.is_empty() {
+            return Err(VkdgError::NoEligibleConnection);
+        }
+
+        let weights = scorer::ScoringWeights::from_mode_pack(&self.mode_pack);
+        scorer::rank_candidates(&signals, &weights)
+            .into_iter()
+            .next()
+            .map(|id| ConnectionId(id))
+            .ok_or(VkdgError::NoEligibleConnection)
+    }
+}
+
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
@@ -180,17 +224,27 @@ impl Router {
     ) -> Result<RouteResult> {
         let route = self.match_route(envelope).ok_or(VkdgError::NoEligibleConnection)?;
 
-        let strategy_key = match &route.strategy {
-            StrategyKind::RoundRobin => "round_robin",
-            StrategyKind::FallbackChain => "fallback_chain",
-            // All other strategies fall back to round-robin until implemented.
-            _ => "round_robin",
+        let strategy: Arc<dyn Strategy> = match &route.strategy {
+            StrategyKind::RoundRobin => self
+                .strategies
+                .get("round_robin")
+                .cloned()
+                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
+            StrategyKind::FallbackChain => self
+                .strategies
+                .get("fallback_chain")
+                .cloned()
+                .ok_or_else(|| VkdgError::Internal("fallback_chain not registered".into()))?,
+            StrategyKind::Scored { mode_pack } => {
+                Arc::new(ScoredStrategy { mode_pack: mode_pack.clone() })
+            }
+            // Other strategies fall back to round-robin until implemented.
+            _ => self
+                .strategies
+                .get("round_robin")
+                .cloned()
+                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
         };
-
-        let strategy = self
-            .strategies
-            .get(strategy_key)
-            .ok_or_else(|| VkdgError::Internal(format!("strategy {strategy_key} not registered")))?;
 
         let excluded: Vec<ExcludedCandidate> = filter
             .excluded_connections
@@ -227,5 +281,77 @@ impl Router {
                 }
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vkdg_core::{ApiType, ClientId, RequestId, TenantId};
+
+    fn test_envelope(model: &str) -> RequestEnvelope {
+        RequestEnvelope {
+            request_id: RequestId::new(),
+            client_id: ClientId("test-client".into()),
+            tenant_id: TenantId("test-tenant".into()),
+            session_key: None,
+            api_type: ApiType::AnthropicMessages,
+            model_requested: model.to_string(),
+            deadline: None,
+            mode_pack_override: None,
+            compression_override: None,
+            cache_bypass: false,
+            include_think_tags: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn scored_strategy_selects_single_candidate() {
+        let conn = ConnectionId("conn-a".into());
+        let route = RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            targets: vec![conn.clone()],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-5-haiku-20241022");
+        let result = router.route(&envelope, &EligibilityFilter::default()).await;
+        assert!(result.is_ok(), "scored strategy must select from available candidates");
+        assert_eq!(result.unwrap().connection_id, conn);
+    }
+
+    #[tokio::test]
+    async fn scored_strategy_uses_configured_mode_pack() {
+        let route = RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["gpt-*".into()],
+            strategy: StrategyKind::Scored { mode_pack: "ship-fast".into() },
+            targets: vec![ConnectionId("fast".into()), ConnectionId("cheap".into())],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("gpt-4o");
+        let result = router.route(&envelope, &EligibilityFilter::default()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn scored_strategy_returns_no_eligible_when_all_excluded() {
+        let conn = ConnectionId("conn-a".into());
+        let route = RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            targets: vec![conn.clone()],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-opus-20240229");
+        let mut filter = EligibilityFilter::default();
+        filter.excluded_connections.push(conn);
+        let result = router.route(&envelope, &filter).await;
+        assert!(matches!(result, Err(VkdgError::NoEligibleConnection)));
     }
 }

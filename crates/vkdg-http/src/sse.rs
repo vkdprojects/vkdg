@@ -18,11 +18,20 @@ pub struct SseEvent {
 pub struct SseParser {
     // Raw byte buffer — accumulated until a complete event is delimited.
     buf: Vec<u8>,
+    /// Whether to strip <think>...</think> blocks from text delta events.
+    /// Default: true (most clients don't want to see reasoning tokens).
+    pub strip_think_tags: bool,
 }
 
 impl SseParser {
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self { buf: Vec::new(), strip_think_tags: true }
+    }
+
+    /// Keep think-tag blocks in the output (opt-in by client via X-VKDG-Think-Tags: include).
+    pub fn with_think_tags(mut self) -> Self {
+        self.strip_think_tags = false;
+        self
     }
 
     /// Push a chunk of bytes (any size, any alignment) and return all complete
@@ -37,7 +46,10 @@ impl SseParser {
             // Drain consumed bytes (including the delimiter).
             self.buf.drain(..end.end);
 
-            if let Some(event) = parse_event_bytes(&event_bytes) {
+            if let Some(mut event) = parse_event_bytes(&event_bytes) {
+                if self.strip_think_tags {
+                    event.data = strip_think_tags(&event.data);
+                }
                 events.push(event);
             }
         }
@@ -125,6 +137,23 @@ fn parse_event_bytes(raw: &[u8]) -> Option<SseEvent> {
 
     let data = data_parts.join("\n");
     Some(SseEvent { event_type, data })
+}
+
+/// Remove <think>...</think> blocks from SSE data.
+/// Handles complete blocks within a single data line.
+/// Blocks spanning multiple SSE events are a known gap (see test documentation).
+pub fn strip_think_tags(data: &str) -> String {
+    let mut result = data.to_string();
+    loop {
+        match (result.find("<think>"), result.find("</think>")) {
+            (Some(start), Some(end)) if start < end => {
+                let end_full = end + "</think>".len();
+                result = format!("{}{}", &result[..start], &result[end_full..]);
+            }
+            _ => break,
+        }
+    }
+    result
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -271,5 +300,44 @@ mod tests {
             "line1\nline2",
             "multi-line data: fields must be joined with \\n"
         );
+    }
+
+    // Plausible wrong impl: think tags not stripped, reasoning leaks to client.
+    #[test]
+    fn strip_complete_think_block() {
+        let input = "Before<think>internal reasoning here</think>After";
+        assert_eq!(strip_think_tags(input), "BeforeAfter");
+    }
+
+    // Plausible wrong impl: nested or empty think blocks cause infinite loop.
+    #[test]
+    fn strip_think_block_empty() {
+        assert_eq!(strip_think_tags("<think></think>answer"), "answer");
+    }
+
+    // Plausible wrong impl: stripping modifies content outside think blocks.
+    #[test]
+    fn non_think_content_unchanged() {
+        let input = "The answer is 42. No reasoning here.";
+        assert_eq!(strip_think_tags(input), input);
+    }
+
+    // Known gap: a <think> block that spans two separate SSE events (first event
+    // ends with "<think>partial reasoning" and the next starts with
+    // "more reasoning</think>answer") will NOT be filtered — the per-event
+    // strip_think_tags() only sees one complete event at a time and has no
+    // cross-event state. Clients that need guaranteed filtering of cross-event
+    // think blocks must use a higher-level buffer. This test documents the gap:
+    #[test]
+    fn think_block_spanning_two_data_lines_is_known_gap() {
+        // The parser joins multiple data: lines within one SSE event with \n,
+        // so a think block split across two data: lines in the *same* event IS
+        // filtered (both halves are joined before strip_think_tags runs).
+        let mut p = SseParser::new();
+        let events = p.push(b"data: hello <think>reasoning\ndata: end</think> world\n\n");
+        assert_eq!(events.len(), 1);
+        // Multi-line data is joined: "hello <think>reasoning\nend</think> world"
+        // strip_think_tags sees the complete block and removes it.
+        assert_eq!(events[0].data, "hello  world");
     }
 }

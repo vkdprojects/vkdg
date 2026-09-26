@@ -60,6 +60,10 @@ mod tests {
             api_type: ApiType::AnthropicMessages,
             model_requested: "claude-3-5-sonnet-20241022".into(),
             deadline: None,
+            mode_pack_override: None,
+            compression_override: None,
+            cache_bypass: false,
+            include_think_tags: false,
         }
     }
 

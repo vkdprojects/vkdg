@@ -1,7 +1,11 @@
+use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Response;
+use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use http::header;
 use serde_json::json;
 use vkdg_cache::{CacheEntry, CacheResult, cache_key};
@@ -10,6 +14,7 @@ use vkdg_core::pipeline::PipelineCtx;
 use vkdg_operations::{ContentBlock, MessageContent, Operation, Role};
 use vkdg_routing::EligibilityFilter;
 
+use crate::sse::{SseEvent, SseParser};
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
 
@@ -194,7 +199,8 @@ async fn run_pipeline_inner(
     // 5a. Cache lookup (before upstream, after credential) ────────────────────
     // Bypass rules enforced here in core; the cache plugin never needs to check them.
     let conv_req = if let Operation::Conversation(r) = &operation { Some(r) } else { None };
-    let bypass_cache = conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
+    let bypass_cache = ctx.envelope.cache_bypass
+        || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
     let cache_key_val: Option<String> = if !bypass_cache {
         conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
     } else {
@@ -270,13 +276,18 @@ async fn run_pipeline_inner(
         }
         UpstreamResponse::Streaming { status: _, body } => {
             // Streaming responses are never cached — the body is a stream.
-            // Pass upstream SSE bytes through verbatim.
+            // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
+            let filtered_body = if !ctx.envelope.include_think_tags {
+                filter_think_tags_stream(body)
+            } else {
+                body
+            };
             axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
-                .body(axum::body::Body::from_stream(body))
+                .body(axum::body::Body::from_stream(filtered_body))
                 .unwrap_or_else(|_| error_response(VkdgError::Internal(
                     "streaming response builder failed".into(),
                 )))
@@ -346,6 +357,56 @@ fn error_response(err: VkdgError) -> Response {
 }
 
 // (build_anthropic_upstream_body and upstream_base_url moved to vkdg-provider-anthropic)
+// ── SSE think-tag filter ──────────────────────────────────────────────────────
+
+/// Re-encode a parsed SseEvent back into raw SSE bytes.
+fn sse_event_to_bytes(event: &SseEvent) -> Bytes {
+    let mut s = String::new();
+    if let Some(ref et) = event.event_type {
+        s.push_str("event: ");
+        s.push_str(et);
+        s.push('\n');
+    }
+    // Each \n in data must become a separate data: line per the SSE spec.
+    for line in event.data.split('\n') {
+        s.push_str("data: ");
+        s.push_str(line);
+        s.push('\n');
+    }
+    s.push('\n');
+    Bytes::from(s)
+}
+
+/// Wrap an upstream SSE byte stream with a think-tag filter.
+/// Parses each chunk through `SseParser` (strip_think_tags=true), re-encodes
+/// clean events back to SSE bytes.  Events spanning chunk boundaries are
+/// correctly handled by the parser's internal buffer.
+fn filter_think_tags_stream(
+    body: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    // State: (upstream stream, sse parser, buffered re-encoded events)
+    let state = (body, SseParser::new(), VecDeque::<SseEvent>::new());
+    Box::pin(futures::stream::unfold(state, |(mut upstream, mut parser, mut pending)| async move {
+        loop {
+            // Drain any events already parsed from the last chunk.
+            if let Some(event) = pending.pop_front() {
+                return Some((Ok(sse_event_to_bytes(&event)), (upstream, parser, pending)));
+            }
+            // Pull the next chunk from upstream.
+            match upstream.next().await {
+                Some(Ok(chunk)) => {
+                    for e in parser.push(&chunk) {
+                        pending.push_back(e);
+                    }
+                    // Loop back to drain the newly queued events.
+                }
+                Some(Err(e)) => return Some((Err(e), (upstream, parser, pending))),
+                None => return None,
+            }
+        }
+    }))
+}
+
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -399,6 +460,10 @@ mod tests {
             api_type: ApiType::AnthropicMessages,
             model_requested: model.into(),
             deadline: None,
+            mode_pack_override: None,
+            compression_override: None,
+            cache_bypass: false,
+            include_think_tags: false,
         };
         PipelineCtx::new(envelope)
     }

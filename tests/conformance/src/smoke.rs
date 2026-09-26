@@ -70,6 +70,10 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         api_type: ApiType::AnthropicMessages,
         model_requested: model.into(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -140,6 +144,10 @@ async fn smoke_pipeline_streaming_ok() {
         api_type: ApiType::AnthropicMessages,
         model_requested: "claude-3-5-haiku-20241022".into(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -430,6 +438,10 @@ async fn smoke_pipeline_openai_streaming_ok() {
         api_type: ApiType::AnthropicMessages,
         model_requested: "gpt-4o".into(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {
@@ -494,6 +506,10 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
         api_type: ApiType::AnthropicMessages,
         model_requested: "claude-3-5-haiku-20241022".into(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     };
     let op = Operation::Conversation(ConversationRequest {
         messages: vec![Message {

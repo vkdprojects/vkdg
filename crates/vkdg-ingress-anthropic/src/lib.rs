@@ -297,8 +297,11 @@ pub async fn handle_messages(
     State(state): State<AppState>,
     req: Request,
 ) -> Response {
+    // Split request into parts so we can read headers before consuming the body.
+    let (parts, body) = req.into_parts();
+
     // 1. Read body (4 MB hard limit — same as ServerConfig::default).
-    let bytes = match axum::body::to_bytes(req.into_body(), 4 * 1024 * 1024).await {
+    let bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
             return vkdg_error_to_anthropic_response(VkdgError::ConfigInvalid {
@@ -314,8 +317,9 @@ pub async fn handle_messages(
         Err(e) => return vkdg_error_to_anthropic_response(e),
     };
 
-    // 3. Build request envelope.
-    let envelope = RequestEnvelope {
+    // 3. Build request envelope with per-request override headers.
+    let headers = &parts.headers;
+    let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId("anonymous".into()),
         tenant_id: TenantId("default".into()),
@@ -323,7 +327,30 @@ pub async fn handle_messages(
         api_type: ApiType::AnthropicMessages,
         model_requested: model,
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     };
+    // Extract per-request override headers (all are optional).
+    envelope.mode_pack_override = headers
+        .get("x-vkdg-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.compression_override = headers
+        .get("x-vkdg-compression")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.cache_bypass = headers
+        .get("x-vkdg-cache")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("none"))
+        .unwrap_or(false);
+    envelope.include_think_tags = headers
+        .get("x-vkdg-think-tags")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("include"))
+        .unwrap_or(false);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     // VkdgError::Internal would map to 500 — wrong semantics.

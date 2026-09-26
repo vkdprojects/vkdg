@@ -19,6 +19,10 @@ fn make_envelope(model: &str) -> RequestEnvelope {
         api_type: ApiType::AnthropicMessages,
         model_requested: model.to_string(),
         deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
     }
 }
 

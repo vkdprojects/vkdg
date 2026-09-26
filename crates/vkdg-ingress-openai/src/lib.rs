@@ -114,8 +114,12 @@ pub async fn handle_chat_completions(
         session_key: None,
         api_type: ApiType::OpenAiChatCompletions,
         model_requested: model,
-        deadline: None,
-    };
+            deadline: None,
+            mode_pack_override: None,
+            compression_override: None,
+            cache_bypass: false,
+            include_think_tags: false,
+        };
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {
@@ -167,8 +171,12 @@ pub async fn handle_image_generations(
         session_key: None,
         api_type: ApiType::OpenAiImages,
         model_requested: model,
-        deadline: None,
-    };
+            deadline: None,
+            mode_pack_override: None,
+            compression_override: None,
+            cache_bypass: false,
+            include_think_tags: false,
+        };
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {

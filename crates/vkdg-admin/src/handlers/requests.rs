@@ -135,6 +135,7 @@ mod tests {
             key_store: KeyStore::new(),
             request_log: RequestLog::new(),
             combo_resolver: None,
+            catalog: None,
         }
     }
 

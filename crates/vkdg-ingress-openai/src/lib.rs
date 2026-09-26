@@ -17,7 +17,7 @@ use serde::Serialize;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_http::AppState;
-use vkdg_http::{extract_client_ip, pipeline::run_conversation_pipeline};
+use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
 
 // ── OpenAI error wire types ───────────────────────────────────────────────────
 
@@ -124,25 +124,7 @@ pub async fn handle_chat_completions(
         client_ip: None,
     };
     // Extract per-request override headers (all are optional).
-    envelope.mode_pack_override = headers
-        .get("x-vkdg-mode")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    envelope.compression_override = headers
-        .get("x-vkdg-compression")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    envelope.cache_bypass = headers
-        .get("x-vkdg-cache")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("none"))
-        .unwrap_or(false);
-    envelope.include_think_tags = headers
-        .get("x-vkdg-think-tags")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("include"))
-        .unwrap_or(false);
-    envelope.client_ip = extract_client_ip(headers);
+    extract_vkdg_overrides(headers, &mut envelope);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {
@@ -204,25 +186,7 @@ pub async fn handle_image_generations(
         client_ip: None,
     };
     // Extract per-request override headers (all are optional).
-    envelope.mode_pack_override = headers
-        .get("x-vkdg-mode")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    envelope.compression_override = headers
-        .get("x-vkdg-compression")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    envelope.cache_bypass = headers
-        .get("x-vkdg-cache")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("none"))
-        .unwrap_or(false);
-    envelope.include_think_tags = headers
-        .get("x-vkdg-think-tags")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("include"))
-        .unwrap_or(false);
-    envelope.client_ip = extract_client_ip(headers);
+    extract_vkdg_overrides(headers, &mut envelope);
 
     // 4. Dispatch to pipeline or return 501 Not Implemented.
     match state.pipeline {

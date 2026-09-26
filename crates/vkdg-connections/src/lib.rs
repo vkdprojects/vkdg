@@ -28,6 +28,23 @@ pub enum ProviderKind {
     Custom { base_url: String },
 }
 
+impl ProviderKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenAI => "openai",
+            ProviderKind::Google => "google",
+            ProviderKind::Custom { base_url } => base_url.as_str(),
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthKind {

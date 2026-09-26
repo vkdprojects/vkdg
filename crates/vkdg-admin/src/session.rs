@@ -76,7 +76,8 @@ pub struct ClientKey {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub scopes: Vec<String>,
     #[serde(skip)]
-    pub raw_hash: String,
+    // Phase E: hash before storage
+    pub raw_token: String,
 }
 
 pub struct KeyStore {
@@ -98,7 +99,7 @@ impl KeyStore {
             created_at: chrono::Utc::now(),
             last_used_at: None,
             scopes,
-            raw_hash: raw.clone(),
+            raw_token: raw.clone(),
         };
         self.keys.write().push(key.clone());
         (key, raw)

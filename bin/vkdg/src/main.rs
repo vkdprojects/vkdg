@@ -170,6 +170,7 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         key_store: vkdg_admin::session::KeyStore::new(),
         request_log: vkdg_admin::handlers::requests::RequestLog::new(),
         combo_resolver: None,
+        catalog: None,
     };
     let admin_router = vkdg_admin::build_admin_router(admin_state);
     tokio::spawn(async move {

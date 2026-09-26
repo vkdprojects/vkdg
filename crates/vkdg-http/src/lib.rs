@@ -12,7 +12,7 @@ pub mod external_service;
 // Re-exports for stable public API
 pub use admission::{AdmissionGuard, IpPolicy};
 pub use app_state::{AppState, PipelineState};
-pub use frontdoor::{FrontDoor, ServerConfig, extract_client_ip};
-pub use server::{build_router, serve, mcp_discovery};
+pub use frontdoor::{FrontDoor, ServerConfig, extract_client_ip, extract_vkdg_overrides};
+pub use server::{serve, mcp_discovery};
 pub use dedup::DedupTable;
 pub use upstream::HttpClient;

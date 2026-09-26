@@ -148,6 +148,25 @@ pub enum VkdgError {
     Internal(String),
 }
 
+impl VkdgError {
+    /// Canonical HTTP status code for this error.
+    /// Ingress crates use this for their wire-format response.
+    pub fn http_status(&self) -> u16 {
+        match self {
+            VkdgError::Unauthenticated => 401,
+            VkdgError::Unauthorized => 403,
+            // 429 Too Many Requests: capacity rejection, not server error
+            VkdgError::AdmissionRejected { .. } => 429,
+            VkdgError::CapabilityUnsupported { .. } => 400,
+            VkdgError::NoEligibleConnection => 502,
+            VkdgError::UpstreamError { code, .. } => *code,
+            VkdgError::PluginError { .. } => 500,
+            VkdgError::ConfigInvalid { .. } => 400,
+            VkdgError::Internal(_) => 500,
+        }
+    }
+}
+
 pub type Result<T, E = VkdgError> = std::result::Result<T, E>;
 
 // ── Capabilities ──────────────────────────────────────────────────────────────

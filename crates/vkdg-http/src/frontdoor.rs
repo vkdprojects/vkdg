@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use vkdg_core::{ApiType, RequestId};
+use vkdg_core::{ApiType, RequestEnvelope, RequestId};
 
 use crate::admission::AdmissionGuard;
 
@@ -84,4 +84,28 @@ pub fn extract_client_ip(headers: &http::HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract X-VKDG-* per-request override headers into a [`RequestEnvelope`].
+/// Call this after building the envelope from the protocol-specific fields.
+pub fn extract_vkdg_overrides(headers: &http::HeaderMap, envelope: &mut RequestEnvelope) {
+    envelope.mode_pack_override = headers
+        .get("x-vkdg-mode")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.compression_override = headers
+        .get("x-vkdg-compression")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    envelope.cache_bypass = headers
+        .get("x-vkdg-cache")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("none"))
+        .unwrap_or(false);
+    envelope.include_think_tags = headers
+        .get("x-vkdg-think-tags")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("include"))
+        .unwrap_or(false);
+    envelope.client_ip = extract_client_ip(headers);
 }

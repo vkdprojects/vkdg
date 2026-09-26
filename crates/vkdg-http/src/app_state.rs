@@ -52,6 +52,41 @@ pub struct PipelineState {
     pub ip_policy: Option<Arc<IpPolicy>>,
 }
 
+impl PipelineState {
+    /// Construct a PipelineState with all optional fields set to None/false.
+    /// Use in tests and partial pipelines; override optional fields by name afterwards.
+    pub fn minimal(
+        admission: Arc<AdmissionGuard>,
+        router: Arc<VkdgRouter>,
+        catalog: Arc<ConnectionCatalog>,
+        credentials: Arc<CredentialManager>,
+        http_client: Arc<HttpClient>,
+        exporter: Arc<DecisionRecordExporter>,
+        provider_adapter: Arc<dyn ProviderAdapter>,
+    ) -> Self {
+        Self {
+            admission,
+            router,
+            catalog,
+            credentials,
+            http_client,
+            exporter,
+            provider_adapter,
+            cache: None,
+            combo_resolver: None,
+            compressor: None,
+            dedup_table: None,
+            session_registry: None,
+            quota_tracker: None,
+            global_system_prompt: None,
+            ip_policy: None,
+            latency_tracker: None,
+            memory_store: None,
+            eval_enabled: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub front_door: Arc<FrontDoor>,

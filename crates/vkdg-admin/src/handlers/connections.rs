@@ -26,19 +26,11 @@ pub struct ConnectionList {
     total: usize,
 }
 
-fn provider_str(kind: &vkdg_connections::ProviderKind) -> String {
-    match kind {
-        vkdg_connections::ProviderKind::Anthropic => "anthropic".into(),
-        vkdg_connections::ProviderKind::OpenAI => "openai".into(),
-        vkdg_connections::ProviderKind::Google => "google".into(),
-        vkdg_connections::ProviderKind::Custom { .. } => "custom".into(),
-    }
-}
 
 fn conn_to_summary(conn: &vkdg_connections::ConnectionConfig) -> ConnectionSummary {
     ConnectionSummary {
         id: conn.id.0.clone(),
-        provider: provider_str(&conn.provider),
+        provider: conn.provider.as_str().to_string(),
         status: "healthy",
         model_count: conn.models.len(),
         active_requests: 0,
@@ -96,6 +88,7 @@ mod tests {
             key_store: crate::session::KeyStore::new(),
             request_log: crate::handlers::requests::RequestLog::new(),
             combo_resolver: None,
+            catalog: None,
         }
     }
 
@@ -137,6 +130,7 @@ mod tests {
             key_store: crate::session::KeyStore::new(),
             request_log: crate::handlers::requests::RequestLog::new(),
             combo_resolver: None,
+            catalog: None,
         };
 
         let mut headers = HeaderMap::new();

@@ -9,7 +9,7 @@ use futures::{Stream, StreamExt};
 use http::header;
 use serde_json::json;
 use vkdg_cache::{CacheEntry, CacheResult, cache_key};
-use vkdg_core::{AttemptResult, AttemptState, ConnectionId, DecisionRecord, VkdgError};
+use vkdg_core::{AttemptResult, AttemptState, ConnectionId, DecisionRecord, RequestEnvelope, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_eval::{EvalScorer, LatencyMetrics};
 use vkdg_memory::{MemoryRecord, extract_facts, inject_memories};
@@ -32,7 +32,7 @@ pub async fn run_conversation_pipeline(
     // Transparent 429 fallback: if the upstream rate-limits us and we have not
     // yet committed any bytes to the client, retry with the failed connection
     // excluded so the router picks a different candidate.
-    let (ctx, outcome) = if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
+    let (ctx, outcome, final_attempt) = if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
         if ctx.can_retry() {
             // Emit DecisionRecord for the failed first attempt before retrying.
             let excluded: Vec<ConnectionId> =
@@ -42,16 +42,16 @@ pub async fn run_conversation_pipeline(
             let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
             let outcome2 =
                 run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
-            (ctx2, outcome2)
+            (ctx2, outcome2, 2u32)
         } else {
-            (ctx, outcome)
+            (ctx, outcome, 1u32)
         }
     } else {
-        (ctx, outcome)
+        (ctx, outcome, 1u32)
     };
 
-    // Emit DecisionRecord for the final attempt (attempt 1 when no retry, attempt 2 otherwise).
-    emit_decision_record(&pipeline, &ctx, &outcome, 1);
+    // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).
+    emit_decision_record(&pipeline, &ctx, &outcome, final_attempt);
 
     match outcome {
         Ok(resp) => resp,
@@ -106,6 +106,236 @@ impl Drop for DedupGuard {
         self.dedup.complete(&self.key);
     }
 }
+// ── Pipeline phase helpers ────────────────────────────────────────────────────
+
+struct ComboSessionResolution {
+    /// Combo target list; non-empty = combo matched with target overrides.
+    resolved_targets: Option<Vec<ConnectionId>>,
+    /// Combo id for debug tracing.
+    combo_id: Option<String>,
+    effective_compressor_id: Option<String>,
+    compression_threshold: u32,
+    session_preferred: Option<ConnectionId>,
+}
+
+async fn resolve_combo_and_session(
+    pipeline: &PipelineState,
+    envelope: &RequestEnvelope,
+) -> ComboSessionResolution {
+    let combo = pipeline
+        .combo_resolver
+        .as_ref()
+        .and_then(|r| r.resolve(&envelope.model_requested));
+
+    if let Some(c) = &combo {
+        tracing::debug!(combo_id = %c.id, "request resolved to combo");
+    }
+
+    let combo_compression = combo
+        .as_ref()
+        .and_then(|c| c.compression.as_ref())
+        .cloned();
+    let effective_compressor_id: Option<String> = envelope.compression_override.clone()
+        .or_else(|| combo_compression.as_ref().map(|c| c.plugin_id.clone()));
+    let compression_threshold: u32 = combo_compression
+        .as_ref()
+        .and_then(|c| c.auto_trigger_tokens)
+        .unwrap_or(2000);
+
+    let session_preferred = if let (Some(registry), Some(session_key)) = (
+        &pipeline.session_registry,
+        &envelope.session_key,
+    ) {
+        registry.get(&session_key.0).await
+    } else {
+        None
+    };
+
+    ComboSessionResolution {
+        resolved_targets: combo.as_ref().map(|c| c.targets.clone()),
+        combo_id: combo.map(|c| c.id.clone()),
+        effective_compressor_id,
+        compression_threshold,
+        session_preferred,
+    }
+}
+
+async fn prepare_operation(
+    pipeline: &PipelineState,
+    mut operation: Operation,
+    envelope: &RequestEnvelope,
+    compression_threshold: u32,
+    effective_compressor_id: &Option<String>,
+) -> Operation {
+    // Context compression (pre-dispatch)
+    let skip_compression = effective_compressor_id.as_deref() == Some("none");
+    if !skip_compression {
+        if let Some(compressor) = &pipeline.compressor {
+            if let Operation::Conversation(conv_req) = &operation {
+                let estimated = compressor.estimate_tokens(conv_req);
+                if estimated >= compression_threshold {
+                    if let Some(comp_id) = effective_compressor_id {
+                        if comp_id != "auto" && comp_id != compressor.name() {
+                            tracing::debug!(
+                                requested = %comp_id,
+                                available = %compressor.name(),
+                                "compression plugin mismatch, using available (plugin registry is Phase E)",
+                            );
+                        }
+                    }
+                    match compressor.compress(conv_req.clone(), estimated) {
+                        Ok((compressed_req, report)) => {
+                            tracing::debug!(
+                                tokens_before = estimated,
+                                tokens_after  = estimated.saturating_sub(report.estimated_tokens_removed),
+                                algorithm     = %report.strategy,
+                                "compression applied",
+                            );
+                            operation = Operation::Conversation(compressed_req);
+                        }
+                        Err(vkdg_policy_compress::CompressionError::NotApplicable) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "compression failed, proceeding uncompressed");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Global system prompt injection
+    if let (Some(global_prompt), Operation::Conversation(conv_req)) =
+        (&pipeline.global_system_prompt, &mut operation)
+    {
+        conv_req.system = Some(match &conv_req.system {
+            None => global_prompt.clone(),
+            Some(existing) => format!("{global_prompt}\n\n{existing}"),
+        });
+    }
+
+    // Memory injection
+    if let (Some(memory_store), Operation::Conversation(conv_req)) =
+        (&pipeline.memory_store, &mut operation)
+    {
+        let query = conv_req.messages.last()
+            .and_then(|m| match &m.content {
+                MessageContent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let memories = memory_store.retrieve(&envelope.tenant_id.0, query, 5).await;
+        if !memories.is_empty() {
+            *conv_req = inject_memories(conv_req.clone(), &memories);
+            tracing::debug!(count = memories.len(), "memories injected");
+        }
+    }
+
+    operation
+}
+
+fn post_response_accounting(
+    pipeline: &PipelineState,
+    ctx: &PipelineCtx,
+    response_body: Option<&Bytes>,
+    start_time: std::time::Instant,
+    operation: &Operation,
+) {
+    // Memory extraction: non-streaming only (fire-and-forget)
+    if response_body.is_some() {
+        if let (Some(memory_store), Operation::Conversation(conv_req)) =
+            (&pipeline.memory_store, operation)
+        {
+            let facts = extract_facts(&conv_req.messages);
+            if !facts.is_empty() {
+                let tenant = ctx.envelope.tenant_id.0.clone();
+                let session = ctx.envelope.session_key.as_ref().map(|s| s.0.clone());
+                let memory_store = Arc::clone(memory_store);
+                tokio::spawn(async move {
+                    for fact in facts {
+                        memory_store.store(MemoryRecord {
+                            id: uuid::Uuid::new_v4(),
+                            tenant_id: tenant.clone(),
+                            session_id: session.clone(),
+                            fact,
+                            source: "conversation".into(),
+                            created_at: chrono::Utc::now(),
+                            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
+                            tags: vec![],
+                        }).await;
+                    }
+                });
+            }
+        }
+    }
+
+    // Eval scoring: non-streaming only
+    if let Some(body) = response_body {
+        if pipeline.eval_enabled {
+            let metrics = LatencyMetrics {
+                latency_ms: start_time.elapsed().as_millis() as u32,
+                ttft_ms: None, // Phase E: track TTFT in streaming
+                token_count: (body.len() / 4) as u32,
+            };
+            let eval = EvalScorer::score(
+                &ctx.envelope.request_id.0.to_string(),
+                ctx.connection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
+                &String::from_utf8_lossy(body),
+                metrics,
+            );
+            tracing::debug!(
+                score = eval.score,
+                status = ?eval.status,
+                latency_ms = eval.latency_ms,
+                "eval score",
+            );
+        }
+    }
+
+    // Quota + session pin: non-streaming only
+    if let Some(approx_tokens) = response_body.map(|b| (b.len() / 4) as u64) {
+        if let Some(tracker) = &pipeline.quota_tracker {
+            if let Some(conn_id) = &ctx.connection_id {
+                let tracker = Arc::clone(tracker);
+                let conn_id = conn_id.clone();
+                tokio::spawn(async move {
+                    tracker.record_usage(&conn_id, approx_tokens).await;
+                });
+            }
+        }
+        if let (Some(registry), Some(session_key), Some(conn_id)) = (
+            &pipeline.session_registry,
+            &ctx.envelope.session_key,
+            &ctx.connection_id,
+        ) {
+            let registry = Arc::clone(registry);
+            let session_id = session_key.0.clone();
+            let conn_id = conn_id.clone();
+            tokio::spawn(async move {
+                registry.pin(session_id, conn_id).await;
+            });
+        }
+    }
+
+    // Latency recording (unconditional)
+    if let (Some(tracker), Some(conn_id)) = (&pipeline.latency_tracker, &ctx.connection_id) {
+        let latency_ms = start_time.elapsed().as_millis() as u32;
+        let tracker = Arc::clone(tracker);
+        let conn_id = conn_id.clone();
+        tokio::spawn(async move { tracker.record(&conn_id, latency_ms).await; });
+    }
+
+    // Cooldown recovery: clear expired cooldown on success → recover to Healthy
+    if let Some(conn_arc) = ctx
+        .connection_id
+        .as_ref()
+        .and_then(|id| pipeline.catalog.get(id))
+    {
+        if let Ok(mut conn) = conn_arc.try_write() {
+            conn.check_cooldown();
+        }
+    }
+}
+
 
 async fn run_pipeline_inner(
     pipeline: &PipelineState,
@@ -128,51 +358,13 @@ async fn run_pipeline_inner(
     // 1. Admission ─────────────────────────────────────────────────────────────
     // Must be the very first step: any failure before this would leak requests
     // past the capacity limit.
-    let _permit = pipeline.admission.acquire().await?;
+    let _permit = pipeline.admission.acquire()?;
     ctx.transition(AttemptState::Admitted);
 
-    // 1.5. Combo resolution ────────────────────────────────────────────────────
-    // Resolve the requested model name to a combo before routing so the combo's
-    // configuration (targets, strategy, compression, cache policy) can shadow the
-    // default route.  Falls through to bare model routing when no combo matches.
-    let combo = pipeline
-        .combo_resolver
-        .as_ref()
-        .and_then(|r| r.resolve(&ctx.envelope.model_requested));
+    // 2. Combo resolution + session stickiness ────────────────────────────────
+    let csr = resolve_combo_and_session(pipeline, &ctx.envelope).await;
 
-    if let Some(c) = &combo {
-        tracing::debug!(combo_id = %c.id, "request resolved to combo");
-    }
-
-    // 1.5b. Effective compression config ──────────────────────────────────────
-    // X-VKDG-Compression header overrides the combo plugin_id ("none" = skip).
-    // Threshold comes from the combo; falls back to 2000 when unset.
-    let combo_compression = combo
-        .as_ref()
-        .and_then(|c| c.compression.as_ref())
-        .cloned();
-    let effective_compressor_id: Option<String> = ctx.envelope.compression_override.clone()
-        .or_else(|| combo_compression.as_ref().map(|c| c.plugin_id.clone()));
-    let compression_threshold: u32 = combo_compression
-        .as_ref()
-        .and_then(|c| c.auto_trigger_tokens)
-        .unwrap_or(2000);
-
-    // 1.6. Session stickiness ──────────────────────────────────────────────────
-    // If the request carries a session_key and the registry has a valid pin for
-    // it, record the preferred connection now.  We apply it after routing (below)
-    // so the combo override logic is unaffected.
-    let session_preferred_connection: Option<ConnectionId> =
-        if let (Some(registry), Some(session_key)) = (
-            &pipeline.session_registry,
-            &ctx.envelope.session_key,
-        ) {
-            registry.get(&session_key.0).await
-        } else {
-            None
-        };
-
-    // 2. Route ─────────────────────────────────────────────────────────────────
+    // 3. Route ─────────────────────────────────────────────────────────────────
     let filter = if excluded.is_empty() {
         EligibilityFilter::default()
     } else {
@@ -212,11 +404,8 @@ async fn run_pipeline_inner(
         .router
         .route(&ctx.envelope, &filter, &routing_hints)
         .await?;
-    // Apply combo target override: if a combo matched and its targets don't
-    // include the routed connection, redirect to the first combo target.
-    // Apply combo target override, then honor session preference.
     // Priority: session pin > combo redirect > routed connection.
-    let connection_id = if let Some(preferred) = session_preferred_connection {
+    let connection_id = if let Some(preferred) = csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check
         // happens inside acquire() at step 3; here we just guard against stale pins
         // for connections that were removed from the catalog entirely).
@@ -227,24 +416,24 @@ async fn run_pipeline_inner(
                 "session stickiness: using pinned connection",
             );
             preferred
-        } else if let Some(c) = &combo {
-            if !c.targets.is_empty() && !c.targets.contains(&route_result.connection_id) {
-                c.targets[0].clone()
+        } else if let Some(targets) = &csr.resolved_targets {
+            if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
+                targets[0].clone()
             } else {
                 route_result.connection_id
             }
         } else {
             route_result.connection_id
         }
-    } else if let Some(c) = &combo {
-        if !c.targets.is_empty() && !c.targets.contains(&route_result.connection_id) {
+    } else if let Some(targets) = &csr.resolved_targets {
+        if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
             tracing::debug!(
-                combo_id = %c.id,
+                combo_id = %csr.combo_id.as_deref().unwrap_or(""),
                 routed   = %route_result.connection_id.0,
-                redirect = %c.targets[0].0,
+                redirect = %targets[0].0,
                 "combo redirect: routed connection not in combo targets",
             );
-            c.targets[0].clone()
+            targets[0].clone()
         } else {
             route_result.connection_id
         }
@@ -286,76 +475,16 @@ async fn run_pipeline_inner(
             .body(axum::body::Body::from(body))
             .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
     }
-    // 4.5. Context compression (pre-dispatch) ──────────────────────────────────
-    // Applied when the pipeline has a compressor AND this is a conversation.
-    // Threshold and plugin ID come from the resolved combo (step 1.5b); default 2000.
-    // "none" in effective_compressor_id skips compression entirely.
-    // Plugin identity selection requires a registry lookup (Phase E); for now log mismatch.
-    let skip_compression = effective_compressor_id.as_deref() == Some("none");
-    if !skip_compression {
-        if let Some(compressor) = &pipeline.compressor {
-            if let Operation::Conversation(conv_req) = &operation {
-                let estimated = compressor.estimate_tokens(conv_req);
-                if estimated >= compression_threshold {
-                    if let Some(comp_id) = &effective_compressor_id {
-                        if comp_id != "auto" && comp_id != compressor.name() {
-                            tracing::debug!(
-                                requested = %comp_id,
-                                available = %compressor.name(),
-                                "compression plugin mismatch, using available (plugin registry is Phase E)",
-                            );
-                        }
-                    }
-                    match compressor.compress(conv_req.clone(), estimated) {
-                        Ok((compressed_req, report)) => {
-                            tracing::debug!(
-                                tokens_before = estimated,
-                                tokens_after  = estimated.saturating_sub(report.estimated_tokens_removed),
-                                algorithm     = %report.strategy,
-                                "compression applied",
-                            );
-                            operation = Operation::Conversation(compressed_req);
-                        }
-                        Err(vkdg_policy_compress::CompressionError::NotApplicable) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, "compression failed, proceeding uncompressed");
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // 5. Prepare operation (compression + system prompt + memory injection) ────
+    operation = prepare_operation(
+        pipeline,
+        operation,
+        &ctx.envelope,
+        csr.compression_threshold,
+        &csr.effective_compressor_id,
+    ).await;
 
-    // 4.6. Global system prompt injection ─────────────────────────────────────
-    if let (Some(global_prompt), Operation::Conversation(conv_req)) =
-        (&pipeline.global_system_prompt, &mut operation)
-    {
-        conv_req.system = Some(match &conv_req.system {
-            None => global_prompt.clone(),
-            Some(existing) => format!("{global_prompt}\n\n{existing}"),
-        });
-    }
-
-    // 4.65. Memory injection ───────────────────────────────────────────────────
-    // Retrieve relevant memories for this tenant and prepend them to the
-    // conversation context so the model has prior-session facts available.
-    if let (Some(memory_store), Operation::Conversation(conv_req)) =
-        (&pipeline.memory_store, &mut operation)
-    {
-        let query = conv_req.messages.last()
-            .and_then(|m| match &m.content {
-                MessageContent::Text(t) => Some(t.as_str()),
-                _ => None,
-            })
-            .unwrap_or("");
-        let memories = memory_store.retrieve(&ctx.envelope.tenant_id.0, query, 5).await;
-        if !memories.is_empty() {
-            *conv_req = inject_memories(conv_req.clone(), &memories);
-            tracing::debug!(count = memories.len(), "memories injected");
-        }
-    }
-
-    // 4.7. Request deduplication ───────────────────────────────────────────────
+    // 6. Request deduplication ─────────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
     // we still proceed (Phase D: register-and-proceed).  Phase E will add the
     // wait-then-read-cache path.  The DedupGuard calls complete() on drop so
@@ -371,7 +500,7 @@ async fn run_pipeline_inner(
         None
     };
 
-    // 5a. Cache lookup (before upstream, after credential) ────────────────────
+    // 7. Cache lookup ──────────────────────────────────────────────────────────
     // Bypass rules enforced here in core; the cache plugin never needs to check them.
     let conv_req = if let Operation::Conversation(r) = &operation { Some(r) } else { None };
     let bypass_cache = ctx.envelope.cache_bypass
@@ -403,7 +532,7 @@ async fn run_pipeline_inner(
         }
     }
 
-    // 5b. Build upstream request via provider adapter ─────────────────────────
+    // 8. Build upstream request via provider adapter ───────────────────────────
     let prepared = pipeline.provider_adapter.prepare(&operation, &config, &token)?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
@@ -414,7 +543,7 @@ async fn run_pipeline_inner(
     };
     ctx.transition(AttemptState::Prepared);
 
-    // 6. Send ──────────────────────────────────────────────────────────────────
+    // 9. Send ──────────────────────────────────────────────────────────────────
     let upstream_resp = match pipeline.http_client.send(upstream_req, is_streaming).await {
         Ok(r) => r,
         Err(VkdgError::UpstreamError { code, message })
@@ -439,13 +568,13 @@ async fn run_pipeline_inner(
     ctx.mark_committed();
     ctx.transition(AttemptState::Committed);
 
-    // 7. Build response ────────────────────────────────────────────────────────
-    // `response_body_len` is set in the Complete arm for post-response quota
-    // accounting; streaming leaves it None (Phase E: wrap stream on completion).
-    let mut response_body_len: Option<usize> = None;
+    // 10. Build response ───────────────────────────────────────────────────────
+    // `complete_body` is set in the Complete arm and passed to post_response_accounting.
+    // Streaming leaves it None (Phase E: wrap stream on completion).
+    let mut complete_body: Option<Bytes> = None;
     let resp = match upstream_resp {
         UpstreamResponse::Complete { status, body } => {
-            // 8. Cache store (fire-and-forget, non-streaming only) ─────────────
+            // 11. Cache store (fire-and-forget, non-streaming only) ────────────
             if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
                 let entry = CacheEntry {
                     response_json: String::from_utf8_lossy(&body).into_owned(),
@@ -459,56 +588,8 @@ async fn run_pipeline_inner(
                 let key = key.clone();
                 tokio::spawn(async move { let _ = cache.store(&key, entry).await; });
             }
-            // 8b. Memory extraction (fire-and-forget) ─────────────────────────
-            // Extract facts from the completed conversation and store them for
-            // future injection.  Runs async so it never blocks the response.
-            if let (Some(memory_store), Operation::Conversation(conv_req)) =
-                (&pipeline.memory_store, &operation)
-            {
-                let facts = extract_facts(&conv_req.messages);
-                if !facts.is_empty() {
-                    let tenant = ctx.envelope.tenant_id.0.clone();
-                    let session = ctx.envelope.session_key.as_ref().map(|s| s.0.clone());
-                    let memory_store = Arc::clone(memory_store);
-                    tokio::spawn(async move {
-                        for fact in facts {
-                            memory_store.store(MemoryRecord {
-                                id: uuid::Uuid::new_v4(),
-                                tenant_id: tenant.clone(),
-                                session_id: session.clone(),
-                                fact,
-                                source: "conversation".into(),
-                                created_at: chrono::Utc::now(),
-                                expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
-                                tags: vec![],
-                            }).await;
-                        }
-                    });
-                }
-            }
-            // 8c. Eval scoring ─────────────────────────────────────────────────
-            // Score response quality based on latency and content heuristics.
-            // Fire-and-forget: only tracing output in Phase D.
-            if pipeline.eval_enabled {
-                let metrics = LatencyMetrics {
-                    latency_ms: start_time.elapsed().as_millis() as u32,
-                    ttft_ms: None, // Phase E: track TTFT in streaming
-                    token_count: (body.len() / 4) as u32,
-                };
-                let eval = EvalScorer::score(
-                    &ctx.envelope.request_id.0.to_string(),
-                    ctx.connection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
-                    &String::from_utf8_lossy(&body),
-                    metrics,
-                );
-                tracing::debug!(
-                    score = eval.score,
-                    status = ?eval.status,
-                    latency_ms = eval.latency_ms,
-                    "eval score",
-                );
-            }
-            response_body_len = Some(body.len());
+            // Capture body for post-response accounting (Bytes clone is O(1)).
+            complete_body = Some(body.clone());
             let status_code =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
             axum::response::Response::builder()
@@ -539,49 +620,8 @@ async fn run_pipeline_inner(
         }
     };
 
-    // 9. Post-response: record quota usage + pin session ──────────────────────
-    // Only for non-streaming complete responses (body len captured above).
-    // Streaming: approximate usage recorded when stream completes (Phase E).
-    if let Some(approx_tokens) = response_body_len.map(|n| (n / 4) as u64) {
-        if let Some(tracker) = &pipeline.quota_tracker {
-            if let Some(conn_id) = &ctx.connection_id {
-                let tracker = Arc::clone(tracker);
-                let conn_id = conn_id.clone();
-                tokio::spawn(async move {
-                    tracker.record_usage(&conn_id, approx_tokens).await;
-                });
-            }
-        }
-        if let (Some(registry), Some(session_key), Some(conn_id)) = (
-            &pipeline.session_registry,
-            &ctx.envelope.session_key,
-            &ctx.connection_id,
-        ) {
-            let registry = Arc::clone(registry);
-            let session_id = session_key.0.clone();
-            let conn_id = conn_id.clone();
-            tokio::spawn(async move {
-                registry.pin(session_id, conn_id).await;
-            });
-        }
-    }
-    // 9b. Record latency for routing scorer ───────────────────────────────────
-    if let (Some(tracker), Some(conn_id)) = (&pipeline.latency_tracker, &ctx.connection_id) {
-        let latency_ms = start_time.elapsed().as_millis() as u32;
-        let tracker = Arc::clone(tracker);
-        let conn_id = conn_id.clone();
-        tokio::spawn(async move { tracker.record(&conn_id, latency_ms).await; });
-    }
-    // 6c. On success, check if an expired cooldown can be cleared → recover to Healthy.
-    if let Some(conn_arc) = ctx
-        .connection_id
-        .as_ref()
-        .and_then(|id| pipeline.catalog.get(id))
-    {
-        if let Ok(mut conn) = conn_arc.try_write() {
-            conn.check_cooldown();
-        }
-    }
+    // 12. Post-response accounting (memory, eval, quota, latency, cooldown) ────
+    post_response_accounting(pipeline, ctx, complete_body.as_ref(), start_time, &operation);
     Ok(resp)
 }
 
@@ -726,26 +766,15 @@ mod tests {
     }
 
     fn make_pipeline(admission_limit: usize) -> Arc<PipelineState> {
-        Arc::new(PipelineState {
-            admission: Arc::new(AdmissionGuard::new(admission_limit)),
-            router: Arc::new(VkdgRouter::new(vec![])),
-            catalog: Arc::new(ConnectionCatalog::new(vec![])),
-            credentials: Arc::new(CredentialManager::new()),
-            http_client: Arc::new(HttpClient::new()),
-            exporter: Arc::new(DecisionRecordExporter::new()),
-            provider_adapter: Arc::new(StubAdapter),
-            cache: None,
-            combo_resolver: None,
-            compressor: None,
-            dedup_table: None,
-            session_registry: None,
-            quota_tracker: None,
-            global_system_prompt: None,
-            ip_policy: None,
-            latency_tracker: None,
-            memory_store: None,
-            eval_enabled: false,
-        })
+        Arc::new(PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(admission_limit)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(vec![])),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(StubAdapter),
+        ))
     }
 
     fn make_ctx(model: &str) -> PipelineCtx {
@@ -861,26 +890,17 @@ mod tests {
     #[tokio::test]
     async fn pipeline_with_compressor_threshold_not_met_skips_compression() {
         use vkdg_policy_compress::CavemanCompressor;
-        let pipeline = Arc::new(PipelineState {
-            admission: Arc::new(AdmissionGuard::new(100)),
-            router: Arc::new(VkdgRouter::new(vec![])),
-            catalog: Arc::new(ConnectionCatalog::new(vec![])),
-            credentials: Arc::new(CredentialManager::new()),
-            http_client: Arc::new(HttpClient::new()),
-            exporter: Arc::new(DecisionRecordExporter::new()),
-            provider_adapter: Arc::new(StubAdapter),
-            cache: None,
-            combo_resolver: None,
-            compressor: Some(Arc::new(CavemanCompressor)),
-            dedup_table: None,
-            session_registry: None,
-            quota_tracker: None,
-            global_system_prompt: None,
-            ip_policy: None,
-            latency_tracker: None,
-            memory_store: None,
-            eval_enabled: false,
-        });
+        let mut state = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(vec![])),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(StubAdapter),
+        );
+        state.compressor = Some(Arc::new(CavemanCompressor));
+        let pipeline = Arc::new(state);
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.
         // Pipeline proceeds to routing (no routes → 502), not panic.
@@ -925,26 +945,18 @@ mod tests {
             budget: None,
             mode_pack: None,
         };
-        let pipeline = Arc::new(PipelineState {
-            admission: Arc::new(AdmissionGuard::new(100)),
-            router: Arc::new(VkdgRouter::new(vec![])),
-            catalog: Arc::new(ConnectionCatalog::new(vec![])),
-            credentials: Arc::new(CredentialManager::new()),
-            http_client: Arc::new(HttpClient::new()),
-            exporter: Arc::new(DecisionRecordExporter::new()),
-            provider_adapter: Arc::new(StubAdapter),
-            cache: None,
-            combo_resolver: Some(Arc::new(ComboResolver::new(vec![combo]))),
-            compressor: Some(Arc::new(CavemanCompressor)),
-            dedup_table: None,
-            session_registry: None,
-            quota_tracker: None,
-            global_system_prompt: None,
-            ip_policy: None,
-            latency_tracker: None,
-            memory_store: None,
-            eval_enabled: false,
-        });
+        let mut state = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(vec![])),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(StubAdapter),
+        );
+        state.combo_resolver = Some(Arc::new(ComboResolver::new(vec![combo])));
+        state.compressor = Some(Arc::new(CavemanCompressor));
+        let pipeline = Arc::new(state);
         // Request for the combo name — resolver matches; step 1.5b reads threshold=100.
         // Empty request → estimated tokens = 0 < 100 → compression skipped.
         // Pipeline proceeds to routing (no routes → 502).

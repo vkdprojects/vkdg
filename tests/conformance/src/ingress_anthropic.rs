@@ -2,12 +2,8 @@
 //           invalid JSON returns Err(VkdgError::ConfigInvalid { field: "body", .. }).
 // Phase B: pipeline is wired — 501 stub behavior no longer exists.
 
-use axum::body::to_bytes;
 use bytes::Bytes;
-use http::{Method, Request, StatusCode};
-use tower::ServiceExt;
 use vkdg_core::VkdgError;
-use vkdg_http::{AppState, ServerConfig, build_router};
 use vkdg_ingress_anthropic::decode_request;
 use vkdg_operations::Operation;
 

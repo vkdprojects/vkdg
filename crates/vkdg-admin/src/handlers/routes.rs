@@ -56,14 +56,6 @@ fn strategy_str(s: &impl serde::Serialize) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn provider_str(kind: &vkdg_connections::ProviderKind) -> String {
-    match kind {
-        vkdg_connections::ProviderKind::Anthropic => "anthropic".into(),
-        vkdg_connections::ProviderKind::OpenAI => "openai".into(),
-        vkdg_connections::ProviderKind::Google => "google".into(),
-        vkdg_connections::ProviderKind::Custom { .. } => "custom".into(),
-    }
-}
 
 pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
@@ -99,24 +91,47 @@ pub async fn preview_route(
         .map(|c| c.id.clone());
     let mut eligible = Vec::new();
     let mut excluded = Vec::new();
-    for conn in snapshot.connections.iter() {
-        let matches = conn.models.iter().any(|pattern| {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                q.model.starts_with(prefix)
+    if let Some(catalog) = &state.catalog {
+        let eligible_ids = catalog.eligible_for_operation(
+            &q.model,
+            &[],
+            &vkdg_core::CapabilitySet::default(),
+        );
+        let eligible_set: std::collections::HashSet<&str> =
+            eligible_ids.iter().map(|c| c.0.as_str()).collect();
+        for conn in snapshot.connections.iter() {
+            if eligible_set.contains(conn.id.0.as_str()) {
+                eligible.push(ConnectionPreview {
+                    id: conn.id.0.clone(),
+                    provider: conn.provider.as_str().to_string(),
+                });
             } else {
-                pattern == &q.model
+                excluded.push(ExcludedConn {
+                    id: conn.id.0.clone(),
+                    reason: "model pattern does not match".into(),
+                });
             }
-        });
-        if matches {
-            eligible.push(ConnectionPreview {
-                id: conn.id.0.clone(),
-                provider: provider_str(&conn.provider),
+        }
+    } else {
+        for conn in snapshot.connections.iter() {
+            let matches = conn.models.iter().any(|pattern| {
+                if let Some(prefix) = pattern.strip_suffix('*') {
+                    q.model.starts_with(prefix)
+                } else {
+                    pattern == &q.model
+                }
             });
-        } else {
-            excluded.push(ExcludedConn {
-                id: conn.id.0.clone(),
-                reason: "model pattern does not match".into(),
-            });
+            if matches {
+                eligible.push(ConnectionPreview {
+                    id: conn.id.0.clone(),
+                    provider: conn.provider.as_str().to_string(),
+                });
+            } else {
+                excluded.push(ExcludedConn {
+                    id: conn.id.0.clone(),
+                    reason: "model pattern does not match".into(),
+                });
+            }
         }
     }
     Json(RoutePreview {
@@ -150,6 +165,7 @@ mod tests {
             key_store: KeyStore::new(),
             request_log: RequestLog::new(),
             combo_resolver: None,
+            catalog: None,
         }
     }
 
@@ -183,6 +199,7 @@ mod tests {
             key_store: KeyStore::new(),
             request_log: RequestLog::new(),
             combo_resolver: None,
+            catalog: None,
         }
     }
 

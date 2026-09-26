@@ -15,7 +15,7 @@ impl AdmissionGuard {
         }
     }
 
-    pub async fn acquire(&self) -> Result<OwnedSemaphorePermit, VkdgError> {
+    pub fn acquire(&self) -> Result<OwnedSemaphorePermit, VkdgError> {
         self.semaphore
             .clone()
             .try_acquire_owned()

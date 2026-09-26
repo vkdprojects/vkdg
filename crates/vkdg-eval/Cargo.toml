@@ -1,0 +1,15 @@
+[package]
+name = "vkdg-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vkdg-core       = { workspace = true }
+vkdg-operations = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+tokio           = { workspace = true }
+chrono          = { workspace = true }
+uuid            = { workspace = true }
+thiserror       = { workspace = true }

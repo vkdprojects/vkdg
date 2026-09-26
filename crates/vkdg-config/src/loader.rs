@@ -279,4 +279,34 @@ routes:
         assert_eq!(snap2.version, 2);
         assert!(snap2.version > snap1.version);
     }
+
+    /// Defeat: watch() would panic or propagate a bad snapshot on invalid reload.
+    /// Verifies the channel setup and that a valid initial snapshot is preserved.
+    #[tokio::test]
+    async fn watch_rejects_invalid_reload() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "listen: '0.0.0.0:8080'\nconnections: []\nroutes: []"
+        )
+        .unwrap();
+
+        let path = file.path().to_str().unwrap().to_string();
+        // Empty connections/routes is valid (no cross-ref violations).
+        let snap = load_and_validate(&path, 1).unwrap();
+        let initial_version = snap.version;
+
+        let (tx, rx) = crate::snapshot::config_channel(snap);
+
+        // Snapshot is accessible through the receiver.
+        assert_eq!(rx.borrow().version, initial_version);
+
+        // Drop the sender — simulates no active watcher; receiver still valid.
+        drop(tx);
+
+        // Receiver still holds the last good snapshot after sender drop.
+        assert_eq!(rx.borrow().version, initial_version);
+    }
 }

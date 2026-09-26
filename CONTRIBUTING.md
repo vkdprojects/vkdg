@@ -34,6 +34,28 @@ cargo doc --workspace --no-deps
 cargo run -p vkdg -- config check <path>
 ```
 
+## Git hooks (optional but recommended)
+
+Install [lefthook](https://lefthook.dev) to enforce formatting and lint checks locally before committing:
+
+```bash
+# macOS
+brew install lefthook
+
+# Or via cargo
+cargo binstall lefthook
+
+# Activate hooks for this repo
+lefthook install
+```
+
+Once installed, lefthook runs automatically on:
+- **pre-commit**: typos spell check + rustfmt check on staged files
+- **pre-push**: `cargo clippy -- -D warnings` + `cargo machete` (unused dep check)
+
+To skip hooks when needed: `LEFTHOOK=0 git push`
+
+
 The conformance suite starts a `FakeUpstream` in-process. You do not need real
 provider credentials to run any of the existing tests. If you are adding a new
 provider adapter, the same fake covers the wire protocol; check

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use vkdg_core::{ConnectionId, RequestEnvelope};
-use vkdg_memory::{inject_memories};
+use vkdg_memory::inject_memories;
 use vkdg_operations::{MessageContent, Operation};
 
 use crate::PipelineState;
@@ -31,21 +31,19 @@ pub(super) async fn resolve_combo_and_session(
         tracing::debug!(combo_id = %c.id, "request resolved to combo");
     }
 
-    let combo_compression = combo
-        .as_ref()
-        .and_then(|c| c.compression.as_ref())
-        .cloned();
-    let effective_compressor_id: Option<String> = envelope.compression_override.clone()
+    let combo_compression = combo.as_ref().and_then(|c| c.compression.as_ref()).cloned();
+    let effective_compressor_id: Option<String> = envelope
+        .compression_override
+        .clone()
         .or_else(|| combo_compression.as_ref().map(|c| c.plugin_id.clone()));
     let compression_threshold: u32 = combo_compression
         .as_ref()
         .and_then(|c| c.auto_trigger_tokens)
         .unwrap_or(2000);
 
-    let session_preferred = if let (Some(registry), Some(session_key)) = (
-        &pipeline.session_registry,
-        &envelope.session_key,
-    ) {
+    let session_preferred = if let (Some(registry), Some(session_key)) =
+        (&pipeline.session_registry, &envelope.session_key)
+    {
         registry.get(&session_key.0).await
     } else {
         None
@@ -117,7 +115,9 @@ pub(super) async fn prepare_operation(
     if let (Some(memory_store), Operation::Conversation(conv_req)) =
         (&pipeline.memory_store, &mut operation)
     {
-        let query = conv_req.messages.last()
+        let query = conv_req
+            .messages
+            .last()
             .and_then(|m| match &m.content {
                 MessageContent::Text(t) => Some(t.as_str()),
                 _ => None,
@@ -152,16 +152,18 @@ pub(super) fn post_response_accounting(
                 let memory_store = Arc::clone(memory_store);
                 tokio::spawn(async move {
                     for fact in facts {
-                        memory_store.store(vkdg_memory::MemoryRecord {
-                            id: uuid::Uuid::new_v4(),
-                            tenant_id: tenant.clone(),
-                            session_id: session.clone(),
-                            fact,
-                            source: "conversation".into(),
-                            created_at: chrono::Utc::now(),
-                            expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
-                            tags: vec![],
-                        }).await;
+                        memory_store
+                            .store(vkdg_memory::MemoryRecord {
+                                id: uuid::Uuid::new_v4(),
+                                tenant_id: tenant.clone(),
+                                session_id: session.clone(),
+                                fact,
+                                source: "conversation".into(),
+                                created_at: chrono::Utc::now(),
+                                expires_at: Some(chrono::Utc::now() + chrono::Duration::days(30)),
+                                tags: vec![],
+                            })
+                            .await;
                     }
                 });
             }
@@ -178,7 +180,10 @@ pub(super) fn post_response_accounting(
             };
             let eval = vkdg_eval::EvalScorer::score(
                 &ctx.envelope.request_id.0.to_string(),
-                ctx.connection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
+                ctx.connection_id
+                    .as_ref()
+                    .map(|c| c.0.as_str())
+                    .unwrap_or(""),
                 &String::from_utf8_lossy(body),
                 metrics,
             );
@@ -221,7 +226,9 @@ pub(super) fn post_response_accounting(
         let latency_ms = start_time.elapsed().as_millis() as u32;
         let tracker = Arc::clone(tracker);
         let conn_id = conn_id.clone();
-        tokio::spawn(async move { tracker.record(&conn_id, latency_ms).await; });
+        tokio::spawn(async move {
+            tracker.record(&conn_id, latency_ms).await;
+        });
     }
 
     // Cooldown recovery: clear expired cooldown on success → recover to Healthy

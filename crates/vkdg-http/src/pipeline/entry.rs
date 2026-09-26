@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use axum::response::Response;
-use vkdg_core::{AttemptResult, ConnectionId, DecisionRecord, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
+use vkdg_core::{AttemptResult, ConnectionId, DecisionRecord, VkdgError};
 use vkdg_operations::Operation;
 
-use crate::PipelineState;
 use super::helpers::error_response;
 use super::inner::run_pipeline_inner;
+use crate::PipelineState;
 
 pub async fn run_conversation_pipeline(
     pipeline: Arc<PipelineState>,
@@ -19,23 +19,23 @@ pub async fn run_conversation_pipeline(
     // Transparent 429 fallback: if the upstream rate-limits us and we have not
     // yet committed any bytes to the client, retry with the failed connection
     // excluded so the router picks a different candidate.
-    let (ctx, outcome, final_attempt) = if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
-        if ctx.can_retry() {
-            // Emit DecisionRecord for the failed first attempt before retrying.
-            let excluded: Vec<ConnectionId> =
-                ctx.connection_id.clone().into_iter().collect();
-            emit_decision_record(&pipeline, &ctx, &outcome, 1);
+    let (ctx, outcome, final_attempt) =
+        if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
+            if ctx.can_retry() {
+                // Emit DecisionRecord for the failed first attempt before retrying.
+                let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
+                emit_decision_record(&pipeline, &ctx, &outcome, 1);
 
-            let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
-            let outcome2 =
-                run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
-            (ctx2, outcome2, 2u32)
+                let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
+                let outcome2 =
+                    run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
+                (ctx2, outcome2, 2u32)
+            } else {
+                (ctx, outcome, 1u32)
+            }
         } else {
             (ctx, outcome, 1u32)
-        }
-    } else {
-        (ctx, outcome, 1u32)
-    };
+        };
 
     // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).
     emit_decision_record(&pipeline, &ctx, &outcome, final_attempt);

@@ -24,3 +24,6 @@ redis            = { workspace = true, optional = true }
 
 [lib]
 doctest = false
+
+[lints]
+workspace = true

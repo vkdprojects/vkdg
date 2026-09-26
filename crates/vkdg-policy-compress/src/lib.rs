@@ -61,13 +61,12 @@ pub fn apply(
     budget: u32,
 ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
     match strategy {
-        CompressionStrategy::Truncate { max_tokens } => {
-            truncate::apply(req, *max_tokens, budget)
-        }
-        CompressionStrategy::ModelSummarize { model, budget_tokens: _ } => {
-            Err(CompressionError::StrategyUnavailable(
-                format!("model_summarize via {model} not yet implemented (Phase E)"),
-            ))
-        }
+        CompressionStrategy::Truncate { max_tokens } => truncate::apply(req, *max_tokens, budget),
+        CompressionStrategy::ModelSummarize {
+            model,
+            budget_tokens: _,
+        } => Err(CompressionError::StrategyUnavailable(format!(
+            "model_summarize via {model} not yet implemented (Phase E)"
+        ))),
     }
 }

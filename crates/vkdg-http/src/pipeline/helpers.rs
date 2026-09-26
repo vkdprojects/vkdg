@@ -18,18 +18,24 @@ use crate::sse::{SseEvent, SseParser};
 /// Multi-turn conversations are never cached: the response depends on prior
 /// assistant outputs that may not be stable across retries.
 pub(super) fn is_multiturn(op: &vkdg_operations::ConversationRequest) -> bool {
-    op.messages.iter().filter(|m| matches!(m.role, Role::Assistant)).count() > 1
+    op.messages
+        .iter()
+        .filter(|m| matches!(m.role, Role::Assistant))
+        .count()
+        > 1
 }
 
 /// True when any message in the conversation contains tool_use or tool_result
 /// content blocks.  Tool-call conversations are non-deterministic.
 pub(super) fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool {
-    op.messages.iter().any(|m| matches!(
-        &m.content,
-        MessageContent::Blocks(blocks) if blocks.iter().any(|b|
-            matches!(b, ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. })
+    op.messages.iter().any(|m| {
+        matches!(
+            &m.content,
+            MessageContent::Blocks(blocks) if blocks.iter().any(|b|
+                matches!(b, ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. })
+            )
         )
-    ))
+    })
 }
 
 pub(super) fn unix_secs() -> u64 {
@@ -48,7 +54,9 @@ pub(super) fn error_response(err: VkdgError) -> Response {
     let (status, error_type) = match &err {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
-        VkdgError::AdmissionRejected { .. } => (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error"),
+        VkdgError::AdmissionRejected { .. } => {
+            (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error")
+        }
         VkdgError::CapabilityUnsupported { .. } => {
             (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
@@ -68,7 +76,10 @@ pub(super) fn error_response(err: VkdgError) -> Response {
     });
     let json_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
     let mut h = HeaderMap::new();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     (status, h, json_bytes).into_response()
 }
 
@@ -101,23 +112,26 @@ pub(super) fn filter_think_tags_stream(
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
     // State: (upstream stream, sse parser, buffered re-encoded events)
     let state = (body, SseParser::new(), VecDeque::<SseEvent>::new());
-    Box::pin(futures::stream::unfold(state, |(mut upstream, mut parser, mut pending)| async move {
-        loop {
-            // Drain any events already parsed from the last chunk.
-            if let Some(event) = pending.pop_front() {
-                return Some((Ok(sse_event_to_bytes(&event)), (upstream, parser, pending)));
-            }
-            // Pull the next chunk from upstream.
-            match upstream.next().await {
-                Some(Ok(chunk)) => {
-                    for e in parser.push(&chunk) {
-                        pending.push_back(e);
-                    }
-                    // Loop back to drain the newly queued events.
+    Box::pin(futures::stream::unfold(
+        state,
+        |(mut upstream, mut parser, mut pending)| async move {
+            loop {
+                // Drain any events already parsed from the last chunk.
+                if let Some(event) = pending.pop_front() {
+                    return Some((Ok(sse_event_to_bytes(&event)), (upstream, parser, pending)));
                 }
-                Some(Err(e)) => return Some((Err(e), (upstream, parser, pending))),
-                None => return None,
+                // Pull the next chunk from upstream.
+                match upstream.next().await {
+                    Some(Ok(chunk)) => {
+                        for e in parser.push(&chunk) {
+                            pending.push_back(e);
+                        }
+                        // Loop back to drain the newly queued events.
+                    }
+                    Some(Err(e)) => return Some((Err(e), (upstream, parser, pending))),
+                    None => return None,
+                }
             }
-        }
-    }))
+        },
+    ))
 }

@@ -88,7 +88,10 @@ mod tests {
         let mut ctx = PipelineCtx::new(make_envelope());
         ctx.mark_committed();
         ctx.mark_committed(); // second call must not flip back
-        assert!(!ctx.can_retry(), "double mark_committed must remain committed");
+        assert!(
+            !ctx.can_retry(),
+            "double mark_committed must remain committed"
+        );
     }
 
     // Plausible wrong impl: transition() updates state but does not push to transitions vec,
@@ -130,7 +133,11 @@ mod tests {
         let ctx = PipelineCtx::new(make_envelope());
         assert_eq!(ctx.state, AttemptState::Received);
         assert_eq!(ctx.committed, false);
-        assert_eq!(ctx.transitions.len(), 1, "Received must be logged at construction");
+        assert_eq!(
+            ctx.transitions.len(),
+            1,
+            "Received must be logged at construction"
+        );
         assert_eq!(ctx.transitions[0].0, AttemptState::Received);
     }
 

@@ -28,3 +28,6 @@ vkdg-provider-anthropic = { workspace = true }
 vkdg-config      = { workspace = true }
 vkdg-admin       = { workspace = true }
 uuid             = { workspace = true }
+
+[lints]
+workspace = true

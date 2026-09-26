@@ -10,8 +10,7 @@
 use anyhow::Result;
 
 pub async fn run(request_id: &str, json_output: bool) -> Result<()> {
-    let base = std::env::var("VKDG_ADMIN_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:9090".into());
+    let base = std::env::var("VKDG_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9090".into());
     let session = std::env::var("VKDG_ADMIN_SESSION").unwrap_or_default();
 
     let url = format!("{}/admin/v1/requests/{}", base, request_id);

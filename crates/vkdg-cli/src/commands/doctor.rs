@@ -22,8 +22,7 @@ pub async fn run() -> Result<()> {
     println!();
 
     // Check 3: Gateway data plane reachability
-    let base = std::env::var("VKDG_BASE_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8080".into());
+    let base = std::env::var("VKDG_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
     let data_plane_ok = check_url(&format!("{}/health", base)).await;
     print_check("data plane /health", &base, data_plane_ok);
     if !data_plane_ok {
@@ -31,8 +30,8 @@ pub async fn run() -> Result<()> {
     }
 
     // Check 4: Admin API reachability
-    let admin_base = std::env::var("VKDG_ADMIN_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:9090".into());
+    let admin_base =
+        std::env::var("VKDG_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9090".into());
     let admin_ok = check_url(&format!("{}/admin/v1/system", admin_base)).await;
     print_check("admin API /system", &admin_base, admin_ok);
     if !admin_ok {
@@ -60,15 +59,12 @@ pub async fn run() -> Result<()> {
 }
 
 async fn check_url(url: &str) -> bool {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        reqwest::get(url),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .map(|r| r.status().is_success())
-    .unwrap_or(false)
+    tokio::time::timeout(std::time::Duration::from_secs(2), reqwest::get(url))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 fn print_check(name: &str, detail: &str, ok: bool) {

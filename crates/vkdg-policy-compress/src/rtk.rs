@@ -8,10 +8,8 @@
 //! Designed for CI/CD pipelines and code agents that produce long tool outputs.
 //! Never removes code blocks, line numbers, URLs, or identifiers.
 
-use vkdg_operations::{
-    ConversationRequest, MessageContent, ContentBlock, Role,
-};
-use crate::{Compressor, CompressionError, metrics::CompressionMetrics};
+use crate::{metrics::CompressionMetrics, CompressionError, Compressor};
+use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Role};
 
 #[derive(Debug, Clone, PartialEq)]
 enum ContentClass {
@@ -24,13 +22,21 @@ enum ContentClass {
 }
 
 fn detect_class(text: &str) -> ContentClass {
-    if text.contains("\n\tat ") || text.contains("Traceback (most recent call") || text.contains("Error: at ") {
+    if text.contains("\n\tat ")
+        || text.contains("Traceback (most recent call")
+        || text.contains("Error: at ")
+    {
         ContentClass::StackTrace
     } else if text.trim_start().starts_with('{') || text.trim_start().starts_with('[') {
         ContentClass::JsonOutput
-    } else if text.lines().any(|l| l.starts_with("--- ") || l.starts_with("+++ ") || l.starts_with("@@")) {
+    } else if text
+        .lines()
+        .any(|l| l.starts_with("--- ") || l.starts_with("+++ ") || l.starts_with("@@"))
+    {
         ContentClass::Diff
-    } else if text.lines().all(|l| l.trim().is_empty() || l.starts_with('/') || l.starts_with('.') || l.ends_with('/')) {
+    } else if text.lines().all(|l| {
+        l.trim().is_empty() || l.starts_with('/') || l.starts_with('.') || l.ends_with('/')
+    }) {
         ContentClass::FileList
     } else if text.contains('$') && text.contains('\n') {
         ContentClass::CommandOutput
@@ -121,17 +127,27 @@ fn apply_rtk_filters(text: &str, class: &ContentClass) -> String {
 pub struct RtkCompressor;
 
 impl Compressor for RtkCompressor {
-    fn name(&self) -> &str { "rtk" }
+    fn name(&self) -> &str {
+        "rtk"
+    }
 
     fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
-        req.messages.iter().map(|m| match &m.content {
-            MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
-            MessageContent::Blocks(blocks) => blocks.iter().map(|b| match b {
-                ContentBlock::ToolResult { content, .. } => (content.len() as u32).saturating_div(4),
-                ContentBlock::Text { text } => (text.len() as u32).saturating_div(4),
-                _ => 20,
-            }).sum(),
-        }).sum()
+        req.messages
+            .iter()
+            .map(|m| match &m.content {
+                MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
+                MessageContent::Blocks(blocks) => blocks
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::ToolResult { content, .. } => {
+                            (content.len() as u32).saturating_div(4)
+                        }
+                        ContentBlock::Text { text } => (text.len() as u32).saturating_div(4),
+                        _ => 20,
+                    })
+                    .sum(),
+            })
+            .sum()
     }
 
     fn compress(
@@ -142,7 +158,9 @@ impl Compressor for RtkCompressor {
         let original_tokens = self.estimate_tokens(&req);
 
         for msg in req.messages.iter_mut() {
-            if matches!(msg.role, Role::System) { continue; }
+            if matches!(msg.role, Role::System) {
+                continue;
+            }
 
             match &mut msg.content {
                 MessageContent::Blocks(blocks) => {
@@ -165,31 +183,39 @@ impl Compressor for RtkCompressor {
 
         let compressed_tokens = self.estimate_tokens(&req);
         let removed = original_tokens.saturating_sub(compressed_tokens);
-        Ok((req, CompressionMetrics {
-            original_message_count: 0,
-            compressed_message_count: 0,
-            estimated_tokens_removed: removed,
-            strategy: "rtk".into(),
-            lossless: removed == 0,
-        }))
+        Ok((
+            req,
+            CompressionMetrics {
+                original_message_count: 0,
+                compressed_message_count: 0,
+                estimated_tokens_removed: removed,
+                strategy: "rtk".into(),
+                lossless: removed == 0,
+            },
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vkdg_operations::{Message, MessageContent, ContentBlock, Role, Tool, CapabilitySet};
+    use vkdg_operations::{CapabilitySet, ContentBlock, Message, MessageContent, Role, Tool};
 
     fn tool_result_req(content: &str) -> ConversationRequest {
         ConversationRequest {
             messages: vec![Message {
                 role: Role::Tool,
-                content: MessageContent::Blocks(vec![
-                    ContentBlock::ToolResult { tool_use_id: "t1".into(), content: content.into() }
-                ]),
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: content.into(),
+                }]),
             }],
-            tools: vec![], max_tokens: None, temperature: None, stream: false,
-            system: None, required_capabilities: CapabilitySet::default(),
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: false,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
         }
     }
 
@@ -203,12 +229,15 @@ mod tests {
         let content = match &out.messages[0].content {
             MessageContent::Blocks(b) => match &b[0] {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
-                _ => panic!("unexpected block type")
+                _ => panic!("unexpected block type"),
             },
-            _ => panic!("unexpected content type")
+            _ => panic!("unexpected content type"),
         };
         // Short output should not grow
-        assert!(content.len() <= short.len() + 10, "short output grew unexpectedly: {content:?}");
+        assert!(
+            content.len() <= short.len() + 10,
+            "short output grew unexpectedly: {content:?}"
+        );
     }
 
     // Plausible wrong impl: stack trace truncation keeps wrong frames
@@ -216,18 +245,24 @@ mod tests {
     fn stack_trace_truncated_to_5_frames() {
         let c = RtkCompressor;
         let trace = "Error: null pointer\n".to_string()
-            + &(0..20).map(|i| format!("\tat frame{}()", i)).collect::<Vec<_>>().join("\n");
+            + &(0..20)
+                .map(|i| format!("\tat frame{}()", i))
+                .collect::<Vec<_>>()
+                .join("\n");
         let req = tool_result_req(&trace);
         let (out, _) = c.compress(req, 10000).unwrap();
         let content = match &out.messages[0].content {
             MessageContent::Blocks(b) => match &b[0] {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
-                _ => panic!()
+                _ => panic!(),
             },
-            _ => panic!()
+            _ => panic!(),
         };
         let frame_lines = content.lines().filter(|l| l.contains("\tat ")).count();
-        assert!(frame_lines <= 5, "stack trace must be truncated to 5 frames, got {frame_lines}");
+        assert!(
+            frame_lines <= 5,
+            "stack trace must be truncated to 5 frames, got {frame_lines}"
+        );
     }
 
     // Plausible wrong impl: JSON output mangled (extra quotes, etc.)
@@ -240,9 +275,9 @@ mod tests {
         let content = match &out.messages[0].content {
             MessageContent::Blocks(b) => match &b[0] {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
-                _ => panic!()
+                _ => panic!(),
             },
-            _ => panic!()
+            _ => panic!(),
         };
         // Must still be valid JSON
         assert!(
@@ -266,7 +301,7 @@ mod tests {
         let (out, _) = c.compress(req, 10000).unwrap();
         match &out.messages[1].content {
             MessageContent::Text(t) => assert_eq!(*t, sys, "system message must be unchanged"),
-            _ => panic!("unexpected content type")
+            _ => panic!("unexpected content type"),
         }
     }
 }

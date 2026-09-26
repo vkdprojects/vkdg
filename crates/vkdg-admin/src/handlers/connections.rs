@@ -1,3 +1,8 @@
+use crate::{
+    error::{AdminError, AdminErrorResponse},
+    handlers::session::get_session,
+    router::AdminState,
+};
 use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
@@ -5,11 +10,6 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde::Serialize;
-use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
-    router::AdminState,
-};
 
 #[derive(Serialize)]
 pub struct ConnectionSummary {
@@ -26,7 +26,6 @@ pub struct ConnectionList {
     total: usize,
 }
 
-
 fn conn_to_summary(conn: &vkdg_connections::ConnectionConfig) -> ConnectionSummary {
     ConnectionSummary {
         id: conn.id.0.clone(),
@@ -37,10 +36,7 @@ fn conn_to_summary(conn: &vkdg_connections::ConnectionConfig) -> ConnectionSumma
     }
 }
 
-pub async fn list_connections(
-    State(state): State<AdminState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn list_connections(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
         return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
             .into_response();
@@ -72,9 +68,9 @@ pub async fn get_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::State;
     use std::sync::Arc;
     use std::time::Instant;
-    use axum::extract::State;
     use tokio::sync::watch;
     use vkdg_config::ConfigSnapshot;
 
@@ -101,14 +97,16 @@ mod tests {
 
     #[tokio::test]
     async fn list_connections_returns_items() {
-        use vkdg_config::{ConfigSnapshot, GatewayConfig, ConnectionDef, schema::AuthDef};
+        use vkdg_config::{schema::AuthDef, ConfigSnapshot, ConnectionDef, GatewayConfig};
 
         let gateway_cfg = GatewayConfig {
             listen: "0.0.0.0:8080".into(),
             connections: vec![ConnectionDef {
                 id: "test-conn".into(),
                 provider: "anthropic".into(),
-                auth: AuthDef::ApiKey { env_var: "ANTHROPIC_API_KEY".into() },
+                auth: AuthDef::ApiKey {
+                    env_var: "ANTHROPIC_API_KEY".into(),
+                },
                 models: vec!["claude-*".into()],
                 max_concurrent: None,
                 weight: None,
@@ -143,7 +141,9 @@ mod tests {
         let resp = list_connections(State(state), headers).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(list["total"], 1);
         assert_eq!(list["items"].as_array().unwrap().len(), 1);

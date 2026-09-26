@@ -38,7 +38,9 @@ pub enum StrategyKind {
     LastKnownGood,
     /// Multi-factor scored strategy.
     /// mode_pack: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
-    Scored { mode_pack: String },
+    Scored {
+        mode_pack: String,
+    },
 }
 
 // ── Route config ──────────────────────────────────────────────────────────────

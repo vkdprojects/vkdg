@@ -261,7 +261,6 @@ pub fn decode_image_generate(body: Bytes) -> Result<(String, Operation), VkdgErr
     Ok((model, operation))
 }
 
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -275,11 +274,11 @@ mod tests {
     // Defeat: mapping role:user content to wrong type or losing the text.
     #[test]
     fn decode_text_message() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}"#,
-        );
+        let body = as_bytes(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}"#);
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, Role::User);
         assert!(matches!(&req.messages[0].content, MessageContent::Text(t) if t == "hello"));
@@ -292,7 +291,9 @@ mod tests {
             r#"{"model":"gpt-4o","messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}"#,
         );
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert_eq!(req.system, Some("be nice".to_string()));
         // system message must NOT appear in messages[]
         assert_eq!(req.messages.len(), 1);
@@ -306,7 +307,9 @@ mod tests {
             r#"{"model":"gpt-4o","messages":[{"role":"tool","tool_call_id":"call_123","content":"42"}]}"#,
         );
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, Role::Tool);
         let MessageContent::Blocks(blocks) = &req.messages[0].content else {
@@ -326,7 +329,9 @@ mod tests {
             r#"{"model":"gpt-4o","messages":[{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}]}"#,
         );
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert_eq!(req.messages.len(), 1);
         let MessageContent::Blocks(blocks) = &req.messages[0].content else {
             panic!("expected Blocks")
@@ -341,9 +346,8 @@ mod tests {
     // Defeat: silently accepting n>1 and producing invalid downstream behaviour.
     #[test]
     fn decode_reject_n_greater_than_1() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","n":2,"messages":[{"role":"user","content":"hi"}]}"#,
-        );
+        let body =
+            as_bytes(r#"{"model":"gpt-4o","n":2,"messages":[{"role":"user","content":"hi"}]}"#);
         let err = decode_request(body).unwrap_err();
         assert!(matches!(&err, VkdgError::ConfigInvalid { field, .. } if field == "n"));
     }
@@ -355,7 +359,9 @@ mod tests {
             r#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
         );
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert!(req.stream);
     }
 
@@ -366,9 +372,13 @@ mod tests {
             r#"{"model":"gpt-4o","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"hi"}]}"#,
         );
         let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else { panic!("expected Conversation") };
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
         assert!(
-            req.required_capabilities.0.contains(&Capability::JsonSchema),
+            req.required_capabilities
+                .0
+                .contains(&Capability::JsonSchema),
             "json_object response_format must insert Capability::JsonSchema"
         );
     }

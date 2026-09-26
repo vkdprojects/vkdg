@@ -57,10 +57,10 @@ pub(crate) enum AnthropicToolResultContent {
 #[derive(Debug, Deserialize)]
 pub(crate) struct AnthropicImageSource {
     #[serde(rename = "type")]
-    pub(crate) type_: String,          // "base64" | "url"
+    pub(crate) type_: String, // "base64" | "url"
     pub(crate) media_type: Option<String>,
-    pub(crate) data: Option<String>,   // base64 payload
-    pub(crate) url: Option<String>,    // URL payload
+    pub(crate) data: Option<String>, // base64 payload
+    pub(crate) url: Option<String>,  // URL payload
 }
 
 #[derive(Debug, Deserialize)]

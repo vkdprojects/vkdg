@@ -1,0 +1,7 @@
+# clippy.toml
+# Configures thresholds for clippy lints, not which lints fire.
+# Lint selection is in Cargo.toml [workspace.lints.clippy].
+msrv = "1.80"
+too-many-arguments-threshold = 8
+too-many-lines-threshold = 120
+cognitive-complexity-threshold = 30

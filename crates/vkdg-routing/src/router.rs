@@ -28,7 +28,9 @@ impl Router {
         filter: &EligibilityFilter,
         hints: &RoutingHints,
     ) -> Result<RouteResult> {
-        let route = self.match_route(envelope).ok_or(VkdgError::NoEligibleConnection)?;
+        let route = self
+            .match_route(envelope)
+            .ok_or(VkdgError::NoEligibleConnection)?;
 
         let strategy: Arc<dyn Strategy> = match &route.strategy {
             StrategyKind::RoundRobin => self
@@ -41,9 +43,9 @@ impl Router {
                 .get("fallback_chain")
                 .cloned()
                 .ok_or_else(|| VkdgError::Internal("fallback_chain not registered".into()))?,
-            StrategyKind::Scored { mode_pack } => {
-                Arc::new(ScoredStrategy { mode_pack: mode_pack.clone() })
-            }
+            StrategyKind::Scored { mode_pack } => Arc::new(ScoredStrategy {
+                mode_pack: mode_pack.clone(),
+            }),
             // Other strategies fall back to round-robin until implemented.
             _ => self
                 .strategies

@@ -1,8 +1,8 @@
+use parking_lot::RwLock;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use uuid::Uuid;
-use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -86,7 +86,9 @@ pub struct KeyStore {
 
 impl KeyStore {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { keys: RwLock::new(Vec::new()) })
+        Arc::new(Self {
+            keys: RwLock::new(Vec::new()),
+        })
     }
 
     /// Create a new key. Returns (ClientKey metadata, raw_token).

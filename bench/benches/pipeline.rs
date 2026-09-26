@@ -15,7 +15,11 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
     use vkdg_operations::*;
     let messages = (0..n_messages)
         .map(|i| Message {
-            role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+            role: if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
             content: MessageContent::Text(format!("{} ", "message ".repeat(20))),
         })
         .collect();
@@ -37,7 +41,9 @@ fn bench_admission_routing(c: &mut Criterion) {
     use vkdg_connections::{AuthKind, ConnectionCatalog, ConnectionConfig, ProviderKind};
     use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
     use vkdg_operations::CapabilitySet;
-    use vkdg_routing::{EligibilityFilter, PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
+    use vkdg_routing::{
+        EligibilityFilter, PluginHooks, RouteConfig, RouteId, Router, StrategyKind,
+    };
 
     let rt = make_rt();
 
@@ -45,7 +51,9 @@ fn bench_admission_routing(c: &mut Criterion) {
     let _catalog = Arc::new(ConnectionCatalog::new(vec![ConnectionConfig {
         id: conn_id.clone(),
         provider: ProviderKind::Anthropic,
-        auth: AuthKind::ApiKey { env_var: "BENCH_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "BENCH_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: 10_000,
         weight: 1,
@@ -74,9 +82,7 @@ fn bench_admission_routing(c: &mut Criterion) {
 
     c.bench_function("admission_routing", |b| {
         b.to_async(&rt).iter(|| async {
-            let result = router
-                .route(&envelope, &EligibilityFilter::default())
-                .await;
+            let result = router.route(&envelope, &EligibilityFilter::default()).await;
             criterion::black_box(result)
         })
     });
@@ -123,7 +129,9 @@ fn bench_provider_prepare(c: &mut Criterion) {
     let config = ConnectionConfig {
         id: ConnectionId("bench".into()),
         provider: ProviderKind::Anthropic,
-        auth: AuthKind::ApiKey { env_var: "BENCH_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "BENCH_KEY".into(),
+        },
         models: vec!["claude-3-5-haiku-20241022".into()],
         max_concurrent: 1_000,
         weight: 1,
@@ -139,13 +147,16 @@ fn bench_provider_prepare(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(n_messages),
             n_messages,
-            |b, _| {
-                b.iter(|| criterion::black_box(adapter.prepare(&op, &config, token)))
-            },
+            |b, _| b.iter(|| criterion::black_box(adapter.prepare(&op, &config, token))),
         );
     }
     group.finish();
 }
 
-criterion_group!(benches, bench_admission_routing, bench_sse_parsing, bench_provider_prepare);
+criterion_group!(
+    benches,
+    bench_admission_routing,
+    bench_sse_parsing,
+    bench_provider_prepare
+);
 criterion_main!(benches);

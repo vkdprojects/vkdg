@@ -1,0 +1,27 @@
+# lefthook.yml
+# Local git hooks for VKDG development.
+# Install: brew install lefthook && lefthook install
+# Skip a hook: LEFTHOOK_EXCLUDE=clippy git push
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: typos
+      run: typos {staged_files}
+      glob: "**/*.{rs,md,toml,yml,yaml,wit}"
+
+    - name: rustfmt-check
+      run: rustfmt --edition 2021 --check {staged_files}
+      glob: "*.rs"
+      # Fails if formatting needed; run `cargo fmt --all` to fix.
+
+pre-push:
+  parallel: false
+  jobs:
+    - name: clippy
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+    - name: machete
+      run: cargo machete
+      # cargo install cargo-machete --locked
+      # Detects unused dependencies. Exits 1 on any found.

@@ -22,7 +22,11 @@ async fn decode_valid_messages_request() {
     );
 
     let result = decode_request(body);
-    assert!(result.is_ok(), "decode_request must succeed on valid body; got {:?}", result);
+    assert!(
+        result.is_ok(),
+        "decode_request must succeed on valid body; got {:?}",
+        result
+    );
 
     let (model, op) = result.unwrap();
     assert_eq!(model, "claude-3-5-sonnet-20241022");
@@ -83,4 +87,3 @@ async fn decode_empty_body_returns_config_invalid() {
         result
     );
 }
-

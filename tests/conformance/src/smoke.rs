@@ -5,20 +5,20 @@
 // Defeito plausível derrotado: pipeline nunca chega ao upstream (retorna erro antes),
 // ou upstream é chamado mas a resposta é perdida/corrompida no caminho.
 
-use std::sync::Arc;
 use axum::response::IntoResponse;
 use bytes::Bytes;
+use std::sync::Arc;
 use vkdg_connections::{
     AuthKind, Connection, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
+use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::{
     ApiType, AttemptState, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId,
 };
-use vkdg_core::pipeline::PipelineCtx;
-use vkdg_http::{AdmissionGuard, PipelineState};
-use vkdg_observe::DecisionRecordExporter;
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::upstream::HttpClient;
+use vkdg_http::{AdmissionGuard, PipelineState};
+use vkdg_observe::DecisionRecordExporter;
 use vkdg_operations::{
     CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
 };
@@ -33,7 +33,9 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
     let config = ConnectionConfig {
         id: conn_id.clone(),
         provider: ProviderKind::Custom { base_url },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: max_concurrent as u32,
         weight: 1,
@@ -219,7 +221,11 @@ async fn smoke_admission_rejected_upstream_never_called() {
 
     let response = run_conversation_pipeline(pipeline, ctx, op).await;
     assert_eq!(response.status(), 503, "admission=0 must yield 503");
-    assert_eq!(fake.call_count(), 0, "upstream must NOT be called when admission rejects");
+    assert_eq!(
+        fake.call_count(),
+        0,
+        "upstream must NOT be called when admission rejects"
+    );
 }
 
 // Defeito plausível derrotado: ConnectionCatalog.eligible() retorna a mesma
@@ -232,8 +238,12 @@ async fn smoke_admission_rejected_upstream_never_called() {
 async fn concurrent_streams_same_connection() {
     let config = ConnectionConfig {
         id: ConnectionId("concurrent".into()),
-        provider: ProviderKind::Custom { base_url: "http://unused".into() },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: "http://unused".into(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: 2,
         weight: 1,
@@ -253,7 +263,11 @@ async fn concurrent_streams_same_connection() {
     let g1 = g1.expect("first acquire must succeed");
     let g2 = g2.expect("second acquire must succeed");
 
-    assert_eq!(conn.active_requests(), 2, "both guards active: counter must be 2");
+    assert_eq!(
+        conn.active_requests(),
+        2,
+        "both guards active: counter must be 2"
+    );
 
     // Third acquire must fail — capacity exhausted.
     assert!(
@@ -264,7 +278,11 @@ async fn concurrent_streams_same_connection() {
     drop(g1);
     drop(g2);
 
-    assert_eq!(conn.active_requests(), 0, "all guards dropped: counter must return to 0");
+    assert_eq!(
+        conn.active_requests(),
+        0,
+        "all guards dropped: counter must return to 0"
+    );
     assert!(conn.acquire().is_some(), "capacity restored after drop");
 }
 
@@ -275,8 +293,12 @@ async fn concurrent_streams_same_connection() {
 async fn connection_guard_releases_on_drop() {
     let config = ConnectionConfig {
         id: ConnectionId("drop-test".into()),
-        provider: ProviderKind::Custom { base_url: "http://unused".into() },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: "http://unused".into(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec!["*".into()],
         max_concurrent: 1,
         weight: 1,
@@ -285,14 +307,27 @@ async fn connection_guard_releases_on_drop() {
     };
     let conn = Connection::new(config);
 
-    let guard = conn.acquire().expect("acquire must succeed on fresh connection");
-    assert_eq!(conn.active_requests(), 1, "counter must be 1 while guard is held");
+    let guard = conn
+        .acquire()
+        .expect("acquire must succeed on fresh connection");
+    assert_eq!(
+        conn.active_requests(),
+        1,
+        "counter must be 1 while guard is held"
+    );
 
     drop(guard);
-    assert_eq!(conn.active_requests(), 0, "counter must be 0 after guard drop");
+    assert_eq!(
+        conn.active_requests(),
+        0,
+        "counter must be 0 after guard drop"
+    );
 
     // Capacity is fully restored.
-    assert!(conn.acquire().is_some(), "must be acquirable again after drop");
+    assert!(
+        conn.acquire().is_some(),
+        "must be acquirable again after drop"
+    );
 }
 
 // Defeito plausível derrotado: ConnectionGuard dentro do pipeline
@@ -302,8 +337,12 @@ async fn connection_guard_releases_on_drop() {
 async fn pipeline_cancellation_releases_on_drop() {
     let config = ConnectionConfig {
         id: ConnectionId("cancel-test".into()),
-        provider: ProviderKind::Custom { base_url: "http://unused".into() },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: "http://unused".into(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec!["*".into()],
         max_concurrent: 1,
         weight: 1,
@@ -324,7 +363,10 @@ async fn pipeline_cancellation_releases_on_drop() {
         0,
         "cancellation (drop) must release connection guard"
     );
-    assert!(conn.acquire().is_some(), "connection must be available after cancellation");
+    assert!(
+        conn.acquire().is_some(),
+        "connection must be available after cancellation"
+    );
 }
 
 // ── OpenAI path smoke tests ───────────────────────────────────────────────────
@@ -338,7 +380,9 @@ where
     let config = ConnectionConfig {
         id: conn_id.clone(),
         provider: ProviderKind::Custom { base_url },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec![model_pattern.into()],
         max_concurrent: 10,
         weight: 1,
@@ -379,8 +423,12 @@ where
     let id2 = ConnectionId("conn-2".into());
     let cfg1 = ConnectionConfig {
         id: id1.clone(),
-        provider: ProviderKind::Custom { base_url: first_url },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: first_url,
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec![model_pattern.into()],
         max_concurrent: 10,
         weight: 1,
@@ -389,8 +437,12 @@ where
     };
     let cfg2 = ConnectionConfig {
         id: id2.clone(),
-        provider: ProviderKind::Custom { base_url: second_url },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: second_url,
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec![model_pattern.into()],
         max_concurrent: 10,
         weight: 1,
@@ -439,9 +491,14 @@ async fn smoke_pipeline_openai_streaming_ok() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-    assert!(ct.contains("text/event-stream"), "content-type must be text/event-stream, got: {ct}");
+    assert!(
+        ct.contains("text/event-stream"),
+        "content-type must be text/event-stream, got: {ct}"
+    );
 
-    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap();
     let s = String::from_utf8_lossy(&body);
     assert!(s.contains("hello openai"), "body must contain content: {s}");
     assert!(s.contains("[DONE]"), "body must contain [DONE]: {s}");
@@ -476,9 +533,22 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;
 
     assert_eq!(resp.status(), 200, "fallback must succeed with 200");
-    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .unwrap();
     let s = String::from_utf8_lossy(&body);
-    assert!(s.contains("fallback worked"), "body must contain fallback content: {s}");
-    assert_eq!(fake1.call_count(), 1, "first candidate must be attempted once");
-    assert_eq!(fake2.call_count(), 1, "fallback candidate must be attempted once");
+    assert!(
+        s.contains("fallback worked"),
+        "body must contain fallback content: {s}"
+    );
+    assert_eq!(
+        fake1.call_count(),
+        1,
+        "first candidate must be attempted once"
+    );
+    assert_eq!(
+        fake2.call_count(),
+        1,
+        "fallback candidate must be attempted once"
+    );
 }

@@ -7,17 +7,18 @@ use crate::snapshot::{ConfigSnapshot, ConfigTx};
 /// Load a YAML file, parse it, validate all references and env vars.
 /// Returns a `ConfigSnapshot` or a detailed `ConfigError`.
 pub fn load_and_validate(path: &str, version: u64) -> Result<ConfigSnapshot, ConfigError> {
-    let contents =
-        std::fs::read_to_string(path).map_err(ConfigError::Io)?;
+    let contents = std::fs::read_to_string(path).map_err(ConfigError::Io)?;
 
     if contents.trim().is_empty() {
-        return Err(ConfigError::Validation(
-            format!("config file '{path}' is empty"),
-        ));
+        return Err(ConfigError::Validation(format!(
+            "config file '{path}' is empty"
+        )));
     }
 
-    let cfg: GatewayConfig = serde_yaml::from_str(&contents)
-        .map_err(|e| ConfigError::Parse { path: path.to_owned(), source: e })?;
+    let cfg: GatewayConfig = serde_yaml::from_str(&contents).map_err(|e| ConfigError::Parse {
+        path: path.to_owned(),
+        source: e,
+    })?;
 
     validate(&cfg)?;
     ConfigSnapshot::build(version, cfg)
@@ -28,7 +29,9 @@ fn validate(cfg: &GatewayConfig) -> Result<(), ConfigError> {
     let mut seen_ids = HashSet::new();
     for conn in &cfg.connections {
         if !seen_ids.insert(conn.id.clone()) {
-            return Err(ConfigError::DuplicateConnection { id: conn.id.clone() });
+            return Err(ConfigError::DuplicateConnection {
+                id: conn.id.clone(),
+            });
         }
     }
 
@@ -91,11 +94,7 @@ fn validate_route(
 /// Spawn a background task that watches `path` for changes and sends new
 /// validated snapshots to `tx`. Invalid reloads are logged and rejected —
 /// the current snapshot stays active until a valid one arrives.
-pub fn watch(
-    path: String,
-    tx: ConfigTx,
-    mut version: u64,
-) -> tokio::task::JoinHandle<()> {
+pub fn watch(path: String, tx: ConfigTx, mut version: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
         use tokio::sync::mpsc;
@@ -287,11 +286,7 @@ routes:
         use std::io::Write;
 
         let mut file = tempfile::NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            "listen: '0.0.0.0:8080'\nconnections: []\nroutes: []"
-        )
-        .unwrap();
+        writeln!(file, "listen: '0.0.0.0:8080'\nconnections: []\nroutes: []").unwrap();
 
         let path = file.path().to_str().unwrap().to_string();
         // Empty connections/routes is valid (no cross-ref violations).

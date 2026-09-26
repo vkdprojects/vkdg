@@ -46,11 +46,25 @@ pub enum ImageData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
-    Image { media_type: String, data: ImageData },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    ToolResult { tool_use_id: String, content: String },
-    Thinking { thinking: String },
+    Text {
+        text: String,
+    },
+    Image {
+        media_type: String,
+        data: ImageData,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
+    Thinking {
+        thinking: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,11 +174,24 @@ pub struct VideoRemixRequest {
 /// Status event for a video job.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VideoJobEvent {
-    Queued { job_id: String },
-    Running { job_id: String, progress_pct: Option<u8> },
-    Succeeded { job_id: String, artifact_url: String },
-    Failed { job_id: String, reason: String },
-    Cancelled { job_id: String },
+    Queued {
+        job_id: String,
+    },
+    Running {
+        job_id: String,
+        progress_pct: Option<u8>,
+    },
+    Succeeded {
+        job_id: String,
+        artifact_url: String,
+    },
+    Failed {
+        job_id: String,
+        reason: String,
+    },
+    Cancelled {
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,12 +226,29 @@ pub enum StopReason {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConversationEvent {
-    Started { request_id: RequestId },
-    OutputDelta { delta: String, index: u32 },
-    ToolCallDelta { tool_use_id: String, name: String, input_delta: String, index: u32 },
-    Usage { input_tokens: UsageCount, output_tokens: UsageCount },
-    Completed { stop_reason: StopReason },
-    Failed { error: VkdgError },
+    Started {
+        request_id: RequestId,
+    },
+    OutputDelta {
+        delta: String,
+        index: u32,
+    },
+    ToolCallDelta {
+        tool_use_id: String,
+        name: String,
+        input_delta: String,
+        index: u32,
+    },
+    Usage {
+        input_tokens: UsageCount,
+        output_tokens: UsageCount,
+    },
+    Completed {
+        stop_reason: StopReason,
+    },
+    Failed {
+        error: VkdgError,
+    },
 }
 
 // ── Non-streaming response ────────────────────────────────────────────────────

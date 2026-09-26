@@ -13,8 +13,8 @@ pub mod session;
 
 pub use catalog::ConnectionCatalog;
 pub use connection::{
-    AuthKind, ConnectionConfig, ConnectionGuard, ConnectionState, Connection,
-    ProviderKind, TokenState,
+    AuthKind, Connection, ConnectionConfig, ConnectionGuard, ConnectionState, ProviderKind,
+    TokenState,
 };
 pub use credentials::CredentialManager;
 pub use latency::{EwmaLatency, LatencyTracker};

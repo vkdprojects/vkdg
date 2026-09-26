@@ -49,8 +49,8 @@ impl Default for ObserveConfig {
 /// (added first on the Registry so the type parameter `S = Registry` is satisfied).
 /// OTLP errors are demoted to a warning — this function never panics.
 pub fn init_tracing(config: &ObserveConfig) -> anyhow::Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
     // Try to build the OTel layer; failure is non-fatal.
     let otel = config

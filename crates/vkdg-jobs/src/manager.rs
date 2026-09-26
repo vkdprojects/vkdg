@@ -59,11 +59,7 @@ impl JobManager {
     /// - Queued   → Running | Cancelled
     /// - Running  → Succeeded | Failed | Cancelled
     /// - any      → Expired
-    pub async fn transition(
-        &self,
-        job_id: Uuid,
-        new_state: JobState,
-    ) -> vkdg_core::Result<()> {
+    pub async fn transition(&self, job_id: Uuid, new_state: JobState) -> vkdg_core::Result<()> {
         let record = self
             .store
             .get(job_id)
@@ -174,6 +170,9 @@ mod tests {
         let err = mgr.transition(Uuid::new_v4(), JobState::Running).await;
         assert!(err.is_err());
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("not found"), "error should say not found, got: {msg}");
+        assert!(
+            msg.contains("not found"),
+            "error should say not found, got: {msg}"
+        );
     }
 }

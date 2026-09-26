@@ -89,17 +89,20 @@ impl HttpClient {
         if !(200..300).contains(&status) {
             // Collect error body for the message (bounded read — 4 KiB).
             let body_bytes = resp.bytes().await.unwrap_or_default();
-            let message = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(4096)])
-                .into_owned();
-            return Err(VkdgError::UpstreamError { code: status, message });
+            let message =
+                String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(4096)]).into_owned();
+            return Err(VkdgError::UpstreamError {
+                code: status,
+                message,
+            });
         }
 
         if streaming {
             use futures::StreamExt;
 
-            let byte_stream = resp.bytes_stream().map(|r| {
-                r.map_err(|e| std::io::Error::other(e.to_string()))
-            });
+            let byte_stream = resp
+                .bytes_stream()
+                .map(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
             Ok(UpstreamResponse::Streaming {
                 status,
                 body: Box::pin(byte_stream),

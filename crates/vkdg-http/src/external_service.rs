@@ -155,6 +155,9 @@ mod tests {
         cb.record_failure();
         assert!(cb.is_open(), "should be open after threshold");
         cb.record_success();
-        assert!(!cb.is_open(), "should be closed after success resets failures");
+        assert!(
+            !cb.is_open(),
+            "should be closed after success resets failures"
+        );
     }
 }

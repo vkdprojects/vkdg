@@ -158,7 +158,10 @@ fn parse_stop_reason(reason: &str) -> StopReason {
         "tool_calls" => StopReason::ToolUse,
         "length" => StopReason::MaxTokens,
         other => {
-            tracing::warn!(reason = other, "openai: unknown finish_reason; treating as EndTurn");
+            tracing::warn!(
+                reason = other,
+                "openai: unknown finish_reason; treating as EndTurn"
+            );
             StopReason::EndTurn
         }
     }
@@ -184,11 +187,12 @@ struct OaiImageDatum {
 /// Parse an OpenAI Images API response body into an [`ImageResponse`].
 ///
 /// OpenAI format: `{"created": 1234567890, "data": [{"url": "...", "revised_prompt": "..."}]}`
-pub fn parse_image_response(body: &[u8], request_id: &RequestId) -> Result<ImageResponse, vkdg_core::VkdgError> {
-    let raw: OaiImagesResponse =
-        serde_json::from_slice(body).map_err(|e| vkdg_core::VkdgError::Internal(
-            format!("parse_image_response: {e}"),
-        ))?;
+pub fn parse_image_response(
+    body: &[u8],
+    request_id: &RequestId,
+) -> Result<ImageResponse, vkdg_core::VkdgError> {
+    let raw: OaiImagesResponse = serde_json::from_slice(body)
+        .map_err(|e| vkdg_core::VkdgError::Internal(format!("parse_image_response: {e}")))?;
 
     let data = raw
         .data
@@ -206,7 +210,6 @@ pub fn parse_image_response(body: &[u8], request_id: &RequestId) -> Result<Image
         data,
     })
 }
-
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -233,8 +236,7 @@ mod tests {
     /// delta.content should produce an OutputDelta event with the text.
     #[test]
     fn parse_output_delta() {
-        let data =
-            r#"{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
         let events = parse_sse_line(data, &rid());
         assert!(
             matches!(
@@ -278,8 +280,7 @@ mod tests {
     /// Usage chunk with empty choices must produce a Usage event.
     #[test]
     fn parse_usage_chunk() {
-        let data =
-            r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}"#;
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}"#;
         let events = parse_sse_line(data, &rid());
         assert!(
             matches!(
@@ -296,13 +297,14 @@ mod tests {
     /// finish_reason:stop must produce Completed{EndTurn}.
     #[test]
     fn parse_finish_reason_stop() {
-        let data =
-            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
+        let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
         let events = parse_sse_line(data, &rid());
         assert!(
             matches!(
                 events.as_slice(),
-                [ConversationEvent::Completed { stop_reason: StopReason::EndTurn }]
+                [ConversationEvent::Completed {
+                    stop_reason: StopReason::EndTurn
+                }]
             ),
             "{events:?}"
         );
@@ -311,13 +313,14 @@ mod tests {
     /// finish_reason:tool_calls must produce Completed{ToolUse}.
     #[test]
     fn parse_finish_reason_tool_calls() {
-        let data =
-            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
+        let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
         let events = parse_sse_line(data, &rid());
         assert!(
             matches!(
                 events.as_slice(),
-                [ConversationEvent::Completed { stop_reason: StopReason::ToolUse }]
+                [ConversationEvent::Completed {
+                    stop_reason: StopReason::ToolUse
+                }]
             ),
             "{events:?}"
         );
@@ -336,8 +339,12 @@ mod tests {
         let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"tool_a","arguments":""}},{"index":1,"id":"call_b","function":{"name":"tool_b","arguments":""}}]},"finish_reason":null}]}"#;
         let events = parse_sse_line(data, &rid());
         assert_eq!(events.len(), 2, "{events:?}");
-        assert!(matches!(&events[0], ConversationEvent::ToolCallDelta { tool_use_id, name, index: 0, .. } if tool_use_id == "call_a" && name == "tool_a"));
-        assert!(matches!(&events[1], ConversationEvent::ToolCallDelta { tool_use_id, name, index: 1, .. } if tool_use_id == "call_b" && name == "tool_b"));
+        assert!(
+            matches!(&events[0], ConversationEvent::ToolCallDelta { tool_use_id, name, index: 0, .. } if tool_use_id == "call_a" && name == "tool_a")
+        );
+        assert!(
+            matches!(&events[1], ConversationEvent::ToolCallDelta { tool_use_id, name, index: 1, .. } if tool_use_id == "call_b" && name == "tool_b")
+        );
     }
 
     // Defeat: parse_image_response drops the url field or maps it to the wrong
@@ -353,9 +360,6 @@ mod tests {
             resp.data[0].url.as_deref(),
             Some("https://example.com/img.png")
         );
-        assert_eq!(
-            resp.data[0].revised_prompt.as_deref(),
-            Some("a fluffy cat")
-        );
+        assert_eq!(resp.data[0].revised_prompt.as_deref(), Some("a fluffy cat"));
     }
 }

@@ -8,9 +8,7 @@ use vkdg_operations::{
     Operation, Role, Tool,
 };
 
-use crate::wire::{
-    AnthropicBlock, AnthropicContent, AnthropicToolResultContent,
-};
+use crate::wire::{AnthropicBlock, AnthropicContent, AnthropicToolResultContent};
 
 /// Parse raw bytes from an Anthropic Messages request into `(model_name, Operation)`.
 pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
@@ -80,8 +78,12 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
         "image" => {
             let source = b.source?;
             let data = match source.type_.as_str() {
-                "base64" => ImageData::Base64 { data: source.data.unwrap_or_default() },
-                _ => ImageData::Url { url: source.url.unwrap_or_default() },
+                "base64" => ImageData::Base64 {
+                    data: source.data.unwrap_or_default(),
+                },
+                _ => ImageData::Url {
+                    url: source.url.unwrap_or_default(),
+                },
             };
             let media_type = source.media_type.unwrap_or_else(|| "image/jpeg".into());
             Some(ContentBlock::Image { media_type, data })
@@ -105,7 +107,10 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
                 }
                 None => String::new(),
             };
-            Some(ContentBlock::ToolResult { tool_use_id, content })
+            Some(ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+            })
         }
         _ => None,
     }

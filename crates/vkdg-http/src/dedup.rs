@@ -25,7 +25,9 @@ pub struct DedupTable {
 
 impl DedupTable {
     pub fn new() -> Self {
-        Self { in_flight: Mutex::new(HashMap::new()) }
+        Self {
+            in_flight: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Try to register as the first caller for this key.

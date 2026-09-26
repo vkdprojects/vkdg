@@ -1,6 +1,6 @@
-use vkdg_operations::{ConversationRequest, Message, MessageContent, ContentBlock, Role};
 use crate::metrics::CompressionMetrics;
 use crate::CompressionError;
+use vkdg_operations::{ContentBlock, ConversationRequest, Message, MessageContent, Role};
 
 /// Truncation policy: remove oldest messages until estimated token count <= max_tokens.
 /// System messages are preserved. Oldest non-system messages are dropped first.
@@ -19,7 +19,9 @@ pub struct TruncateCompressor {
 }
 
 impl crate::Compressor for TruncateCompressor {
-    fn name(&self) -> &str { "truncate" }
+    fn name(&self) -> &str {
+        "truncate"
+    }
 
     fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
         estimated_tokens(&req.messages)
@@ -46,21 +48,28 @@ pub fn apply(
     let original_estimated_tokens = estimated_tokens(&req.messages);
 
     if original_estimated_tokens <= max_tokens {
-        return Ok((req, CompressionMetrics {
-            original_message_count: original_count,
-            compressed_message_count: original_count,
-            estimated_tokens_removed: 0,
-            strategy: "truncate".into(),
-            lossless: true,
-        }));
+        return Ok((
+            req,
+            CompressionMetrics {
+                original_message_count: original_count,
+                compressed_message_count: original_count,
+                estimated_tokens_removed: 0,
+                strategy: "truncate".into(),
+                lossless: true,
+            },
+        ));
     }
 
     // Preserve system messages always; drop oldest non-system first.
-    let mut kept: Vec<Message> = req.messages.iter()
+    let mut kept: Vec<Message> = req
+        .messages
+        .iter()
         .filter(|m| matches!(m.role, Role::System))
         .cloned()
         .collect();
-    let non_system: Vec<Message> = req.messages.into_iter()
+    let non_system: Vec<Message> = req
+        .messages
+        .into_iter()
         .filter(|m| !matches!(m.role, Role::System))
         .collect();
 
@@ -82,35 +91,40 @@ pub fn apply(
     let removed_tokens = original_estimated_tokens.saturating_sub(tokens_so_far);
 
     req.messages = kept;
-    Ok((req, CompressionMetrics {
-        original_message_count: original_count,
-        compressed_message_count: compressed_count,
-        estimated_tokens_removed: removed_tokens,
-        strategy: "truncate".into(),
-        lossless: original_count == compressed_count,
-    }))
+    Ok((
+        req,
+        CompressionMetrics {
+            original_message_count: original_count,
+            compressed_message_count: compressed_count,
+            estimated_tokens_removed: removed_tokens,
+            strategy: "truncate".into(),
+            lossless: original_count == compressed_count,
+        },
+    ))
 }
 
 /// Rough token estimate: chars / 4.
 fn estimated_tokens(messages: &[Message]) -> u32 {
-    messages.iter().map(|m| {
-        match &m.content {
+    messages
+        .iter()
+        .map(|m| match &m.content {
             MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
-            MessageContent::Blocks(blocks) => blocks.iter().map(|b| {
-                match b {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .map(|b| match b {
                     ContentBlock::Text { text } => (text.len() as u32).saturating_div(4),
                     _ => 50,
-                }
-            }).sum(),
-        }
-    }).sum()
+                })
+                .sum(),
+        })
+        .sum()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{apply as policy_apply, CompressionError, CompressionStrategy};
     use vkdg_core::CapabilitySet;
-    use crate::{CompressionStrategy, apply as policy_apply, CompressionError};
 
     fn make_req(messages: Vec<Message>) -> ConversationRequest {
         ConversationRequest {
@@ -125,7 +139,10 @@ mod tests {
     }
 
     fn text_msg(role: Role, content: &str) -> Message {
-        Message { role, content: MessageContent::Text(content.into()) }
+        Message {
+            role,
+            content: MessageContent::Text(content.into()),
+        }
     }
 
     #[test]
@@ -160,7 +177,10 @@ mod tests {
         assert!(!metrics.lossless);
         assert_eq!(out.messages.len(), 1, "only newest should remain");
         if let MessageContent::Text(s) = &out.messages[0].content {
-            assert!(s.starts_with('C'), "newest (C) should be kept, got: {s:.10}");
+            assert!(
+                s.starts_with('C'),
+                "newest (C) should be kept, got: {s:.10}"
+            );
         } else {
             panic!("unexpected content type");
         }

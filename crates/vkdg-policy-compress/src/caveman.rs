@@ -10,21 +10,26 @@
 //! Lossiness: low-risk on content; targets only structural padding.
 //! Does NOT remove code blocks, URLs, identifiers, or numbers.
 
+use crate::{metrics::CompressionMetrics, CompressionError, Compressor};
 use regex::Regex;
 use std::sync::LazyLock;
 use vkdg_operations::{ConversationRequest, MessageContent, Role};
-use crate::{Compressor, CompressionError, metrics::CompressionMetrics};
 
 pub struct CavemanCompressor;
 
 impl Compressor for CavemanCompressor {
-    fn name(&self) -> &str { "caveman" }
+    fn name(&self) -> &str {
+        "caveman"
+    }
 
     fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
-        req.messages.iter().map(|m| match &m.content {
-            MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
-            MessageContent::Blocks(_) => 50,
-        }).sum()
+        req.messages
+            .iter()
+            .map(|m| match &m.content {
+                MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
+                MessageContent::Blocks(_) => 50,
+            })
+            .sum()
     }
 
     fn compress(
@@ -47,13 +52,16 @@ impl Compressor for CavemanCompressor {
         let compressed_tokens = self.estimate_tokens(&req);
         let removed = original_tokens.saturating_sub(compressed_tokens);
 
-        Ok((req, CompressionMetrics {
-            original_message_count: 0,
-            compressed_message_count: 0,
-            estimated_tokens_removed: removed,
-            strategy: "caveman".into(),
-            lossless: removed == 0,
-        }))
+        Ok((
+            req,
+            CompressionMetrics {
+                original_message_count: 0,
+                compressed_message_count: 0,
+                estimated_tokens_removed: removed,
+                strategy: "caveman".into(),
+                lossless: removed == 0,
+            },
+        ))
     }
 }
 
@@ -107,12 +115,15 @@ fn apply_caveman_rules(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vkdg_operations::{Message, MessageContent, Role};
     use vkdg_core::CapabilitySet;
+    use vkdg_operations::{Message, MessageContent, Role};
 
     fn make_req(text: &str) -> ConversationRequest {
         ConversationRequest {
-            messages: vec![Message { role: Role::User, content: MessageContent::Text(text.into()) }],
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text(text.into()),
+            }],
             tools: vec![],
             max_tokens: None,
             temperature: None,
@@ -132,7 +143,10 @@ mod tests {
             MessageContent::Text(t) => t.clone(),
             _ => unreachable!(),
         };
-        assert!(text.contains("The answer is 42"), "content preserved: {text}");
+        assert!(
+            text.contains("The answer is 42"),
+            "content preserved: {text}"
+        );
         assert!(!text.contains("Certainly"), "preamble stripped: {text}");
     }
 
@@ -160,7 +174,10 @@ mod tests {
         let c = CavemanCompressor;
         let req = make_req("Certainly! I'd be happy to help. The sky is blue.");
         let (_, metrics) = c.compress(req, 10000).unwrap();
-        assert!(metrics.estimated_tokens_removed > 0, "must report token savings");
+        assert!(
+            metrics.estimated_tokens_removed > 0,
+            "must report token savings"
+        );
     }
 
     // Plausible wrong impl: empty string panics or returns garbage

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,9 @@ impl std::fmt::Display for ProviderKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthKind {
-    ApiKey { env_var: String },
+    ApiKey {
+        env_var: String,
+    },
     OAuth2 {
         token_url: String,
         client_id: String,
@@ -86,8 +88,12 @@ impl std::fmt::Debug for TokenState {
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionState {
     Healthy,
-    Degraded { since: DateTime<Utc> },
-    CircuitOpen { until: DateTime<Utc> },
+    Degraded {
+        since: DateTime<Utc>,
+    },
+    CircuitOpen {
+        until: DateTime<Utc>,
+    },
     Cooldown {
         until: DateTime<Utc>,
         /// Consecutive failures; drives exponential backoff.
@@ -134,7 +140,9 @@ impl Connection {
         }
         // Best-effort CAS; exact fairness not required on this path.
         self.active_requests.fetch_add(1, Ordering::AcqRel);
-        Some(ConnectionGuard { counter: Arc::clone(&self.active_requests) })
+        Some(ConnectionGuard {
+            counter: Arc::clone(&self.active_requests),
+        })
     }
 
     pub(crate) fn serves_model(&self, model: &str) -> bool {
@@ -163,7 +171,10 @@ impl Connection {
         let jitter = (failure_count % 5) as i64;
         let cooldown_secs = base_secs + jitter;
         let until = chrono::Utc::now() + chrono::Duration::seconds(cooldown_secs);
-        self.state = ConnectionState::Cooldown { until, failure_count };
+        self.state = ConnectionState::Cooldown {
+            until,
+            failure_count,
+        };
         tracing::info!(
             connection_id = %self.config.id.0,
             status_code,
@@ -204,8 +215,12 @@ mod tests {
     fn make_connection() -> Connection {
         Connection::new(ConnectionConfig {
             id: ConnectionId("test-conn".into()),
-            provider: ProviderKind::Custom { base_url: "http://localhost".into() },
-            auth: AuthKind::ApiKey { env_var: "FAKE_KEY".into() },
+            provider: ProviderKind::Custom {
+                base_url: "http://localhost".into(),
+            },
+            auth: AuthKind::ApiKey {
+                env_var: "FAKE_KEY".into(),
+            },
             models: vec!["claude-3".into()],
             max_concurrent: 4,
             weight: 1,
@@ -220,7 +235,10 @@ mod tests {
         let mut conn = make_connection();
         let t1 = conn.record_upstream_error(429);
         let t2 = conn.record_upstream_error(429);
-        assert!(t2 > t1, "second failure must produce a later cooldown deadline");
+        assert!(
+            t2 > t1,
+            "second failure must produce a later cooldown deadline"
+        );
     }
 
     // Plausible wrong impl: cooldown doesn't expire, stays in Cooldown forever

@@ -1,8 +1,28 @@
+# deny.toml
+# cargo-deny configuration for VKDG.
+# Run: cargo deny check
+
+[graph]
+# Scope checks to platforms VKDG actually ships on.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+
 [advisories]
-# Warn on advisories rather than hard-fail (handled by scheduled audit.yml)
+# unsound = UB potential; always error regardless of whether it's a transitive dep.
+unsound = "all"
+# unmaintained = workspace: only error when OUR workspace directly depends on it,
+# not when it's buried 5+ levels deep in a transitive dep we can't control.
+unmaintained = "workspace"
+# Justified exceptions go here with a reason string.
 ignore = []
 
 [licenses]
+# SPDX detection confidence threshold.
+confidence-threshold = 0.93
 allow = [
     "MIT",
     "Apache-2.0",
@@ -11,14 +31,23 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
+    "Unicode-DFS-2016",
     "OpenSSL",
     "Zlib",
+    "CC0-1.0",
 ]
 
 [bans]
+# Warn on duplicate versions; upgrade to "deny" once the tree is clean.
 multiple-versions = "warn"
 wildcard-dep-sources = "deny"
-deny = []
+# VKDG uses reqwest with rustls-tls; openssl must never appear.
+deny = [
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+]
+# Justified duplicate-version exceptions go here:
+skip = []
 
 [sources]
 unknown-registry = "deny"

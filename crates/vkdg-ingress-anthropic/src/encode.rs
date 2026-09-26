@@ -1,7 +1,7 @@
 //! Encode internal `ConversationEvent` types into Anthropic SSE wire format.
 
-use axum::response::{IntoResponse, Response, Sse};
 use axum::response::sse::Event;
+use axum::response::{IntoResponse, Response, Sse};
 use futures::Stream;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use std::convert::Infallible;
@@ -49,7 +49,9 @@ pub fn vkdg_error_to_anthropic_response(err: VkdgError) -> Response {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
         VkdgError::AdmissionRejected { .. } => (StatusCode::TOO_MANY_REQUESTS, "overloaded_error"),
-        VkdgError::CapabilityUnsupported { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        VkdgError::CapabilityUnsupported { .. } => {
+            (StatusCode::BAD_REQUEST, "invalid_request_error")
+        }
         VkdgError::NoEligibleConnection => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);

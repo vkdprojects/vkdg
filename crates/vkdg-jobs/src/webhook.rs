@@ -29,11 +29,7 @@ pub fn dispatch(record: &JobRecord, webhook_url: &str) {
     });
 }
 
-async fn send_webhook(
-    url: &str,
-    event: &str,
-    payload: &serde_json::Value,
-) -> Result<(), String> {
+async fn send_webhook(url: &str, event: &str, payload: &serde_json::Value) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -121,11 +117,17 @@ mod tests {
     #[test]
     fn failed_event_consistent_regardless_of_reason() {
         assert_eq!(
-            state_to_event(&JobState::Failed { reason: "timeout".into() }),
-            state_to_event(&JobState::Failed { reason: "upstream_error".into() }),
+            state_to_event(&JobState::Failed {
+                reason: "timeout".into()
+            }),
+            state_to_event(&JobState::Failed {
+                reason: "upstream_error".into()
+            }),
         );
         assert_eq!(
-            state_to_event(&JobState::Failed { reason: "any".into() }),
+            state_to_event(&JobState::Failed {
+                reason: "any".into()
+            }),
             "job.failed"
         );
     }

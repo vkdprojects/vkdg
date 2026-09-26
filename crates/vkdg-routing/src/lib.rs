@@ -12,11 +12,11 @@ pub mod types;
 
 pub use router::Router;
 pub use scored::ScoredStrategy;
-pub use scorer::{CandidateSignals, ScoringWeights, rank_candidates};
+pub use scorer::{rank_candidates, CandidateSignals, ScoringWeights};
 pub use strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
 pub use types::{
-    ConnectionWeight, EligibilityFilter, PluginHooks, RouteConfig,
-    RouteId, RouteResult, RoutingHints, StrategyKind,
+    ConnectionWeight, EligibilityFilter, PluginHooks, RouteConfig, RouteId, RouteResult,
+    RoutingHints, StrategyKind,
 };
 
 #[cfg(test)]
@@ -47,14 +47,25 @@ mod tests {
         let route = RouteConfig {
             id: RouteId("r".into()),
             match_models: vec!["claude-*".into()],
-            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            strategy: StrategyKind::Scored {
+                mode_pack: "balanced".into(),
+            },
             targets: vec![conn.clone()],
             plugin_hooks: PluginHooks::default(),
         };
         let router = Router::new(vec![route]);
         let envelope = test_envelope("claude-3-5-haiku-20241022");
-        let result = router.route(&envelope, &EligibilityFilter::default(), &RoutingHints::default()).await;
-        assert!(result.is_ok(), "scored strategy must select from available candidates");
+        let result = router
+            .route(
+                &envelope,
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
+        assert!(
+            result.is_ok(),
+            "scored strategy must select from available candidates"
+        );
         assert_eq!(result.unwrap().connection_id, conn);
     }
 
@@ -63,13 +74,24 @@ mod tests {
         let route = RouteConfig {
             id: RouteId("r".into()),
             match_models: vec!["gpt-*".into()],
-            strategy: StrategyKind::Scored { mode_pack: "ship-fast".into() },
-            targets: vec![vkdg_core::ConnectionId("fast".into()), vkdg_core::ConnectionId("cheap".into())],
+            strategy: StrategyKind::Scored {
+                mode_pack: "ship-fast".into(),
+            },
+            targets: vec![
+                vkdg_core::ConnectionId("fast".into()),
+                vkdg_core::ConnectionId("cheap".into()),
+            ],
             plugin_hooks: PluginHooks::default(),
         };
         let router = Router::new(vec![route]);
         let envelope = test_envelope("gpt-4o");
-        let result = router.route(&envelope, &EligibilityFilter::default(), &RoutingHints::default()).await;
+        let result = router
+            .route(
+                &envelope,
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
         assert!(result.is_ok());
     }
 
@@ -79,7 +101,9 @@ mod tests {
         let route = RouteConfig {
             id: RouteId("r".into()),
             match_models: vec!["claude-*".into()],
-            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            strategy: StrategyKind::Scored {
+                mode_pack: "balanced".into(),
+            },
             targets: vec![conn.clone()],
             plugin_hooks: PluginHooks::default(),
         };
@@ -87,21 +111,32 @@ mod tests {
         let envelope = test_envelope("claude-3-opus-20240229");
         let mut filter = EligibilityFilter::default();
         filter.excluded_connections.push(conn);
-        let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
-        assert!(matches!(result, Err(vkdg_core::VkdgError::NoEligibleConnection)));
+        let result = router
+            .route(&envelope, &filter, &RoutingHints::default())
+            .await;
+        assert!(matches!(
+            result,
+            Err(vkdg_core::VkdgError::NoEligibleConnection)
+        ));
     }
 
     #[tokio::test]
     async fn scored_strategy_uses_quota_hints() {
         let mut hints = RoutingHints::default();
-        hints.quota_headroom.insert(vkdg_core::ConnectionId("high-quota".into()), 0.9);
-        hints.quota_headroom.insert(vkdg_core::ConnectionId("low-quota".into()), 0.1);
+        hints
+            .quota_headroom
+            .insert(vkdg_core::ConnectionId("high-quota".into()), 0.9);
+        hints
+            .quota_headroom
+            .insert(vkdg_core::ConnectionId("low-quota".into()), 0.1);
         hints.mode_pack = Some("quality-first".into());
 
         let route = RouteConfig {
             id: RouteId("r".into()),
             match_models: vec!["gpt-*".into()],
-            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            strategy: StrategyKind::Scored {
+                mode_pack: "balanced".into(),
+            },
             targets: vec![
                 vkdg_core::ConnectionId("high-quota".into()),
                 vkdg_core::ConnectionId("low-quota".into()),
@@ -110,7 +145,9 @@ mod tests {
         };
         let router = Router::new(vec![route]);
         let envelope = test_envelope("gpt-4o");
-        let result = router.route(&envelope, &EligibilityFilter::default(), &hints).await;
+        let result = router
+            .route(&envelope, &EligibilityFilter::default(), &hints)
+            .await;
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap().connection_id,

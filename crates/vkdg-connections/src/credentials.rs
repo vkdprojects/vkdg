@@ -50,7 +50,12 @@ impl CredentialManager {
                     message: "environment variable not set".into(),
                 })
             }
-            AuthKind::OAuth2 { token_url, client_id, client_secret_env, scopes } => {
+            AuthKind::OAuth2 {
+                token_url,
+                client_id,
+                client_secret_env,
+                scopes,
+            } => {
                 self.get_oauth2_token(&conn.id, token_url, client_id, client_secret_env, scopes)
                     .await
             }
@@ -96,10 +101,11 @@ impl CredentialManager {
         }
 
         // Resolve the client secret from the environment.
-        let client_secret = std::env::var(client_secret_env).map_err(|_| VkdgError::ConfigInvalid {
-            field: client_secret_env.to_string(),
-            message: "OAuth2 client secret env var not set".into(),
-        })?;
+        let client_secret =
+            std::env::var(client_secret_env).map_err(|_| VkdgError::ConfigInvalid {
+                field: client_secret_env.to_string(),
+                message: "OAuth2 client secret env var not set".into(),
+            })?;
 
         let new_token = Self::refresh_token(token_url, client_id, &client_secret, scopes).await?;
 
@@ -154,9 +160,10 @@ impl CredentialManager {
             });
         }
 
-        let body: serde_json::Value = resp.json().await.map_err(|e| {
-            VkdgError::Internal(format!("OAuth2 response parse error: {e}"))
-        })?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| VkdgError::Internal(format!("OAuth2 response parse error: {e}")))?;
 
         body.get("access_token")
             .and_then(|v| v.as_str())

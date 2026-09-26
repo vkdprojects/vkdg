@@ -29,7 +29,9 @@ pub struct ConnectionDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthDef {
-    ApiKey { env_var: String },
+    ApiKey {
+        env_var: String,
+    },
     OAuth2 {
         token_url: String,
         client_id: String,

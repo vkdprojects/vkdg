@@ -9,10 +9,10 @@
 //! Phase D: in-memory store, exact keyword retrieval.
 //! Phase E: vector embeddings for semantic retrieval, SQLite persistence.
 
-pub mod store;
 pub mod extract;
 pub mod inject;
+pub mod store;
 
-pub use store::{MemoryStore, MemoryRecord};
 pub use extract::extract_facts;
 pub use inject::inject_memories;
+pub use store::{MemoryRecord, MemoryStore};

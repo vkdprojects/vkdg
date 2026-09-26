@@ -32,3 +32,6 @@ vkdg-provider-anthropic = { workspace = true }
 vkdg-provider-openai = { workspace = true }
 vkdg-combos = { workspace = true }
 vkdg-ingress-openai = { workspace = true }
+
+[lints]
+workspace = true

@@ -2,8 +2,8 @@
 
 use std::convert::Infallible;
 
-use axum::response::{IntoResponse, Response, Sse};
 use axum::response::sse::Event;
+use axum::response::{IntoResponse, Response, Sse};
 use futures::Stream;
 use serde_json::json;
 
@@ -50,7 +50,12 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
             "choices": [{"index": index, "delta": {"content": delta}, "finish_reason": null}]
         }),
 
-        ConversationEvent::ToolCallDelta { tool_use_id, name, input_delta, index } => json!({
+        ConversationEvent::ToolCallDelta {
+            tool_use_id,
+            name,
+            input_delta,
+            index,
+        } => json!({
             "id": request_id,
             "object": "chat.completion.chunk",
             "created": 0,
@@ -69,7 +74,10 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
             }]
         }),
 
-        ConversationEvent::Usage { input_tokens, output_tokens } => json!({
+        ConversationEvent::Usage {
+            input_tokens,
+            output_tokens,
+        } => json!({
             "id": request_id,
             "object": "chat.completion.chunk",
             "created": 0,
@@ -90,8 +98,7 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
                 "model": "",
                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]
             });
-            let chunk_str =
-                serde_json::to_string(&chunk_json).unwrap_or_else(|_| "{}".to_string());
+            let chunk_str = serde_json::to_string(&chunk_json).unwrap_or_else(|_| "{}".to_string());
             return Some(format!("data: {chunk_str}\n\ndata: [DONE]\n\n"));
         }
 
@@ -139,33 +146,57 @@ mod tests {
     // Defeat: omitting role:assistant from the Started chunk, breaking streaming clients.
     #[test]
     fn encode_started_has_assistant_role() {
-        let event = ConversationEvent::Started { request_id: RequestId::new() };
+        let event = ConversationEvent::Started {
+            request_id: RequestId::new(),
+        };
         let chunk = encode_event_to_oai_chunk(&event, REQ_ID).unwrap();
-        assert!(chunk.contains("\"role\":\"assistant\""), "Started chunk must contain role:assistant, got: {chunk}");
+        assert!(
+            chunk.contains("\"role\":\"assistant\""),
+            "Started chunk must contain role:assistant, got: {chunk}"
+        );
     }
 
     // Defeat: emitting delta.content with wrong key or empty string loss.
     #[test]
     fn encode_output_delta_has_content() {
-        let event = ConversationEvent::OutputDelta { delta: "hello".to_string(), index: 0 };
+        let event = ConversationEvent::OutputDelta {
+            delta: "hello".to_string(),
+            index: 0,
+        };
         let chunk = encode_event_to_oai_chunk(&event, REQ_ID).unwrap();
-        assert!(chunk.contains("\"content\":\"hello\""), "OutputDelta chunk must carry content text, got: {chunk}");
+        assert!(
+            chunk.contains("\"content\":\"hello\""),
+            "OutputDelta chunk must carry content text, got: {chunk}"
+        );
     }
 
     // Defeat: missing finish_reason or [DONE] sentinel, breaking streaming clients.
     #[test]
     fn encode_completed_stop_has_finish_reason_and_done() {
-        let event = ConversationEvent::Completed { stop_reason: StopReason::EndTurn };
+        let event = ConversationEvent::Completed {
+            stop_reason: StopReason::EndTurn,
+        };
         let chunk = encode_event_to_oai_chunk(&event, REQ_ID).unwrap();
-        assert!(chunk.contains("\"finish_reason\":\"stop\""), "Completed/EndTurn must have finish_reason:stop, got: {chunk}");
-        assert!(chunk.contains("[DONE]"), "Completed chunk must end with [DONE], got: {chunk}");
+        assert!(
+            chunk.contains("\"finish_reason\":\"stop\""),
+            "Completed/EndTurn must have finish_reason:stop, got: {chunk}"
+        );
+        assert!(
+            chunk.contains("[DONE]"),
+            "Completed chunk must end with [DONE], got: {chunk}"
+        );
     }
 
     // Defeat: mapping ToolUse stop reason to "stop" instead of "tool_calls".
     #[test]
     fn encode_completed_tool_calls_finish_reason() {
-        let event = ConversationEvent::Completed { stop_reason: StopReason::ToolUse };
+        let event = ConversationEvent::Completed {
+            stop_reason: StopReason::ToolUse,
+        };
         let chunk = encode_event_to_oai_chunk(&event, REQ_ID).unwrap();
-        assert!(chunk.contains("\"finish_reason\":\"tool_calls\""), "Completed/ToolUse must have finish_reason:tool_calls, got: {chunk}");
+        assert!(
+            chunk.contains("\"finish_reason\":\"tool_calls\""),
+            "Completed/ToolUse must have finish_reason:tool_calls, got: {chunk}"
+        );
     }
 }

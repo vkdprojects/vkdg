@@ -28,7 +28,9 @@ pub struct RoundRobinStrategy {
 
 impl RoundRobinStrategy {
     pub fn new() -> Self {
-        Self { counter: AtomicUsize::new(0) }
+        Self {
+            counter: AtomicUsize::new(0),
+        }
     }
 }
 
@@ -51,8 +53,10 @@ impl Strategy for RoundRobinStrategy {
         filter: &EligibilityFilter,
         _hints: &RoutingHints,
     ) -> Result<ConnectionId> {
-        let eligible: Vec<&ConnectionId> =
-            candidates.iter().filter(|c| !filter.is_excluded(c)).collect();
+        let eligible: Vec<&ConnectionId> = candidates
+            .iter()
+            .filter(|c| !filter.is_excluded(c))
+            .collect();
         if eligible.is_empty() {
             return Err(VkdgError::NoEligibleConnection);
         }

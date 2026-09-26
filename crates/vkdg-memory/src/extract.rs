@@ -29,7 +29,11 @@ pub fn extract_facts(messages: &[Message]) -> Vec<String> {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }
 
 #[cfg(test)]
@@ -38,7 +42,10 @@ mod tests {
     use vkdg_operations::{Message, MessageContent, Role};
 
     fn msg(role: Role, text: &str) -> Message {
-        Message { role, content: MessageContent::Text(text.into()) }
+        Message {
+            role,
+            content: MessageContent::Text(text.into()),
+        }
     }
 
     // Plausible wrong impl: user messages also extracted (only assistant should be)
@@ -46,7 +53,10 @@ mod tests {
     fn only_assistant_messages_extracted() {
         let msgs = vec![
             msg(Role::User, "I prefer Python."),
-            msg(Role::Assistant, "The user prefers Python for scripting tasks."),
+            msg(
+                Role::Assistant,
+                "The user prefers Python for scripting tasks.",
+            ),
         ];
         let facts = extract_facts(&msgs);
         assert_eq!(facts.len(), 1);
@@ -56,7 +66,10 @@ mod tests {
     // Plausible wrong impl: extract_facts returns empty when assistant has facts
     #[test]
     fn extracts_preference_from_assistant() {
-        let msgs = vec![msg(Role::Assistant, "The user prefers dark mode and TypeScript.")];
+        let msgs = vec![msg(
+            Role::Assistant,
+            "The user prefers dark mode and TypeScript.",
+        )];
         let facts = extract_facts(&msgs);
         assert!(!facts.is_empty());
     }

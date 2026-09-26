@@ -7,10 +7,10 @@
 // Phase A: static response / echo modes only.
 // Phase B: add SSE streaming simulation and latency injection.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
-use axum::{Router, extract::State, response::IntoResponse, routing::post};
+use axum::{extract::State, response::IntoResponse, routing::post, Router};
 use bytes::Bytes;
 use http::StatusCode;
 use serde_json::json;
@@ -22,7 +22,10 @@ use tokio::net::TcpListener;
 #[derive(Debug, Clone)]
 pub enum FakeUpstreamBehavior {
     /// Return a static JSON body with the given status.
-    StaticJson { status: u16, body: serde_json::Value },
+    StaticJson {
+        status: u16,
+        body: serde_json::Value,
+    },
     /// Immediately close the connection (simulates a network error).
     ConnectionReset,
     /// Return a well-formed Anthropic-style 200 non-streaming response.
@@ -185,12 +188,18 @@ impl FakeUpstream {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             axum::serve(listener, app)
-                .with_graceful_shutdown(async { let _ = rx.await; })
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
                 .await
                 .ok();
         });
 
-        Self { base_url, state, _shutdown: tx }
+        Self {
+            base_url,
+            state,
+            _shutdown: tx,
+        }
     }
 
     /// Number of requests the fake upstream has received.
@@ -235,6 +244,10 @@ mod tests {
         })
         .await;
 
-        assert_eq!(fake.call_count(), 0, "upstream must not be contacted before any request");
+        assert_eq!(
+            fake.call_count(),
+            0,
+            "upstream must not be contacted before any request"
+        );
     }
 }

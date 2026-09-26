@@ -1,6 +1,6 @@
+use crate::result::{EvalResult, EvalStatus};
 use chrono::Utc;
 use uuid::Uuid;
-use crate::result::{EvalResult, EvalStatus};
 
 #[derive(Debug, Clone)]
 pub struct LatencyMetrics {
@@ -52,7 +52,11 @@ impl EvalScorer {
         }
 
         let score = score.clamp(0.0, 1.0);
-        let status = if score >= 0.7 { EvalStatus::Pass } else { EvalStatus::Fail };
+        let status = if score >= 0.7 {
+            EvalStatus::Pass
+        } else {
+            EvalStatus::Fail
+        };
 
         EvalResult {
             eval_id: Uuid::new_v4(),
@@ -74,7 +78,11 @@ mod tests {
     use super::*;
 
     fn metrics(latency_ms: u32) -> LatencyMetrics {
-        LatencyMetrics { latency_ms, ttft_ms: None, token_count: 50 }
+        LatencyMetrics {
+            latency_ms,
+            ttft_ms: None,
+            token_count: 50,
+        }
     }
 
     // Plausible wrong impl: empty response returns Pass
@@ -98,7 +106,10 @@ mod tests {
     fn high_latency_penalizes_score() {
         let r_fast = EvalScorer::score("r", "c", "hello", metrics(100));
         let r_slow = EvalScorer::score("r", "c", "hello", metrics(8000));
-        assert!(r_slow.score < r_fast.score, "slow response must score lower");
+        assert!(
+            r_slow.score < r_fast.score,
+            "slow response must score lower"
+        );
     }
 
     // Plausible wrong impl: good response fails

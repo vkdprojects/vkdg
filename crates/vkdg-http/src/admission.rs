@@ -45,7 +45,10 @@ pub struct IpPolicy {
 
 impl IpPolicy {
     pub fn from_config(allowlist: Vec<String>, blocklist: Vec<String>) -> Self {
-        Self { allowlist, blocklist }
+        Self {
+            allowlist,
+            blocklist,
+        }
     }
 
     /// Returns `true` if `ip` is allowed through this policy.
@@ -108,8 +111,14 @@ mod tests {
             allowlist: vec!["192.168.1.".into()],
             blocklist: vec!["192.168.1.100".into()],
         };
-        assert!(!p.allows("192.168.1.100"), "blocked IP must be rejected even if in allowlist range");
-        assert!(p.allows("192.168.1.200"), "non-blocked IP in allowlist range must be allowed");
+        assert!(
+            !p.allows("192.168.1.100"),
+            "blocked IP must be rejected even if in allowlist range"
+        );
+        assert!(
+            p.allows("192.168.1.200"),
+            "non-blocked IP in allowlist range must be allowed"
+        );
     }
 
     // Plausible wrong impl: empty allowlist blocks all instead of allowing all.

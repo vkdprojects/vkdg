@@ -23,3 +23,6 @@ parking_lot      = { workspace = true }
 
 [lib]
 doctest = false
+
+[lints]
+workspace = true

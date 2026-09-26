@@ -13,14 +13,14 @@ use http_body::Body as HttpBody;
 use vkdg_connections::{
     AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
-use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
 use vkdg_core::pipeline::PipelineCtx;
-use vkdg_http::{AdmissionGuard, PipelineState};
-use vkdg_observe::DecisionRecordExporter;
+use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::sse::{SseEvent, SseParser};
 use vkdg_http::upstream::HttpClient;
+use vkdg_http::{AdmissionGuard, PipelineState};
 use vkdg_ingress_anthropic::encode_event;
+use vkdg_observe::DecisionRecordExporter;
 use vkdg_operations::{
     CapabilitySet, ConversationEvent, ConversationRequest, Message, MessageContent, Operation,
     Role, StopReason,
@@ -37,7 +37,9 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
     let config = ConnectionConfig {
         id: conn_id.clone(),
         provider: ProviderKind::Custom { base_url },
-        auth: AuthKind::ApiKey { env_var: "VKDG_SMOKE_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: 10,
         weight: 1,
@@ -73,7 +75,6 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
     })
 }
 
-
 // ── encode_event (already implemented, GREEN) ──────────────────────────────────
 
 /// Plausible wrong impl: encode_event omits the leading "data: " prefix,
@@ -81,7 +82,10 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
 /// PASSES.
 #[test]
 fn encode_event_output_delta_produces_sse_data_line() {
-    let event = ConversationEvent::OutputDelta { delta: "hello".to_string(), index: 0 };
+    let event = ConversationEvent::OutputDelta {
+        delta: "hello".to_string(),
+        index: 0,
+    };
     let encoded = encode_event(&event);
     assert!(
         encoded.starts_with("data: "),
@@ -98,7 +102,9 @@ fn encode_event_output_delta_produces_sse_data_line() {
 /// PASSES.
 #[test]
 fn encode_event_completed_emits_done_frame() {
-    let event = ConversationEvent::Completed { stop_reason: StopReason::EndTurn };
+    let event = ConversationEvent::Completed {
+        stop_reason: StopReason::EndTurn,
+    };
     let encoded = encode_event(&event);
     assert!(
         encoded.contains("data: [DONE]"),
@@ -143,7 +149,8 @@ fn parser_reassembles_event_split_at_arbitrary_byte() {
 
         let eb = parser.push(b);
         assert_eq!(
-            eb.len(), 1,
+            eb.len(),
+            1,
             "split_at={split}: completing the frame must emit exactly 1 event; got {:?}",
             eb
         );
@@ -165,7 +172,8 @@ fn parser_preserves_buffer_across_push_calls() {
     // Second push: just the terminator.
     let events = parser.push(b"\n");
     assert_eq!(
-        events.len(), 1,
+        events.len(),
+        1,
         "Delimiter arriving in a separate push must complete the buffered event; got {:?}",
         events
     );
@@ -184,7 +192,8 @@ fn parser_emits_done_sentinel_as_sse_event() {
     let mut parser = SseParser::new();
     let events = parser.push(b"data: [DONE]\n\n");
     assert_eq!(
-        events.len(), 1,
+        events.len(),
+        1,
         "[DONE] frame must produce exactly one SseEvent so the caller can detect end-of-stream"
     );
     assert_eq!(
@@ -235,7 +244,8 @@ fn parser_extracts_multiple_events_from_one_push() {
     let chunk = b"data: first\n\ndata: second\n\n";
     let events = parser.push(chunk);
     assert_eq!(
-        events.len(), 2,
+        events.len(),
+        2,
         "Two complete events in one push must both be returned; got {:?}",
         events
     );
@@ -254,7 +264,8 @@ fn parser_captures_event_type_field() {
     let events = parser.push(b"event: ping\ndata: {}\n\n");
     assert_eq!(events.len(), 1);
     assert_eq!(
-        events[0].event_type.as_deref(), Some("ping"),
+        events[0].event_type.as_deref(),
+        Some("ping"),
         "event_type must be captured from the 'event:' field"
     );
 }

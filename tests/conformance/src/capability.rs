@@ -11,7 +11,9 @@ fn make_config(id: &str, capabilities: CapabilitySet) -> ConnectionConfig {
     ConnectionConfig {
         id: ConnectionId(id.to_string()),
         provider: ProviderKind::Anthropic,
-        auth: AuthKind::ApiKey { env_var: "DUMMY_KEY".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "DUMMY_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: 10,
         weight: 1,
@@ -36,11 +38,7 @@ fn unsupported_capability_is_explicit_error_not_fail_open() {
     let mut required = CapabilitySet::new();
     required.insert(Capability::Vision);
 
-    let eligible = catalog.eligible_for_operation(
-        "claude-3-5-sonnet-20241022",
-        &[],
-        &required,
-    );
+    let eligible = catalog.eligible_for_operation("claude-3-5-sonnet-20241022", &[], &required);
 
     assert!(
         eligible.is_empty(),
@@ -62,11 +60,7 @@ fn connection_with_exact_capability_is_eligible() {
     let mut required = CapabilitySet::new();
     required.insert(Capability::Vision);
 
-    let eligible = catalog.eligible_for_operation(
-        "claude-3-5-sonnet-20241022",
-        &[],
-        &required,
-    );
+    let eligible = catalog.eligible_for_operation("claude-3-5-sonnet-20241022", &[], &required);
 
     assert_eq!(
         eligible,
@@ -109,11 +103,7 @@ fn partial_capability_match_is_not_eligible() {
     required.insert(Capability::Vision);
     required.insert(Capability::Tools);
 
-    let eligible = catalog.eligible_for_operation(
-        "claude-3-5-sonnet-20241022",
-        &[],
-        &required,
-    );
+    let eligible = catalog.eligible_for_operation("claude-3-5-sonnet-20241022", &[], &required);
 
     assert!(
         eligible.is_empty(),

@@ -6,8 +6,8 @@
 
 use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_routing::{
-    ConnectionWeight, EligibilityFilter, FallbackChainStrategy, RouteConfig, RouteId,
-    RoundRobinStrategy, Router, RoutingHints, Strategy, StrategyKind,
+    ConnectionWeight, EligibilityFilter, FallbackChainStrategy, RoundRobinStrategy, RouteConfig,
+    RouteId, Router, RoutingHints, Strategy, StrategyKind,
 };
 
 fn make_envelope(model: &str) -> RequestEnvelope {
@@ -39,7 +39,9 @@ async fn no_eligible_connection_returns_error_no_routes() {
     let envelope = make_envelope("claude-3-5-sonnet-20241022");
     let filter = EligibilityFilter::default();
 
-    let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
+    let result = router
+        .route(&envelope, &filter, &RoutingHints::default())
+        .await;
     assert!(
         matches!(result, Err(VkdgError::NoEligibleConnection)),
         "Expected NoEligibleConnection with empty route table; got {:?}",
@@ -64,7 +66,9 @@ async fn no_eligible_connection_all_candidates_excluded() {
     let mut filter = EligibilityFilter::default();
     filter.excluded_connections.push(conn("conn-001"));
 
-    let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
+    let result = router
+        .route(&envelope, &filter, &RoutingHints::default())
+        .await;
     assert!(
         matches!(result, Err(VkdgError::NoEligibleConnection)),
         "Expected NoEligibleConnection when only candidate is excluded; got {:?}",
@@ -92,7 +96,10 @@ async fn fallback_chain_skips_excluded_selects_second() {
         .reason_map
         .insert(conn("conn-001"), "circuit open".to_string());
 
-    let result = router.route(&envelope, &filter, &RoutingHints::default()).await.unwrap();
+    let result = router
+        .route(&envelope, &filter, &RoutingHints::default())
+        .await
+        .unwrap();
     assert_eq!(
         result.connection_id,
         conn("conn-002"),
@@ -116,9 +123,15 @@ async fn router_glob_prefix_match() {
     let router = Router::new(vec![route]);
     let filter = EligibilityFilter::default();
 
-    for model in &["claude-3-opus", "claude-3-5-sonnet-20241022", "claude-3-haiku"] {
+    for model in &[
+        "claude-3-opus",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-haiku",
+    ] {
         let envelope = make_envelope(model);
-        let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
+        let result = router
+            .route(&envelope, &filter, &RoutingHints::default())
+            .await;
         assert!(
             result.is_ok(),
             "Glob 'claude-3*' should match '{model}'; got {:?}",
@@ -142,7 +155,9 @@ async fn router_no_matching_route_for_model() {
     let envelope = make_envelope("claude-3-5-sonnet-20241022");
     let filter = EligibilityFilter::default();
 
-    let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
+    let result = router
+        .route(&envelope, &filter, &RoutingHints::default())
+        .await;
     assert!(
         matches!(result, Err(VkdgError::NoEligibleConnection)),
         "Model not matching any route must return NoEligibleConnection; got {:?}",

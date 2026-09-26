@@ -46,17 +46,24 @@ impl SessionRegistry {
     pub async fn get(&self, session_id: &str) -> Option<ConnectionId> {
         let pins = self.pins.read().await;
         let pin = pins.get(session_id)?;
-        if pin.is_expired() { None } else { Some(pin.connection_id.clone()) }
+        if pin.is_expired() {
+            None
+        } else {
+            Some(pin.connection_id.clone())
+        }
     }
 
     /// Pin a session to a connection after a successful response.
     pub async fn pin(&self, session_id: String, connection_id: ConnectionId) {
         let mut pins = self.pins.write().await;
-        pins.insert(session_id, SessionPin {
-            connection_id,
-            pinned_at: Utc::now(),
-            ttl_secs: self.default_ttl_secs,
-        });
+        pins.insert(
+            session_id,
+            SessionPin {
+                connection_id,
+                pinned_at: Utc::now(),
+                ttl_secs: self.default_ttl_secs,
+            },
+        );
     }
 
     /// Invalidate a session pin (e.g., when its connection goes unhealthy).
@@ -83,13 +90,19 @@ mod tests {
         let r = SessionRegistry::new(1);
         {
             let mut pins = r.pins.write().await;
-            pins.insert("sess-x".into(), SessionPin {
-                connection_id: ConnectionId("conn-a".into()),
-                pinned_at: Utc::now() - chrono::Duration::seconds(2),
-                ttl_secs: 1,
-            });
+            pins.insert(
+                "sess-x".into(),
+                SessionPin {
+                    connection_id: ConnectionId("conn-a".into()),
+                    pinned_at: Utc::now() - chrono::Duration::seconds(2),
+                    ttl_secs: 1,
+                },
+            );
         }
-        assert!(r.get("sess-x").await.is_none(), "expired pin must not be returned");
+        assert!(
+            r.get("sess-x").await.is_none(),
+            "expired pin must not be returned"
+        );
     }
 
     // Plausible wrong impl: valid pin not returned
@@ -116,11 +129,14 @@ mod tests {
         r.pin("valid".into(), ConnectionId("c".into())).await;
         {
             let mut pins = r.pins.write().await;
-            pins.insert("expired".into(), SessionPin {
-                connection_id: ConnectionId("c".into()),
-                pinned_at: Utc::now() - chrono::Duration::seconds(7200),
-                ttl_secs: 3600,
-            });
+            pins.insert(
+                "expired".into(),
+                SessionPin {
+                    connection_id: ConnectionId("c".into()),
+                    pinned_at: Utc::now() - chrono::Duration::seconds(7200),
+                    ttl_secs: 3600,
+                },
+            );
         }
         let removed = r.purge_expired().await;
         assert_eq!(removed, 1);

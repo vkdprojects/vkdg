@@ -5,8 +5,8 @@
 //! is deferred to Phase E; for now we validate that a component binary is
 //! well-formed and reserve the call surface.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use wasmtime::component::Component;
 use wasmtime::Engine;
 
@@ -144,13 +144,16 @@ impl WasmPluginInstance {
     /// Returns `Err` with a human-readable message if the file cannot be read
     /// or the binary is not a valid Wasmtime component.
     pub fn load(path: &str) -> Result<Self, String> {
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("failed to read wasm at {path:?}: {e}"))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("failed to read wasm at {path:?}: {e}"))?;
         let engine = Engine::default();
         // Validate by attempting a compile; drops the compiled artifact.
         Component::from_binary(&engine, &bytes)
             .map_err(|e| format!("invalid wasm component at {path:?}: {e}"))?;
-        Ok(Self { component_bytes: bytes, engine })
+        Ok(Self {
+            component_bytes: bytes,
+            engine,
+        })
     }
 
     /// Call the `prepare` WIT export with JSON-serialised inputs.
@@ -168,12 +171,10 @@ impl WasmPluginInstance {
         _token: &str,
     ) -> Result<String, String> {
         // Re-validate to prove the component is still well-formed.
-        Component::from_binary(&self.engine, &self.component_bytes)
-            .map_err(|e| e.to_string())?;
+        Component::from_binary(&self.engine, &self.component_bytes).map_err(|e| e.to_string())?;
         Err("wasm call not yet wired (Phase E)".to_string())
     }
 }
-
 
 // ── PluginChain ───────────────────────────────────────────────────────────────
 
@@ -194,7 +195,11 @@ impl PluginChain {
         // Auth is always fail-closed; every other role defaults to fail-open
         // so that a broken optional plugin (e.g. cache) never blocks requests.
         let fail_open = !matches!(role, PluginRole::Auth);
-        Self { role, plugins, fail_open }
+        Self {
+            role,
+            plugins,
+            fail_open,
+        }
     }
 }
 // ── PluginHost ────────────────────────────────────────────────────────────────
@@ -250,7 +255,9 @@ impl PluginHost {
 
     /// Return all registered manifests that advertise the given role.
     pub fn plugins_for_role(&self, role: &PluginRole) -> Vec<&PluginManifest> {
-        self.registry.manifests.values()
+        self.registry
+            .manifests
+            .values()
             .filter(|m| m.roles.contains(role))
             .collect()
     }
@@ -258,7 +265,8 @@ impl PluginHost {
     /// Build the default plugin chain for a role from all registered plugins.
     /// Ordered by insertion order (FIFO).  Operators can override via config.
     pub fn default_chain(&self, role: PluginRole) -> PluginChain {
-        let plugins: Vec<PluginId> = self.plugins_for_role(&role)
+        let plugins: Vec<PluginId> = self
+            .plugins_for_role(&role)
             .into_iter()
             .map(|m| m.id.clone())
             .collect();
@@ -318,7 +326,9 @@ mod tests {
         let manifest = PluginManifest {
             id: PluginId::new("bad-plugin"),
             version: "0.1.0".to_string(),
-            kind: PluginKind::Wasm { path: "/nonexistent.wasm".to_string() },
+            kind: PluginKind::Wasm {
+                path: "/nonexistent.wasm".to_string(),
+            },
             hooks: vec![HookKind::PreDispatch],
             roles: vec![],
             description: "bad".to_string(),
@@ -360,7 +370,9 @@ mod tests {
         let removed = host.uninstall(&id);
         assert!(removed, "uninstall should return true when plugin existed");
         assert!(
-            host.registry.plugins_for_hook(&HookKind::OnFinish).is_empty(),
+            host.registry
+                .plugins_for_hook(&HookKind::OnFinish)
+                .is_empty(),
             "registry must be empty after uninstall"
         );
     }
@@ -381,16 +393,24 @@ mod tests {
     #[test]
     fn plugins_for_role_filters_correctly() {
         let mut host = PluginHost::new(PluginRegistry::new());
-        host.registry.register(role_manifest("cache-a", vec![PluginRole::CacheBackend]));
-        host.registry.register(role_manifest("router-a", vec![PluginRole::Router]));
-        host.registry.register(role_manifest("multi",   vec![PluginRole::CacheBackend, PluginRole::Auth]));
+        host.registry
+            .register(role_manifest("cache-a", vec![PluginRole::CacheBackend]));
+        host.registry
+            .register(role_manifest("router-a", vec![PluginRole::Router]));
+        host.registry.register(role_manifest(
+            "multi",
+            vec![PluginRole::CacheBackend, PluginRole::Auth],
+        ));
 
         let cache_plugins = host.plugins_for_role(&PluginRole::CacheBackend);
         assert_eq!(cache_plugins.len(), 2, "expected cache-a and multi");
         let ids: Vec<&str> = cache_plugins.iter().map(|m| m.id.0.as_str()).collect();
         assert!(ids.contains(&"cache-a"));
         assert!(ids.contains(&"multi"));
-        assert!(!ids.contains(&"router-a"), "router-a must not appear for CacheBackend role");
+        assert!(
+            !ids.contains(&"router-a"),
+            "router-a must not appear for CacheBackend role"
+        );
 
         let router_plugins = host.plugins_for_role(&PluginRole::Router);
         assert_eq!(router_plugins.len(), 1);
@@ -402,12 +422,19 @@ mod tests {
     #[test]
     fn default_chain_only_includes_matching_role() {
         let mut host = PluginHost::new(PluginRegistry::new());
-        host.registry.register(role_manifest("cache-1", vec![PluginRole::CacheBackend]));
-        host.registry.register(role_manifest("cache-2", vec![PluginRole::CacheBackend]));
-        host.registry.register(role_manifest("auth-1",  vec![PluginRole::Auth]));
+        host.registry
+            .register(role_manifest("cache-1", vec![PluginRole::CacheBackend]));
+        host.registry
+            .register(role_manifest("cache-2", vec![PluginRole::CacheBackend]));
+        host.registry
+            .register(role_manifest("auth-1", vec![PluginRole::Auth]));
 
         let chain = host.default_chain(PluginRole::CacheBackend);
-        assert_eq!(chain.plugins.len(), 2, "chain must contain exactly the two cache plugins");
+        assert_eq!(
+            chain.plugins.len(),
+            2,
+            "chain must contain exactly the two cache plugins"
+        );
         assert!(chain.fail_open, "CacheBackend chains must be fail-open");
 
         let auth_chain = host.default_chain(PluginRole::Auth);
@@ -425,7 +452,12 @@ mod tests {
     // Plausible wrong impl: PluginChain::new sets fail_open=false for non-Auth roles.
     #[test]
     fn plugin_chain_non_auth_is_fail_open() {
-        for role in [PluginRole::Router, PluginRole::Compressor, PluginRole::Provider, PluginRole::CacheBackend] {
+        for role in [
+            PluginRole::Router,
+            PluginRole::Compressor,
+            PluginRole::Provider,
+            PluginRole::CacheBackend,
+        ] {
             let chain = PluginChain::new(role.clone(), vec![]);
             assert!(chain.fail_open, "{role:?} chain must be fail-open");
         }

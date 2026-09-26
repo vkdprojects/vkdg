@@ -1,3 +1,8 @@
+use crate::{
+    error::{AdminError, AdminErrorResponse},
+    handlers::session::get_session,
+    router::AdminState,
+};
 use axum::{
     extract::{Query, State},
     response::{IntoResponse, Response},
@@ -5,11 +10,6 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
-use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
-    router::AdminState,
-};
 
 #[derive(Serialize)]
 struct RouteSummary {
@@ -56,7 +56,6 @@ fn strategy_str(s: &impl serde::Serialize) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-
 pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
         return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
@@ -86,17 +85,16 @@ pub async fn preview_route(
             .into_response();
     }
     let snapshot = state.config_rx.borrow().clone();
-    let combo_id = state.combo_resolver.as_ref()
+    let combo_id = state
+        .combo_resolver
+        .as_ref()
         .and_then(|r| r.resolve(&q.model))
         .map(|c| c.id.clone());
     let mut eligible = Vec::new();
     let mut excluded = Vec::new();
     if let Some(catalog) = &state.catalog {
-        let eligible_ids = catalog.eligible_for_operation(
-            &q.model,
-            &[],
-            &vkdg_core::CapabilitySet::default(),
-        );
+        let eligible_ids =
+            catalog.eligible_for_operation(&q.model, &[], &vkdg_core::CapabilitySet::default());
         let eligible_set: std::collections::HashSet<&str> =
             eligible_ids.iter().map(|c| c.0.as_str()).collect();
         for conn in snapshot.connections.iter() {
@@ -146,14 +144,17 @@ pub async fn preview_route(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
+    use crate::handlers::requests::RequestLog;
+    use crate::session::{KeyStore, SessionStore};
     use axum::extract::State;
     use http::HeaderMap;
+    use std::sync::Arc;
+    use std::time::Instant;
     use tokio::sync::watch;
-    use vkdg_config::{ConfigSnapshot, GatewayConfig, schema::{AuthDef, ConnectionDef, RouteDef}};
-    use crate::session::{KeyStore, SessionStore};
-    use crate::handlers::requests::RequestLog;
+    use vkdg_config::{
+        schema::{AuthDef, ConnectionDef, RouteDef},
+        ConfigSnapshot, GatewayConfig,
+    };
 
     fn make_state_empty() -> AdminState {
         let snap = ConfigSnapshot::default_empty();
@@ -175,7 +176,9 @@ mod tests {
             connections: vec![ConnectionDef {
                 id: "conn-a".into(),
                 provider: "anthropic".into(),
-                auth: AuthDef::ApiKey { env_var: "KEY".into() },
+                auth: AuthDef::ApiKey {
+                    env_var: "KEY".into(),
+                },
                 models: vec!["claude-*".into()],
                 max_concurrent: None,
                 weight: None,
@@ -207,7 +210,10 @@ mod tests {
         let session = state.sessions.bootstrap_login().unwrap();
         let mut h = HeaderMap::new();
         let val = format!("vkdg_session={}", session.session_id);
-        h.insert(http::header::COOKIE, http::HeaderValue::from_str(&val).unwrap());
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&val).unwrap(),
+        );
         h
     }
 
@@ -222,10 +228,14 @@ mod tests {
     async fn preview_route_returns_eligible_and_excluded() {
         let state = make_state_with_route();
         let headers = authed_headers(&state);
-        let q = PreviewQuery { model: "claude-3-opus".into() };
+        let q = PreviewQuery {
+            model: "claude-3-opus".into(),
+        };
         let resp = preview_route(State(state), headers, Query(q)).await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["eligible_connections"].as_array().unwrap().len(), 1);
         assert_eq!(val["eligible_connections"][0]["id"], "conn-a");

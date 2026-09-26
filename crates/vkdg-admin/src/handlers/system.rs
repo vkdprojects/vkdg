@@ -1,6 +1,6 @@
+use crate::router::AdminState;
 use axum::{extract::State, Json};
 use serde::Serialize;
-use crate::router::AdminState;
 
 #[derive(Serialize)]
 pub struct SystemInfo {
@@ -27,9 +27,9 @@ pub async fn get_system(State(state): State<AdminState>) -> Json<SystemInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::State;
     use std::sync::Arc;
     use std::time::Instant;
-    use axum::extract::State;
     use tokio::sync::watch;
     use vkdg_config::ConfigSnapshot;
 

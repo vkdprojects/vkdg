@@ -44,7 +44,9 @@ pub struct QuotaTracker {
 
 impl QuotaTracker {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { windows: RwLock::new(HashMap::new()) })
+        Arc::new(Self {
+            windows: RwLock::new(HashMap::new()),
+        })
     }
 
     /// Record token usage for a connection.
@@ -85,7 +87,9 @@ impl QuotaTracker {
 
 impl Default for QuotaTracker {
     fn default() -> Self {
-        Self { windows: RwLock::new(HashMap::new()) }
+        Self {
+            windows: RwLock::new(HashMap::new()),
+        }
     }
 }
 
@@ -101,7 +105,10 @@ mod tests {
         t.set_limit(&conn, 1000, 3600).await;
         t.record_usage(&conn, 500).await;
         let h = t.headroom(&conn).await.unwrap();
-        assert!((h - 0.5).abs() < 0.01, "headroom must be 0.5 after consuming half, got {h}");
+        assert!(
+            (h - 0.5).abs() < 0.01,
+            "headroom must be 0.5 after consuming half, got {h}"
+        );
     }
 
     // Plausible wrong impl: usage accumulates across windows (never resets)

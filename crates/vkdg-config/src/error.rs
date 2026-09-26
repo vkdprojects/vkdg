@@ -5,7 +5,10 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
 
     #[error("yaml parse error at {path}: {source}")]
-    Parse { path: String, source: serde_yaml::Error },
+    Parse {
+        path: String,
+        source: serde_yaml::Error,
+    },
 
     #[error("validation error: {0}")]
     Validation(String),

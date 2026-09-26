@@ -81,7 +81,11 @@ pub async fn run(fixture_path: &str, base_url: Option<&str>) -> Result<()> {
     println!("Status: {}", status);
     println!(
         "Body: {}",
-        if body.len() > 500 { &body[..500] } else { &body }
+        if body.len() > 500 {
+            &body[..500]
+        } else {
+            &body
+        }
     );
 
     if let Some(expected) = &fixture.expected {

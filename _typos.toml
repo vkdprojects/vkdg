@@ -1,0 +1,22 @@
+# _typos.toml
+# typos-cli configuration.
+# typos uses a known-bad-word list, not a dictionary — very low false positive rate.
+# https://github.com/crate-ci/typos
+
+[default]
+locale = "en"
+
+[default.extend-identifiers]
+# Project-specific identifiers that look like typos to the checker.
+vkdg = "vkdg"
+VKDG = "VKDG"
+
+[default.extend-words]
+# Add domain-specific terms here if typos fires on them.
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "*.snap",
+    "bun.lockb",
+]

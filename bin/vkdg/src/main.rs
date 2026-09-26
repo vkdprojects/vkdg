@@ -6,17 +6,17 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::{Parser, Subcommand};
+use vkdg_config::{load_and_validate, ConfigSnapshot};
 use vkdg_connections::{
     AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
 use vkdg_core::ConnectionId;
-use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_http::upstream::HttpClient;
+use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_observe::{init_tracing, DecisionRecordExporter, ObserveConfig};
 use vkdg_operations::CapabilitySet;
-use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 use vkdg_provider_anthropic::AnthropicAdapter;
-use vkdg_config::{ConfigSnapshot, load_and_validate};
+use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,9 @@ enum RequestSub {
 
 #[derive(Subcommand)]
 enum ConfigSub {
-    Check { path: String },
+    Check {
+        path: String,
+    },
     /// Simulate routing for a model using live eligibility logic.
     Explain {
         /// Model name or combo name to simulate routing for
@@ -89,13 +91,19 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Serve { config, listen } => serve(config, listen).await?,
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
-        Command::Config { sub: ConfigSub::Check { path } } => {
+        Command::Config {
+            sub: ConfigSub::Check { path },
+        } => {
             vkdg_cli::commands::config_check::run(&path).await?;
         }
-        Command::Config { sub: ConfigSub::Explain { model, json } } => {
+        Command::Config {
+            sub: ConfigSub::Explain { model, json },
+        } => {
             vkdg_cli::commands::config_explain::run(&model, json).await?;
         }
-        Command::Request { sub: RequestSub::Explain { id, json } } => {
+        Command::Request {
+            sub: RequestSub::Explain { id, json },
+        } => {
             vkdg_cli::commands::explain::run(&id, json).await?;
         }
         Command::Replay { fixture, base_url } => {
@@ -108,9 +116,15 @@ async fn main() -> Result<()> {
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
 async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
-    let _ = init_tracing(&ObserveConfig { otlp_endpoint: None, ..Default::default() });
+    let _ = init_tracing(&ObserveConfig {
+        otlp_endpoint: None,
+        ..Default::default()
+    });
 
-    let server_config = ServerConfig { listen_addr: listen.clone(), ..Default::default() };
+    let server_config = ServerConfig {
+        listen_addr: listen.clone(),
+        ..Default::default()
+    };
 
     let max_concurrent: usize = std::env::var("VKDG_MAX_CONCURRENT")
         .ok()
@@ -145,17 +159,25 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
     // routes before calling .with_state() once. This avoids the Router<S> type
     // mismatch that comes from calling .route() on an already-resolved Router<()>.
     let router: Router = Router::new()
-        .route("/v1/messages", post(vkdg_ingress_anthropic::handle_messages))
-        .route("/v1/chat/completions", post(vkdg_ingress_openai::handle_chat_completions))
-        .route("/v1/images/generations", post(vkdg_ingress_openai::handle_image_generations))
+        .route(
+            "/v1/messages",
+            post(vkdg_ingress_anthropic::handle_messages),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(vkdg_ingress_openai::handle_chat_completions),
+        )
+        .route(
+            "/v1/images/generations",
+            post(vkdg_ingress_openai::handle_image_generations),
+        )
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
         .route("/mcp", get(vkdg_http::mcp_discovery))
         .with_state(state);
 
     // ── Admin API on a separate port ───────────────────────────────────────────
-    let admin_addr = std::env::var("VKDG_ADMIN_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:9090".into());
+    let admin_addr = std::env::var("VKDG_ADMIN_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".into());
     let bootstrap_token = std::env::var("VKDG_BOOTSTRAP_TOKEN").unwrap_or_else(|_| {
         let t = uuid::Uuid::new_v4().to_string();
         println!("Bootstrap token (one-time): {t}");
@@ -198,7 +220,9 @@ async fn info() -> impl axum::response::IntoResponse {
 
 fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) -> PipelineState {
     let admission = Arc::new(AdmissionGuard::new(
-        snap.limits.max_concurrent_requests.unwrap_or(max_concurrent),
+        snap.limits
+            .max_concurrent_requests
+            .unwrap_or(max_concurrent),
     ));
     let router = Arc::new(VkdgRouter::new(snap.routes.as_ref().clone()));
     let catalog = Arc::new(ConnectionCatalog::new(snap.connections.as_ref().clone()));
@@ -238,7 +262,9 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
     let config = ConnectionConfig {
         id: conn_id.clone(),
         provider: ProviderKind::Anthropic,
-        auth: AuthKind::ApiKey { env_var: api_key_var.into() },
+        auth: AuthKind::ApiKey {
+            env_var: api_key_var.into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: max_concurrent as u32,
         weight: 1,

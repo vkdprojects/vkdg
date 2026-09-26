@@ -14,8 +14,8 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderValue, StatusCode};
 use serde::Serialize;
 
-use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
+use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_http::AppState;
 use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
 
@@ -54,7 +54,9 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
         VkdgError::AdmissionRejected { .. } => (StatusCode::TOO_MANY_REQUESTS, "overloaded_error"),
-        VkdgError::CapabilityUnsupported { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        VkdgError::CapabilityUnsupported { .. } => {
+            (StatusCode::BAD_REQUEST, "invalid_request_error")
+        }
         VkdgError::NoEligibleConnection => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -85,10 +87,7 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
 /// dispatches to `run_conversation_pipeline`. Returns 501 when the pipeline is
 /// not configured on `AppState`. The pipeline performs passthrough of upstream
 /// bytes, so no re-encoding is needed for the OpenAI-compatible path.
-pub async fn handle_chat_completions(
-    State(state): State<AppState>,
-    req: Request,
-) -> Response {
+pub async fn handle_chat_completions(State(state): State<AppState>, req: Request) -> Response {
     // 1. Split request to access headers and body separately.
     let (parts, body) = req.into_parts();
     let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
@@ -147,10 +146,7 @@ pub async fn handle_chat_completions(
 /// dispatches to `run_conversation_pipeline`. Returns 501 when the pipeline is
 /// not configured on `AppState`. The pipeline performs passthrough of the
 /// upstream JSON response verbatim.
-pub async fn handle_image_generations(
-    State(state): State<AppState>,
-    req: Request,
-) -> Response {
+pub async fn handle_image_generations(State(state): State<AppState>, req: Request) -> Response {
     // 1. Split request to access headers and body separately.
     let (parts, body) = req.into_parts();
     let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {

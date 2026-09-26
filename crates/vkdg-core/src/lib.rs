@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 // ── Newtypes ──────────────────────────────────────────────────────────────────

@@ -75,7 +75,10 @@ impl CacheBackend for SqliteExactCache {
             let mut rows = stmt
                 .query(params![key, now as i64])
                 .map_err(|e| VkdgError::Internal(e.to_string()))?;
-            if let Some(row) = rows.next().map_err(|e| VkdgError::Internal(e.to_string()))? {
+            if let Some(row) = rows
+                .next()
+                .map_err(|e| VkdgError::Internal(e.to_string()))?
+            {
                 Ok(CacheResult::Hit(CacheEntry {
                     model: row.get(0).unwrap_or_default(),
                     response_json: row.get(1).unwrap_or_default(),
@@ -166,8 +169,13 @@ mod tests {
     #[tokio::test]
     async fn store_and_lookup_hit() {
         let c = make_cache().await;
-        c.store("key1", make_entry("claude-3-5-haiku")).await.unwrap();
-        assert!(matches!(c.lookup("key1").await.unwrap(), CacheResult::Hit(_)));
+        c.store("key1", make_entry("claude-3-5-haiku"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            c.lookup("key1").await.unwrap(),
+            CacheResult::Hit(_)
+        ));
     }
 
     // Plausible wrong impl: different keys share the same row (collision)

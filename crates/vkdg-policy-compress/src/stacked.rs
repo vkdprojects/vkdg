@@ -6,9 +6,9 @@
 //! The pipeline is: RTK (structural) → Caveman (lexical)
 //! Compression report reflects the total savings across all stages.
 
-use vkdg_operations::ConversationRequest;
-use crate::{Compressor, CompressionError, metrics::CompressionMetrics};
+use crate::{metrics::CompressionMetrics, CompressionError, Compressor};
 use std::sync::Arc;
+use vkdg_operations::ConversationRequest;
 
 pub struct StackedCompressor {
     stages: Vec<Arc<dyn Compressor>>,
@@ -17,25 +17,29 @@ pub struct StackedCompressor {
 
 impl StackedCompressor {
     pub fn new(stages: Vec<Arc<dyn Compressor>>) -> Self {
-        let name = stages.iter().map(|s| s.name()).collect::<Vec<_>>().join("+");
+        let name = stages
+            .iter()
+            .map(|s| s.name())
+            .collect::<Vec<_>>()
+            .join("+");
         Self { stages, name }
     }
 
     /// Build the default RTK → Caveman stack.
     pub fn rtk_caveman() -> Self {
-        use crate::{RtkCompressor, CavemanCompressor};
-        Self::new(vec![
-            Arc::new(RtkCompressor),
-            Arc::new(CavemanCompressor),
-        ])
+        use crate::{CavemanCompressor, RtkCompressor};
+        Self::new(vec![Arc::new(RtkCompressor), Arc::new(CavemanCompressor)])
     }
 }
 
 impl Compressor for StackedCompressor {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
-        self.stages.first()
+        self.stages
+            .first()
             .map(|s| s.estimate_tokens(req))
             .unwrap_or(0)
     }
@@ -45,7 +49,9 @@ impl Compressor for StackedCompressor {
         mut req: ConversationRequest,
         budget: u32,
     ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
-        let _original_tokens = self.stages.first()
+        let _original_tokens = self
+            .stages
+            .first()
             .map(|s| s.estimate_tokens(&req))
             .unwrap_or(0);
 
@@ -66,13 +72,16 @@ impl Compressor for StackedCompressor {
             }
         }
 
-        Ok((req, CompressionMetrics {
-            original_message_count: 0,
-            compressed_message_count: 0,
-            estimated_tokens_removed: total_removed,
-            strategy: stage_names.join("+"),
-            lossless: total_removed == 0,
-        }))
+        Ok((
+            req,
+            CompressionMetrics {
+                original_message_count: 0,
+                compressed_message_count: 0,
+                estimated_tokens_removed: total_removed,
+                strategy: stage_names.join("+"),
+                lossless: total_removed == 0,
+            },
+        ))
     }
 }
 
@@ -91,20 +100,28 @@ mod tests {
     // Plausible wrong impl: stacked metrics show zero removal when stages succeed
     #[test]
     fn stacked_reports_combined_savings() {
-        use vkdg_operations::{ConversationRequest, Message, MessageContent, Role, CapabilitySet};
+        use vkdg_operations::{CapabilitySet, ConversationRequest, Message, MessageContent, Role};
         let c = StackedCompressor::rtk_caveman();
         let req = ConversationRequest {
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text(
-                    "Certainly! I'd be happy to help. The result is: {\"key\": \"value\"}".into()
+                    "Certainly! I'd be happy to help. The result is: {\"key\": \"value\"}".into(),
                 ),
             }],
-            tools: vec![], max_tokens: None, temperature: None, stream: false,
-            system: None, required_capabilities: CapabilitySet::default(),
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: false,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
         };
         // With a small message, savings may be 0 — just verify it doesn't panic
         let result = c.compress(req, 10000);
-        assert!(result.is_ok(), "stacked compress must not error: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "stacked compress must not error: {:?}",
+            result.err()
+        );
     }
 }

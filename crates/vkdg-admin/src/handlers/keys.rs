@@ -1,3 +1,9 @@
+use crate::{
+    error::{AdminError, AdminErrorResponse},
+    handlers::session::get_session,
+    router::AdminState,
+    session::Role,
+};
 use axum::{
     extract::{Path, State},
     response::{IntoResponse, Response},
@@ -5,12 +11,6 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
-use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
-    router::AdminState,
-    session::Role,
-};
 
 #[derive(Deserialize)]
 pub struct CreateKeyBody {
@@ -63,14 +63,19 @@ pub async fn list_keys(State(state): State<AdminState>, headers: HeaderMap) -> R
         return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
             .into_response();
     }
-    let keys: Vec<KeyResponse> = state.key_store.list().into_iter().map(|k| KeyResponse {
-        id: k.id,
-        name: k.name,
-        role: role_to_str(&k.role).to_string(),
-        created_at: k.created_at.to_rfc3339(),
-        last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
-        scopes: k.scopes,
-    }).collect();
+    let keys: Vec<KeyResponse> = state
+        .key_store
+        .list()
+        .into_iter()
+        .map(|k| KeyResponse {
+            id: k.id,
+            name: k.name,
+            role: role_to_str(&k.role).to_string(),
+            created_at: k.created_at.to_rfc3339(),
+            last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
+            scopes: k.scopes,
+        })
+        .collect();
     let total = keys.len();
     Json(KeyListResponse { items: keys, total }).into_response()
 }
@@ -124,14 +129,14 @@ pub async fn revoke_key(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
+    use crate::handlers::requests::RequestLog;
+    use crate::session::{KeyStore, SessionStore};
     use axum::extract::State;
     use http::HeaderMap;
+    use std::sync::Arc;
+    use std::time::Instant;
     use tokio::sync::watch;
     use vkdg_config::ConfigSnapshot;
-    use crate::session::{KeyStore, SessionStore};
-    use crate::handlers::requests::RequestLog;
 
     fn make_state() -> AdminState {
         let snap = ConfigSnapshot::default_empty();
@@ -151,7 +156,10 @@ mod tests {
         let session = state.sessions.bootstrap_login().unwrap();
         let mut h = HeaderMap::new();
         let val = format!("vkdg_session={}", session.session_id);
-        h.insert(http::header::COOKIE, http::HeaderValue::from_str(&val).unwrap());
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&val).unwrap(),
+        );
         h
     }
 
@@ -173,7 +181,9 @@ mod tests {
         };
         let resp = create_key(State(state), headers, Json(body)).await;
         assert_eq!(resp.status(), StatusCode::CREATED);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(val["key"].as_str().is_some_and(|s| !s.is_empty()));
         assert_eq!(val["name"], "my-key");
@@ -183,7 +193,11 @@ mod tests {
     async fn create_key_empty_name_returns_400() {
         let state = make_state();
         let headers = authed_headers(&state);
-        let body = CreateKeyBody { name: "  ".into(), role: None, scopes: None };
+        let body = CreateKeyBody {
+            name: "  ".into(),
+            role: None,
+            scopes: None,
+        };
         let resp = create_key(State(state), headers, Json(body)).await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }

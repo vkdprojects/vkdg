@@ -25,7 +25,10 @@ pub struct SseParser {
 
 impl SseParser {
     pub fn new() -> Self {
-        Self { buf: Vec::new(), strip_think_tags: true }
+        Self {
+            buf: Vec::new(),
+            strip_think_tags: true,
+        }
     }
 
     /// Keep think-tag blocks in the output (opt-in by client via X-VKDG-Think-Tags: include).
@@ -80,7 +83,10 @@ fn find_event_end(buf: &[u8]) -> Option<EventEnd> {
     while i < len {
         // Check for \n\n
         if buf[i] == b'\n' && i + 1 < len && buf[i + 1] == b'\n' {
-            return Some(EventEnd { start: i, end: i + 2 });
+            return Some(EventEnd {
+                start: i,
+                end: i + 2,
+            });
         }
         // Check for \r\n\r\n
         if buf[i] == b'\r'
@@ -89,7 +95,10 @@ fn find_event_end(buf: &[u8]) -> Option<EventEnd> {
             && buf[i + 2] == b'\r'
             && buf[i + 3] == b'\n'
         {
-            return Some(EventEnd { start: i, end: i + 4 });
+            return Some(EventEnd {
+                start: i,
+                end: i + 4,
+            });
         }
         i += 1;
     }
@@ -179,10 +188,13 @@ mod tests {
             let mut all: Vec<SseEvent> = Vec::new();
             all.extend(p.push(&full[..split]));
             all.extend(p.push(&full[split..]));
-            assert_eq!(all.len(), 1, "split at byte {split} produced wrong event count");
             assert_eq!(
-                all[0].data,
-                "{\"type\":\"output_delta\",\"index\":0,\"delta\":\"hi\"}",
+                all.len(),
+                1,
+                "split at byte {split} produced wrong event count"
+            );
+            assert_eq!(
+                all[0].data, "{\"type\":\"output_delta\",\"index\":0,\"delta\":\"hi\"}",
                 "split at byte {split}"
             );
         }
@@ -296,8 +308,7 @@ mod tests {
         let events = p.push(b"data: line1\ndata: line2\n\n");
         assert_eq!(events.len(), 1);
         assert_eq!(
-            events[0].data,
-            "line1\nline2",
+            events[0].data, "line1\nline2",
             "multi-line data: fields must be joined with \\n"
         );
     }

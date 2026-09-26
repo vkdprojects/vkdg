@@ -4,8 +4,7 @@
 // All tests COMPILE and fail behaviorally (never on import error).
 
 use vkdg_core::{
-    AttemptState, ApiType, ClientId, RequestEnvelope, RequestId, TenantId,
-    pipeline::PipelineCtx,
+    pipeline::PipelineCtx, ApiType, AttemptState, ClientId, RequestEnvelope, RequestId, TenantId,
 };
 
 fn make_envelope() -> RequestEnvelope {
@@ -46,7 +45,11 @@ fn attempt_state_all_variants_exist() {
         AttemptState::Cancelled,
         AttemptState::Failed,
     ];
-    assert_eq!(states.len(), 12, "Spec requires exactly 12 AttemptState variants");
+    assert_eq!(
+        states.len(),
+        12,
+        "Spec requires exactly 12 AttemptState variants"
+    );
 }
 
 // ── State ordering ─────────────────────────────────────────────────────────────
@@ -58,10 +61,23 @@ fn attempt_state_all_variants_exist() {
 fn committed_comes_after_upstream_open_in_pipeline() {
     use AttemptState::*;
     let pipeline_order: &[AttemptState] = &[
-        Received, Authenticated, Admitted, AccountReserved, CredentialReady,
-        Prepared, UpstreamOpen, Committed, Completed, Partial, Cancelled, Failed,
+        Received,
+        Authenticated,
+        Admitted,
+        AccountReserved,
+        CredentialReady,
+        Prepared,
+        UpstreamOpen,
+        Committed,
+        Completed,
+        Partial,
+        Cancelled,
+        Failed,
     ];
-    let pos_upstream = pipeline_order.iter().position(|s| s == &UpstreamOpen).unwrap();
+    let pos_upstream = pipeline_order
+        .iter()
+        .position(|s| s == &UpstreamOpen)
+        .unwrap();
     let pos_committed = pipeline_order.iter().position(|s| s == &Committed).unwrap();
     assert!(
         pos_committed > pos_upstream,
@@ -103,7 +119,8 @@ fn transition_records_history() {
     );
     // Received (initial) + Authenticated + Admitted = 3 entries
     assert_eq!(
-        ctx.transitions.len(), 3,
+        ctx.transitions.len(),
+        3,
         "every transition must be recorded; transitions = {:?}",
         ctx.transitions
     );

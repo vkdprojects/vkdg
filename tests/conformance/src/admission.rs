@@ -10,13 +10,13 @@ use tower::ServiceExt;
 use vkdg_connections::{
     AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
-use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
-use vkdg_http::upstream::HttpClient;
-use vkdg_observe::DecisionRecordExporter;
-use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
 use vkdg_core::ConnectionId;
+use vkdg_http::upstream::HttpClient;
+use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
+use vkdg_observe::DecisionRecordExporter;
 use vkdg_operations::CapabilitySet;
 use vkdg_provider_anthropic::AnthropicAdapter;
+use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router, StrategyKind};
 
 /// Build a router wired to the real ingress handler, with a real pipeline
 /// whose admission limit is set to `limit`.
@@ -24,8 +24,12 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
     let conn_id = ConnectionId("test".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom { base_url: "http://127.0.0.1:1".into() },
-        auth: AuthKind::ApiKey { env_var: "VKDG_TEST_KEY".into() },
+        provider: ProviderKind::Custom {
+            base_url: "http://127.0.0.1:1".into(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_TEST_KEY".into(),
+        },
         models: vec!["claude-*".into()],
         max_concurrent: 10,
         weight: 1,
@@ -61,7 +65,10 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
     });
     let state = AppState::new(ServerConfig::default()).with_pipeline(pipeline);
     axum::Router::new()
-        .route("/v1/messages", post(vkdg_ingress_anthropic::handle_messages))
+        .route(
+            "/v1/messages",
+            post(vkdg_ingress_anthropic::handle_messages),
+        )
         .with_state(state)
 }
 
@@ -85,9 +92,7 @@ fn load_scenario(name: &str) -> serde_yaml::Value {
 #[tokio::test]
 async fn admission_rejected_returns_503() {
     let scenario = load_scenario("admission_rejected");
-    let expected_status = scenario["assert"]["http_status"]
-        .as_u64()
-        .unwrap_or(503) as u16;
+    let expected_status = scenario["assert"]["http_status"].as_u64().unwrap_or(503) as u16;
 
     let app = app_with_admission_limit(0);
 

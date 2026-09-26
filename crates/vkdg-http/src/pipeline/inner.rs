@@ -4,16 +4,18 @@ use axum::response::Response;
 use bytes::Bytes;
 use http::header;
 use serde_json::json;
-use vkdg_cache::{CacheEntry, CacheResult, cache_key};
-use vkdg_core::{AttemptState, ConnectionId, VkdgError};
+use vkdg_cache::{cache_key, CacheEntry, CacheResult};
 use vkdg_core::pipeline::PipelineCtx;
+use vkdg_core::{AttemptState, ConnectionId, VkdgError};
 use vkdg_operations::Operation;
 use vkdg_routing::{EligibilityFilter, RoutingHints};
 
+use super::helpers::{
+    error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs,
+};
+use super::phases::{post_response_accounting, prepare_operation, resolve_combo_and_session};
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
-use super::helpers::{error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs};
-use super::phases::{prepare_operation, post_response_accounting, resolve_combo_and_session};
 
 // ── RAII dedup guard ──────────────────────────────────────────────────────────
 /// Calls `DedupTable::complete` on drop so in-flight tracking is always cleaned
@@ -174,7 +176,8 @@ pub(super) async fn run_pipeline_inner(
         &ctx.envelope,
         csr.compression_threshold,
         &csr.effective_compressor_id,
-    ).await;
+    )
+    .await;
 
     // 6. Request deduplication ─────────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
@@ -187,16 +190,23 @@ pub(super) async fn run_pipeline_inner(
         let key = cache_key(&ctx.envelope.model_requested, conv_req);
         let (is_first, _notify) = dedup.register(&key);
         tracing::debug!(key = %key, is_first, "dedup registration");
-        Some(DedupGuard { dedup: Arc::clone(dedup), key })
+        Some(DedupGuard {
+            dedup: Arc::clone(dedup),
+            key,
+        })
     } else {
         None
     };
 
     // 7. Cache lookup ──────────────────────────────────────────────────────────
     // Bypass rules enforced here in core; the cache plugin never needs to check them.
-    let conv_req = if let Operation::Conversation(r) = &operation { Some(r) } else { None };
-    let bypass_cache = ctx.envelope.cache_bypass
-        || conv_req.is_none_or(|r| is_multiturn(r) || has_tool_calls(r));
+    let conv_req = if let Operation::Conversation(r) = &operation {
+        Some(r)
+    } else {
+        None
+    };
+    let bypass_cache =
+        ctx.envelope.cache_bypass || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
     let cache_key_val: Option<String> = if !bypass_cache {
         conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
     } else {
@@ -212,9 +222,9 @@ pub(super) async fn run_pipeline_inner(
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("x-vkdg-cache", "hit")
                     .body(axum::body::Body::from(body))
-                    .unwrap_or_else(|_| error_response(VkdgError::Internal(
-                        "cache response build".into(),
-                    ))));
+                    .unwrap_or_else(|_| {
+                        error_response(VkdgError::Internal("cache response build".into()))
+                    }));
             }
             Ok(CacheResult::Miss) => {}
             Err(e) => {
@@ -225,7 +235,9 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // 8. Build upstream request via provider adapter ───────────────────────────
-    let prepared = pipeline.provider_adapter.prepare(&operation, &config, &token)?;
+    let prepared = pipeline
+        .provider_adapter
+        .prepare(&operation, &config, &token)?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
         method: http::Method::POST,
@@ -238,9 +250,7 @@ pub(super) async fn run_pipeline_inner(
     // 9. Send ──────────────────────────────────────────────────────────────────
     let upstream_resp = match pipeline.http_client.send(upstream_req, is_streaming).await {
         Ok(r) => r,
-        Err(VkdgError::UpstreamError { code, message })
-            if code == 429 || code >= 500 =>
-        {
+        Err(VkdgError::UpstreamError { code, message }) if code == 429 || code >= 500 => {
             if let Some(conn_arc) = ctx
                 .connection_id
                 .as_ref()
@@ -278,7 +288,9 @@ pub(super) async fn run_pipeline_inner(
                 };
                 let cache = Arc::clone(cache);
                 let key = key.clone();
-                tokio::spawn(async move { let _ = cache.store(&key, entry).await; });
+                tokio::spawn(async move {
+                    let _ = cache.store(&key, entry).await;
+                });
             }
             // Capture body for post-response accounting (Bytes clone is O(1)).
             complete_body = Some(body.clone());
@@ -288,9 +300,9 @@ pub(super) async fn run_pipeline_inner(
                 .status(status_code)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(axum::body::Body::from(body))
-                .unwrap_or_else(|_| error_response(VkdgError::Internal(
-                    "response builder failed".into(),
-                )))
+                .unwrap_or_else(|_| {
+                    error_response(VkdgError::Internal("response builder failed".into()))
+                })
         }
         UpstreamResponse::Streaming { status: _, body } => {
             // Streaming responses are never cached — the body is a stream.
@@ -306,14 +318,22 @@ pub(super) async fn run_pipeline_inner(
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
                 .body(axum::body::Body::from_stream(filtered_body))
-                .unwrap_or_else(|_| error_response(VkdgError::Internal(
-                    "streaming response builder failed".into(),
-                )))
+                .unwrap_or_else(|_| {
+                    error_response(VkdgError::Internal(
+                        "streaming response builder failed".into(),
+                    ))
+                })
         }
     };
 
     // 12. Post-response accounting (memory, eval, quota, latency, cooldown) ────
-    post_response_accounting(pipeline, ctx, complete_body.as_ref(), start_time, &operation);
+    post_response_accounting(
+        pipeline,
+        ctx,
+        complete_body.as_ref(),
+        start_time,
+        &operation,
+    );
     Ok(resp)
 }
 
@@ -324,25 +344,36 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use vkdg_connections::{AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind};
+    use vkdg_connections::{
+        AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
+    };
     use vkdg_core::{
         pipeline::PipelineCtx, ApiType, AttemptState, ClientId, ConnectionId, RequestEnvelope,
         RequestId, TenantId,
     };
+    use vkdg_observe::DecisionRecordExporter;
     use vkdg_operations::{CapabilitySet, ConversationRequest, Operation};
     use vkdg_routing::Router as VkdgRouter;
-    use vkdg_observe::DecisionRecordExporter;
 
-    use crate::{AdmissionGuard, PipelineState};
+    use super::super::entry::run_conversation_pipeline;
     use crate::provider::{PreparedRequest, ProviderAdapter};
     use crate::upstream::HttpClient;
-    use super::super::entry::run_conversation_pipeline;
+    use crate::{AdmissionGuard, PipelineState};
 
     struct StubAdapter;
     impl ProviderAdapter for StubAdapter {
-        fn name(&self) -> &str { "stub" }
-        fn prepare(&self, _op: &Operation, _cfg: &vkdg_connections::ConnectionConfig, _token: &str) -> Result<PreparedRequest, VkdgError> {
-            Err(VkdgError::Internal("stub adapter — not for real requests".into()))
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn prepare(
+            &self,
+            _op: &Operation,
+            _cfg: &vkdg_connections::ConnectionConfig,
+            _token: &str,
+        ) -> Result<PreparedRequest, VkdgError> {
+            Err(VkdgError::Internal(
+                "stub adapter — not for real requests".into(),
+            ))
         }
     }
 
@@ -572,8 +603,7 @@ mod tests {
             "existing prompt must be preserved"
         );
         assert_eq!(
-            result_both,
-            "Be concise.\n\nYou are a helpful assistant.",
+            result_both, "Be concise.\n\nYou are a helpful assistant.",
             "separator must be exactly two newlines"
         );
     }

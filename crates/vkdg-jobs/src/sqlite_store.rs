@@ -26,15 +26,13 @@ pub struct SqliteJobStore {
 impl SqliteJobStore {
     /// Open (or create) a SQLite database at `path` and apply WAL DDL.
     pub fn open(path: &str) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("sqlite open: {path}"))?;
+        let conn = Connection::open(path).with_context(|| format!("sqlite open: {path}"))?;
         Self::init(conn)
     }
 
     /// Open an in-memory store — useful in tests and for Phase D smoke runs.
     pub fn in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()
-            .context("sqlite open in-memory")?;
+        let conn = Connection::open_in_memory().context("sqlite open in-memory")?;
         Self::init(conn)
     }
 
@@ -58,7 +56,9 @@ impl SqliteJobStore {
                  WHERE idempotency_key IS NOT NULL;",
         )
         .context("sqlite init DDL")?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
     }
 }
 
@@ -70,8 +70,7 @@ impl JobStore for SqliteJobStore {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
             let guard = conn.lock().map_err(|e| anyhow!("lock poisoned: {e}"))?;
-            let state_json = serde_json::to_string(&record.state)
-                .context("serialize JobState")?;
+            let state_json = serde_json::to_string(&record.state).context("serialize JobState")?;
             guard
                 .execute(
                     "INSERT INTO jobs
@@ -222,9 +221,15 @@ mod tests {
         r2.job_id = Uuid::new_v4();
         store.create(r1).await.unwrap();
         let err = store.create(r2).await;
-        assert!(err.is_err(), "second insert with same idempotency_key must fail");
+        assert!(
+            err.is_err(),
+            "second insert with same idempotency_key must fail"
+        );
         let msg = err.unwrap_err().to_string();
-        assert!(msg.contains("idempotency"), "error should mention idempotency, got: {msg}");
+        assert!(
+            msg.contains("idempotency"),
+            "error should mention idempotency, got: {msg}"
+        );
     }
 
     /// Plausible defect: state update overwrites record with wrong job_id.

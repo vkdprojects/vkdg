@@ -1,14 +1,14 @@
-use std::sync::Arc;
-use std::time::Instant;
+use crate::handlers::requests::RequestLog;
+use crate::session::{KeyStore, SessionStore};
 use axum::{
     routing::{delete, get, post},
     Router,
 };
-use vkdg_config::ConfigRx;
+use std::sync::Arc;
+use std::time::Instant;
 use vkdg_combos::ComboResolver;
+use vkdg_config::ConfigRx;
 use vkdg_connections::ConnectionCatalog;
-use crate::session::{KeyStore, SessionStore};
-use crate::handlers::requests::RequestLog;
 
 #[derive(Clone)]
 pub struct AdminState {
@@ -25,7 +25,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
     Router::new()
         .route("/admin/v1/system", get(crate::handlers::system::get_system))
         .route("/admin/v1/session", post(crate::handlers::session::login))
-        .route("/admin/v1/session", delete(crate::handlers::session::logout))
+        .route(
+            "/admin/v1/session",
+            delete(crate::handlers::session::logout),
+        )
         .route("/admin/v1/session/me", get(crate::handlers::session::me))
         .route(
             "/admin/v1/connections",
@@ -43,7 +46,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/v1/keys/{id}",
             delete(crate::handlers::keys::revoke_key),
         )
-        .route("/admin/v1/routes", get(crate::handlers::routes::list_routes))
+        .route(
+            "/admin/v1/routes",
+            get(crate::handlers::routes::list_routes),
+        )
         .route(
             "/admin/v1/routes/preview",
             get(crate::handlers::routes::preview_route),

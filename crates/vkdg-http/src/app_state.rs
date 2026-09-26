@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
-use vkdg_connections::{ConnectionCatalog, CredentialManager, LatencyTracker, SessionRegistry, QuotaTracker};
+use vkdg_connections::{
+    ConnectionCatalog, CredentialManager, LatencyTracker, QuotaTracker, SessionRegistry,
+};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
-use crate::dedup::DedupTable;
 use crate::admission::{AdmissionGuard, IpPolicy};
+use crate::dedup::DedupTable;
 use crate::frontdoor::{FrontDoor, ServerConfig};
 use crate::provider::ProviderAdapter;
 use crate::upstream::HttpClient;
@@ -13,7 +15,6 @@ use vkdg_cache::CacheBackend;
 use vkdg_combos::ComboResolver;
 use vkdg_memory::MemoryStore;
 use vkdg_policy_compress::Compressor;
-
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
 /// injected into AppState; optional so unit tests that only exercise admission

@@ -130,7 +130,10 @@ impl InMemoryArtifactStore {
             expires_at: Utc::now() + Duration::seconds(ttl_secs as i64),
             created_at: Utc::now(),
         };
-        self.inner.write().await.insert(handle.clone(), (meta, data));
+        self.inner
+            .write()
+            .await
+            .insert(handle.clone(), (meta, data));
         Ok(handle)
     }
 
@@ -141,9 +144,7 @@ impl InMemoryArtifactStore {
         requesting_tenant: &str,
     ) -> Result<(ArtifactMeta, Bytes), ArtifactError> {
         let map = self.inner.read().await;
-        let (meta, data) = map
-            .get(handle)
-            .ok_or(ArtifactError::NotFound(handle.0))?;
+        let (meta, data) = map.get(handle).ok_or(ArtifactError::NotFound(handle.0))?;
         if meta.owner_tenant != requesting_tenant {
             return Err(ArtifactError::Forbidden);
         }
@@ -181,7 +182,10 @@ impl InMemoryArtifactStore {
             expires_at,
             created_at: Utc::now(),
         };
-        self.inner.write().await.insert(handle.clone(), (meta, data));
+        self.inner
+            .write()
+            .await
+            .insert(handle.clone(), (meta, data));
         handle
     }
 }
@@ -238,12 +242,7 @@ mod tests {
         let s = store();
         let past = Utc::now() - Duration::seconds(1);
         let handle = s
-            .insert_with_expires_at(
-                "tenant-a".into(),
-                "image/png".into(),
-                png_bytes(16),
-                past,
-            )
+            .insert_with_expires_at("tenant-a".into(), "image/png".into(), png_bytes(16), past)
             .await;
         let err = s.get(&handle, "tenant-a").await.unwrap_err();
         assert!(
@@ -261,7 +260,13 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, ArtifactError::TooLarge { size: 65, limit: 64 }),
+            matches!(
+                err,
+                ArtifactError::TooLarge {
+                    size: 65,
+                    limit: 64
+                }
+            ),
             "expected TooLarge, got {err}"
         );
     }

@@ -100,7 +100,11 @@ pub(crate) fn build_image_generate_body(
     req: &ImageGenerateRequest,
     config: &ConnectionConfig,
 ) -> Bytes {
-    let model = req.model.clone().or_else(|| config.models.first().cloned()).unwrap_or_else(|| "dall-e-3".into());
+    let model = req
+        .model
+        .clone()
+        .or_else(|| config.models.first().cloned())
+        .unwrap_or_else(|| "dall-e-3".into());
 
     let mut body = Map::new();
     body.insert("prompt".into(), Value::String(req.prompt.clone()));
@@ -152,7 +156,6 @@ pub(crate) fn build_video_generate_body(req: &VideoGenerateRequest) -> Bytes {
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
-
 /// Serialise a [`ConversationRequest`] to an OpenAI Chat Completions JSON body.
 fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     let model = config
@@ -186,8 +189,8 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
                         .iter()
                         .filter_map(|b| match b {
                             ContentBlock::ToolUse { id, name, input } => {
-                                let arguments = serde_json::to_string(input)
-                                    .unwrap_or_else(|_| "{}".into());
+                                let arguments =
+                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
                                 Some(json!({
                                     "id": id,
                                     "type": "function",
@@ -232,10 +235,7 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     if req.stream {
         body.insert("stream".into(), Value::Bool(true));
         // Request usage in the final chunk so the pipeline can report it.
-        body.insert(
-            "stream_options".into(),
-            json!({ "include_usage": true }),
-        );
+        body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
 
     if !req.tools.is_empty() {
@@ -309,7 +309,10 @@ mod tests {
     use super::*;
     use vkdg_connections::{AuthKind, ConnectionConfig, ProviderKind};
     use vkdg_core::{CapabilitySet, ConnectionId};
-    use vkdg_operations::{ContentBlock, ConversationRequest, ImageGenerateRequest, Message, MessageContent, Operation, Role, Tool};
+    use vkdg_operations::{
+        ContentBlock, ConversationRequest, ImageGenerateRequest, Message, MessageContent,
+        Operation, Role, Tool,
+    };
 
     fn openai_config() -> ConnectionConfig {
         ConnectionConfig {
@@ -460,7 +463,9 @@ mod tests {
     fn prepare_auth_is_bearer() {
         let req = Operation::Conversation(simple_request());
         let adapter = OpenAIAdapter;
-        let prepared = adapter.prepare(&req, &openai_config(), "sk-test123").unwrap();
+        let prepared = adapter
+            .prepare(&req, &openai_config(), "sk-test123")
+            .unwrap();
         let auth = prepared
             .headers
             .get(http::header::AUTHORIZATION)
@@ -504,9 +509,18 @@ mod tests {
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert!(v.get("n").is_none(), "None n must not appear in body");
         assert!(v.get("size").is_none(), "None size must not appear in body");
-        assert!(v.get("quality").is_none(), "None quality must not appear in body");
-        assert!(v.get("style").is_none(), "None style must not appear in body");
-        assert!(v.get("response_format").is_none(), "None response_format must not appear in body");
+        assert!(
+            v.get("quality").is_none(),
+            "None quality must not appear in body"
+        );
+        assert!(
+            v.get("style").is_none(),
+            "None style must not appear in body"
+        );
+        assert!(
+            v.get("response_format").is_none(),
+            "None response_format must not appear in body"
+        );
         assert!(v.get("user").is_none(), "None user must not appear in body");
         assert_eq!(v["prompt"], "a cat");
     }
@@ -599,12 +613,21 @@ mod tests {
         };
         let body = build_video_generate_body(&req);
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["prompt"], "dancing robots", "prompt must be present in body");
+        assert_eq!(
+            v["prompt"], "dancing robots",
+            "prompt must be present in body"
+        );
         assert_eq!(v["model"], "sora");
         assert_eq!(v["duration_secs"], 10);
         assert_eq!(v["resolution"], "1920x1080");
         assert_eq!(v["audio"], true);
-        assert!(v.get("style").is_none(), "None style must not appear in body");
-        assert!(v.get("webhook_url").is_none(), "None webhook_url must not appear in body");
+        assert!(
+            v.get("style").is_none(),
+            "None style must not appear in body"
+        );
+        assert!(
+            v.get("webhook_url").is_none(),
+            "None webhook_url must not appear in body"
+        );
     }
 }

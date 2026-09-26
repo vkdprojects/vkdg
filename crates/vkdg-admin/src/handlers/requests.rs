@@ -1,17 +1,17 @@
+use crate::{
+    error::{AdminError, AdminErrorResponse},
+    handlers::session::get_session,
+    router::AdminState,
+};
 use axum::{
     extract::{Path, Query, State},
     response::{IntoResponse, Response},
     Json,
 };
 use http::{HeaderMap, StatusCode};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
-    router::AdminState,
-};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExcludedInfo {
@@ -44,7 +44,9 @@ pub struct RequestLog {
 
 impl RequestLog {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { records: RwLock::new(Vec::new()) })
+        Arc::new(Self {
+            records: RwLock::new(Vec::new()),
+        })
     }
 
     pub fn push(&self, r: RequestRecord) {
@@ -60,7 +62,7 @@ impl RequestLog {
         let filtered: Vec<RequestRecord> = v
             .iter()
             .rev()
-            .filter(|r| status_filter.is_none_or(|s| r.status == s))
+            .filter(|r| status_filter.map_or(true, |s| r.status == s))
             .cloned()
             .collect();
         let has_more = filtered.len() > limit;
@@ -68,7 +70,11 @@ impl RequestLog {
     }
 
     pub fn get(&self, id: &str) -> Option<RequestRecord> {
-        self.records.read().iter().find(|r| r.request_id == id).cloned()
+        self.records
+            .read()
+            .iter()
+            .find(|r| r.request_id == id)
+            .cloned()
     }
 }
 
@@ -96,7 +102,12 @@ pub async fn list_requests(
     }
     let limit = q.limit.unwrap_or(50).min(200);
     let (items, has_more) = state.request_log.list(limit, q.status.as_deref());
-    Json(RequestList { items, has_more, cursor: None }).into_response()
+    Json(RequestList {
+        items,
+        has_more,
+        cursor: None,
+    })
+    .into_response()
 }
 
 pub async fn get_request(
@@ -110,20 +121,22 @@ pub async fn get_request(
     }
     match state.request_log.get(&id) {
         Some(r) => Json(r).into_response(),
-        None => AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id)).into_response(),
+        None => {
+            AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id)).into_response()
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::Instant;
+    use crate::session::{KeyStore, SessionStore};
     use axum::extract::State;
     use http::HeaderMap;
+    use std::sync::Arc;
+    use std::time::Instant;
     use tokio::sync::watch;
     use vkdg_config::ConfigSnapshot;
-    use crate::session::{KeyStore, SessionStore};
 
     fn make_state() -> AdminState {
         let snap = ConfigSnapshot::default_empty();
@@ -143,7 +156,10 @@ mod tests {
         let session = state.sessions.bootstrap_login().unwrap();
         let mut h = HeaderMap::new();
         let val = format!("vkdg_session={}", session.session_id);
-        h.insert(http::header::COOKIE, http::HeaderValue::from_str(&val).unwrap());
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&val).unwrap(),
+        );
         h
     }
 
@@ -153,7 +169,10 @@ mod tests {
         let resp = list_requests(
             State(state),
             HeaderMap::new(),
-            Query(ListQuery { limit: None, status: None }),
+            Query(ListQuery {
+                limit: None,
+                status: None,
+            }),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -186,11 +205,16 @@ mod tests {
         let resp = list_requests(
             State(state),
             headers,
-            Query(ListQuery { limit: Some(10), status: None }),
+            Query(ListQuery {
+                limit: Some(10),
+                status: None,
+            }),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["items"].as_array().unwrap().len(), 2);
     }

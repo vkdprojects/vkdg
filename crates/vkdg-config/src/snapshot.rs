@@ -108,9 +108,9 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
 
         let provider = parse_provider(&def.provider);
         let auth = match &def.auth {
-            crate::schema::AuthDef::ApiKey { env_var } => {
-                AuthKind::ApiKey { env_var: env_var.clone() }
-            }
+            crate::schema::AuthDef::ApiKey { env_var } => AuthKind::ApiKey {
+                env_var: env_var.clone(),
+            },
             crate::schema::AuthDef::OAuth2 {
                 token_url,
                 client_id,
@@ -147,7 +147,9 @@ fn parse_provider(s: &str) -> ProviderKind {
         other => {
             // "custom:<url>" or bare URL → Custom
             let url = other.strip_prefix("custom:").unwrap_or(other);
-            ProviderKind::Custom { base_url: url.to_owned() }
+            ProviderKind::Custom {
+                base_url: url.to_owned(),
+            }
         }
     }
 }
@@ -171,18 +173,21 @@ fn build_routes(
             }
         }
 
-        let strategy = parse_strategy(&def.strategy).ok_or_else(|| {
-            ConfigError::UnknownStrategy {
+        let strategy =
+            parse_strategy(&def.strategy).ok_or_else(|| ConfigError::UnknownStrategy {
                 strategy: def.strategy.clone(),
                 route: def.id.clone(),
-            }
-        })?;
+            })?;
 
         out.push(RouteConfig {
             id: RouteId(def.id.clone()),
             match_models: def.match_models.clone(),
             strategy,
-            targets: def.targets.iter().map(|t| ConnectionId(t.clone())).collect(),
+            targets: def
+                .targets
+                .iter()
+                .map(|t| ConnectionId(t.clone()))
+                .collect(),
             plugin_hooks: PluginHooks::default(),
         });
     }

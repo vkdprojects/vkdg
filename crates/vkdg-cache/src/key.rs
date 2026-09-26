@@ -59,7 +59,10 @@ mod tests {
     #[test]
     fn different_messages_different_key() {
         let model = "claude-3-5-haiku-20241022";
-        assert_ne!(cache_key(model, &make_req("hello")), cache_key(model, &make_req("goodbye")));
+        assert_ne!(
+            cache_key(model, &make_req("hello")),
+            cache_key(model, &make_req("goodbye"))
+        );
     }
 
     // Plausible wrong impl: model name ignored in key, two models share a cached response.

@@ -27,7 +27,11 @@ pub struct EwmaLatency {
 
 impl EwmaLatency {
     pub fn new(alpha: f32) -> Self {
-        Self { ewma_ms: 0.0, sample_count: 0, alpha }
+        Self {
+            ewma_ms: 0.0,
+            sample_count: 0,
+            alpha,
+        }
     }
 
     pub fn record(&mut self, latency_ms: u32) {
@@ -41,7 +45,11 @@ impl EwmaLatency {
     }
 
     pub fn p50_ms(&self) -> Option<u32> {
-        if self.sample_count == 0 { None } else { Some(self.ewma_ms as u32) }
+        if self.sample_count == 0 {
+            None
+        } else {
+            Some(self.ewma_ms as u32)
+        }
     }
 }
 
@@ -52,11 +60,17 @@ pub struct LatencyTracker {
 
 impl LatencyTracker {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { latencies: RwLock::new(HashMap::new()), alpha: DEFAULT_ALPHA })
+        Arc::new(Self {
+            latencies: RwLock::new(HashMap::new()),
+            alpha: DEFAULT_ALPHA,
+        })
     }
 
     pub fn with_alpha(alpha: f32) -> Arc<Self> {
-        Arc::new(Self { latencies: RwLock::new(HashMap::new()), alpha: alpha.clamp(0.01, 0.99) })
+        Arc::new(Self {
+            latencies: RwLock::new(HashMap::new()),
+            alpha: alpha.clamp(0.01, 0.99),
+        })
     }
 
     /// Record a latency sample for a connection.
@@ -87,7 +101,10 @@ mod tests {
         t.record(&conn, 100).await;
         t.record(&conn, 200).await; // should move toward 200
         let p50 = t.p50_ms(&conn).await.unwrap();
-        assert!(p50 > 100, "EWMA must move toward new higher value, got {p50}");
+        assert!(
+            p50 > 100,
+            "EWMA must move toward new higher value, got {p50}"
+        );
     }
 
     // Plausible wrong impl: first sample ignored, p50 stays None
@@ -97,7 +114,11 @@ mod tests {
         let conn = ConnectionId("c".into());
         assert!(t.p50_ms(&conn).await.is_none(), "no samples = no p50");
         t.record(&conn, 150).await;
-        assert_eq!(t.p50_ms(&conn).await, Some(150), "first sample must initialize EWMA");
+        assert_eq!(
+            t.p50_ms(&conn).await,
+            Some(150),
+            "first sample must initialize EWMA"
+        );
     }
 
     // Plausible wrong impl: different connections share the same EWMA

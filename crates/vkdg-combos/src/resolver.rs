@@ -22,9 +22,9 @@ impl ComboResolver {
             return Some(c);
         }
         // 2. Pattern match
-        self.combos.iter().find(|c| {
-            c.match_patterns.iter().any(|p| glob_match(p, name))
-        })
+        self.combos
+            .iter()
+            .find(|c| c.match_patterns.iter().any(|p| glob_match(p, name)))
     }
 
     pub fn all(&self) -> &[Combo] {
@@ -79,8 +79,14 @@ mod tests {
             make_combo("coding-fast", &[]),
             make_combo("quality-first", &[]),
         ]);
-        assert_eq!(r.resolve("coding-fast").map(|c| c.id.as_str()), Some("coding-fast"));
-        assert_eq!(r.resolve("quality-first").map(|c| c.id.as_str()), Some("quality-first"));
+        assert_eq!(
+            r.resolve("coding-fast").map(|c| c.id.as_str()),
+            Some("coding-fast")
+        );
+        assert_eq!(
+            r.resolve("quality-first").map(|c| c.id.as_str()),
+            Some("quality-first")
+        );
     }
 
     // Plausible wrong impl: glob patterns ignored, only exact matches work
@@ -106,7 +112,10 @@ mod tests {
             make_combo("code:python", &[]),       // exact id
             make_combo("catch-all", &["code:*"]), // glob
         ]);
-        assert_eq!(r.resolve("code:python").map(|c| c.id.as_str()), Some("code:python"));
+        assert_eq!(
+            r.resolve("code:python").map(|c| c.id.as_str()),
+            Some("code:python")
+        );
     }
 
     // Plausible wrong impl: '*' at end of pattern doesn't match empty suffix

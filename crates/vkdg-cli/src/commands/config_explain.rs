@@ -12,8 +12,7 @@
 use anyhow::Result;
 
 pub async fn run(model: &str, json_output: bool) -> Result<()> {
-    let base = std::env::var("VKDG_ADMIN_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:9090".into());
+    let base = std::env::var("VKDG_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9090".into());
     let session = std::env::var("VKDG_ADMIN_SESSION").unwrap_or_default();
 
     let encoded_model = urlencoding::encode(model);
@@ -25,7 +24,9 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
         req = req.header("Cookie", format!("vkdg_session={}", session));
     }
 
-    let resp = req.send().await
+    let resp = req
+        .send()
+        .await
         .map_err(|e| anyhow::anyhow!("failed to reach admin API: {}", e))?;
 
     if resp.status() == 401 {
@@ -35,7 +36,9 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
         anyhow::bail!("admin API returned {}", resp.status());
     }
 
-    let body: serde_json::Value = resp.json().await
+    let body: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| anyhow::anyhow!("failed to parse response: {}", e))?;
 
     if json_output {
@@ -51,11 +54,16 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
         println!("Resolved combo: {}", combo);
     }
 
-    let eligible = body.get("eligible_connections")
+    let eligible = body
+        .get("eligible_connections")
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|v| v.as_object().and_then(|o| o.get("id")).and_then(|i| i.as_str()))
+                .filter_map(|v| {
+                    v.as_object()
+                        .and_then(|o| o.get("id"))
+                        .and_then(|i| i.as_str())
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
@@ -69,7 +77,8 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
         }
     }
 
-    let excluded = body.get("excluded_connections")
+    let excluded = body
+        .get("excluded_connections")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();

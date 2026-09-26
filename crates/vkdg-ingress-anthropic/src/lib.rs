@@ -11,8 +11,8 @@ use axum::{
 };
 use http::StatusCode;
 
-use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
+use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_http::AppState;
 use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
 
@@ -23,10 +23,7 @@ use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
 /// Decodes the Anthropic wire request, builds a pipeline context, and
 /// dispatches to `run_conversation_pipeline`.  Returns 501 when the pipeline
 /// is not configured on `AppState`.
-pub async fn handle_messages(
-    State(state): State<AppState>,
-    req: Request,
-) -> Response {
+pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Response {
     // Split request into parts so we can read headers before consuming the body.
     let (parts, body) = req.into_parts();
 

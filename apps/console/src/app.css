@@ -15,21 +15,32 @@
 }
 
 :root {
-  --bg-base: #0c0c12;
-  --bg-surface: #13131e;
-  --bg-elevated: #1c1c2a;
-  --bg-hover: rgba(255, 255, 255, 0.04);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --text-1: #f0f0f8;
-  --text-2: #8080a8;
-  --text-3: #505070;
-  --accent: oklch(0.62 0.18 262);
-  --accent-hover: oklch(0.68 0.18 262);
+  /* Dark backgrounds — soft dark, teal-tinted (not OLED black) */
+  --bg-base:      #101e20;
+  --bg-surface:   #162a2c;
+  --bg-elevated:  #1d3538;
+  --bg-hover:     rgba(224, 236, 220, 0.05);
+
+  /* Borders — teal-tinted */
+  --border:        rgba(34, 139, 150, 0.18);
+  --border-strong: rgba(34, 139, 150, 0.32);
+
+  /* Text — brand light cream */
+  --text-1: #e0ecdc;
+  --text-2: rgba(224, 236, 220, 0.58);
+  --text-3: rgba(224, 236, 220, 0.32);
+
+  /* Brand colors */
+  --accent:       #228b96;
+  --accent-hover: #2aa0ac;
+  --accent-subtle: rgba(34, 139, 150, 0.12);
+
+  /* Semantic */
   --success: oklch(0.72 0.17 145);
   --warning: oklch(0.78 0.18 75);
-  --danger: oklch(0.64 0.22 22);
-  --radius: 8px;
+  --danger:  oklch(0.64 0.22 22);
+
+  --radius:    8px;
   --radius-sm: 4px;
 }
 

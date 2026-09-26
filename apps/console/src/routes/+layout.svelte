@@ -6,6 +6,7 @@
   import { getLocale, setLocale } from '$lib/paraglide/runtime.js';
   import { Toaster } from 'svelte-sonner';
   import { Home, Plug, Combine, Route, List, Gamepad2, Key, Settings } from 'lucide-svelte';
+  import { Logo } from '$lib/components/index.js';
   import type { SessionUser, SystemInfo } from '$lib/server/vkdg/client';
 
   interface Props {
@@ -49,10 +50,10 @@
 
 <div class="shell">
   <aside class="sidebar">
-    <div class="logo">
-      <span class="logo-mark">▶</span>
+    <a href="/" class="logo" aria-label="VKDG home">
+      <Logo size={36} />
       <span class="logo-text">VKDG</span>
-    </div>
+    </a>
 
     <nav class="nav">
       {#each navGroups as group}
@@ -127,16 +128,15 @@
     align-items: center;
     gap: 8px;
     padding: 20px 16px 16px;
-    font-weight: 700;
-    font-size: 15px;
     border-bottom: 1px solid var(--border);
-    color: var(--text-1);
-    letter-spacing: 0.04em;
+    text-decoration: none;
   }
 
-  .logo-mark {
-    color: var(--accent);
-    font-size: 11px;
+  .logo-text {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-1);
   }
 
   .nav {

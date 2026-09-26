@@ -1,2 +1,156 @@
-/target
-*.lock
+# =============================================================================
+# Rust workspace
+# =============================================================================
+
+# Cargo build output
+/target/
+debug/
+
+# rustfmt backups
+**/*.rs.bk
+
+# MSVC debug info
+*.pdb
+
+# cargo-mutants output
+**/mutants.out*/
+
+# rustc internal error traces
+rustc-ice-*.txt
+
+# NOTE: Cargo.lock is intentionally NOT ignored.
+# This workspace has binaries (bin/vkdg) → commit the lockfile for reproducible builds.
+
+# =============================================================================
+# Build / codegen artifacts
+# =============================================================================
+
+# wasm-pack output
+pkg/
+wasm-pkg/
+
+# cargo-make / just temp
+.task/
+
+# =============================================================================
+# macOS
+# =============================================================================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+Icon[\r]
+
+# =============================================================================
+# Linux
+# =============================================================================
+*~
+.nfs*
+
+# =============================================================================
+# IDE — JetBrains (RustRover, CLion, WebStorm, Cursor)
+# =============================================================================
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+.idea/**/aws.xml
+.idea/**/contentModel.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/dbnavigator.xml
+.idea/**/gradle.xml
+.idea/**/libraries
+.idea/**/mongoSettings.xml
+.idea/**/replstate.xml
+.idea/sonarlint/
+.idea/sonarlint.xml
+.idea/httpRequests
+.idea/.cache/
+http-client.private.env.json
+*.iws
+.idea_modules/
+# Uncomment to ignore all of .idea/:
+# .idea/
+
+# =============================================================================
+# IDE — VS Code / Cursor / Windsurf / Zed
+# =============================================================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+!*.code-workspace
+*.vsix
+.zed/settings.json
+
+# =============================================================================
+# Security — NEVER commit secrets
+# =============================================================================
+
+# Environment files (real values)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Vault / secret files
+*.vault
+*.vault.json
+*.secret
+secrets/
+.secrets/
+
+# Credentials / keys
+credentials.json
+credentials.toml
+service-account*.json
+*_credentials.*
+*.pem
+*.key
+!*.pub.key
+*.p12
+*.pfx
+
+# SSH keys
+id_rsa
+id_ed25519
+*.ppk
+
+# =============================================================================
+# Logs & temp
+# =============================================================================
+*.log
+logs/
+tmp/
+.tmp/
+
+# =============================================================================
+# Coverage / profiling
+# =============================================================================
+tarpaulin-report.html
+lcov.info
+coverage/
+*.profdata
+*.profraw
+
+# =============================================================================
+# Monorepo tooling
+# =============================================================================
+.nextest/
+result
+result-*

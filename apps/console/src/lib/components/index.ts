@@ -7,3 +7,4 @@ export { default as EmptyState } from './EmptyState.svelte';
 export { default as Spinner } from './Spinner.svelte';
 export { default as Input } from './Input.svelte';
 export { default as Select } from './Select.svelte';
+export { default as Logo } from './Logo.svelte';

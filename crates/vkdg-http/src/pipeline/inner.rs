@@ -154,6 +154,7 @@ pub(super) async fn run_pipeline_inner(
                 route_id: RouteId("auto".into()),
                 excluded: vec![],
                 fusion_targets: vec![],
+                chain_steps: vec![],
             }
         }
         Err(e) => return Err(e),
@@ -165,6 +166,18 @@ pub(super) async fn run_pipeline_inner(
             ctx,
             operation,
             route_result.fusion_targets,
+            csr.compression_threshold,
+            &csr.effective_compressor_id,
+        )
+        .await;
+    }
+    // PromptChain fast-path: run steps sequentially, inject previous response into each step.
+    if !route_result.chain_steps.is_empty() {
+        return run_prompt_chain(
+            pipeline,
+            ctx,
+            operation,
+            route_result.chain_steps,
             csr.compression_threshold,
             &csr.effective_compressor_id,
         )
@@ -507,6 +520,155 @@ async fn fusion_one_target(
     };
 
     Ok(resp)
+}
+// ── PromptChain dispatch ──────────────────────────────────────────────────────
+
+/// Run a sequential prompt chain: each step's response is injected into the next step.
+///
+/// Steps run in order. If any step fails, the chain aborts and returns the error.
+/// The operation is prepared once before the chain starts. Only the final step's
+/// response is returned to the client.
+async fn run_prompt_chain(
+    pipeline: &PipelineState,
+    ctx: &mut PipelineCtx,
+    mut operation: Operation,
+    steps: Vec<vkdg_routing::ChainStep>,
+    compression_threshold: u32,
+    effective_compressor_id: &Option<String>,
+) -> Result<Response, VkdgError> {
+    use vkdg_operations::{Message, MessageContent, Role};
+    use vkdg_routing::InjectMode;
+
+    ctx.transition(AttemptState::AccountReserved);
+
+    // Prepare operation once (compression, system prompt, memory injection).
+    operation = prepare_operation(
+        pipeline,
+        operation,
+        &ctx.envelope,
+        compression_threshold,
+        effective_compressor_id,
+    )
+    .await;
+
+    let mut previous_response: Option<String> = None;
+    let step_count = steps.len();
+
+    for (step_idx, step) in steps.into_iter().enumerate() {
+        // Inject previous response into this step's operation (skipped for step 0).
+        if let Some(prev) = &previous_response {
+            if let Operation::Conversation(conv_req) = &mut operation {
+                match &step.inject_previous {
+                    InjectMode::AsAssistant => {
+                        // Insert assistant message before the last user message.
+                        let last_user_pos = conv_req
+                            .messages
+                            .iter()
+                            .rposition(|m| matches!(m.role, Role::User));
+                        if let Some(pos) = last_user_pos {
+                            conv_req.messages.insert(
+                                pos,
+                                Message {
+                                    role: Role::Assistant,
+                                    content: MessageContent::Text(prev.clone()),
+                                },
+                            );
+                        }
+                    }
+                    InjectMode::AppendToUser => {
+                        if let Some(last_user) = conv_req
+                            .messages
+                            .iter_mut()
+                            .rfind(|m| matches!(m.role, Role::User))
+                        {
+                            if let MessageContent::Text(t) = &mut last_user.content {
+                                *t = format!("{t}\n\nPrevious output:\n{prev}");
+                            }
+                        }
+                    }
+                    InjectMode::AsSystem => {
+                        conv_req.system = Some(match &conv_req.system {
+                            None => format!("Previous output:\n{prev}"),
+                            Some(existing) => {
+                                format!("Previous output:\n{prev}\n\n{existing}")
+                            }
+                        });
+                    }
+                }
+            }
+        }
+
+        // Override system for this step if configured.
+        if let Operation::Conversation(conv_req) = &mut operation {
+            if let Some(step_system) = &step.system {
+                conv_req.system = Some(step_system.clone());
+            }
+        }
+
+        // Resolve connection for this step.
+        let conn_id = match step.connection_id {
+            Some(id) => id,
+            None => {
+                // Auto-route: find any eligible catalog connection for the requested model.
+                let excluded_ids: Vec<ConnectionId> = vec![];
+                pipeline
+                    .catalog
+                    .eligible(&ctx.envelope.model_requested, &excluded_ids)
+                    .into_iter()
+                    .next()
+                    .ok_or(VkdgError::NoEligibleConnection)?
+            }
+        };
+
+        ctx.connection_id = Some(conn_id.clone());
+        tracing::debug!(
+            step = step_idx,
+            total = step_count,
+            connection = %conn_id.0,
+            "prompt chain step",
+        );
+
+        // Execute the step.
+        let resp = fusion_one_target(pipeline, conn_id, operation.clone()).await?;
+
+        if step_idx + 1 < step_count {
+            // Not the last step: consume the body and extract text for the next step.
+            let body_bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+                .await
+                .map_err(|e| VkdgError::Internal(e.to_string()))?;
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            let extracted = serde_json::from_str::<serde_json::Value>(&body_str)
+                .ok()
+                .and_then(|v| {
+                    // Anthropic format: content[0].text
+                    v.get("content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string())
+                        // OpenAI format: choices[0].message.content
+                        .or_else(|| {
+                            v.get("choices")
+                                .and_then(|c| c.as_array())
+                                .and_then(|arr| arr.first())
+                                .and_then(|item| item.get("message"))
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string())
+                        })
+                })
+                .unwrap_or_else(|| body_str.into_owned());
+            previous_response = Some(extracted);
+        } else {
+            // Last step: return its response directly.
+            ctx.transition(AttemptState::Completed);
+            return Ok(resp);
+        }
+    }
+
+    // Unreachable: steps is validated non-empty in the router.
+    Err(VkdgError::NoEligibleConnection)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

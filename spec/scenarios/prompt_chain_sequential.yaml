@@ -1,0 +1,31 @@
+id: prompt_chain_sequential
+title: PromptChain routes steps sequentially, injecting previous response into next step
+contract: >
+  Each step runs in order; the response of step N is injected into step N+1 via
+  inject_previous; the final step's response is returned to the client.
+phase: routing
+arrange:
+  route:
+    strategy: prompt_chain
+    targets: ["conn-a", "conn-b"]
+    steps:
+      - connection_id: conn-a
+        inject_previous: as_assistant
+      - connection_id: conn-b
+        inject_previous: append_to_user
+  connections:
+    - id: conn-a
+      models: ["claude-*"]
+    - id: conn-b
+      models: ["claude-*"]
+assert:
+  steps_executed: 2
+  final_response_from: conn-b
+  invariants:
+    - step 0 response is injected as an assistant message before step 1's last user message (as_assistant)
+    - if step 0 fails, chain aborts immediately and step 1 is never called
+    - inject_previous: append_to_user appends previous output to the last user message
+    - inject_previous: as_system prepends previous output to the step system prompt
+    - steps with connection_id: null auto-route from catalog using the request model
+    - empty steps list returns ConfigInvalid error before any upstream call
+    - step connection_id not in route targets returns ConfigInvalid error

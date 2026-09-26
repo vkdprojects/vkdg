@@ -62,6 +62,52 @@ impl Router {
                 route_id: route.id.clone(),
                 excluded,
                 fusion_targets,
+                chain_steps: vec![],
+            });
+        }
+        // PromptChain is handled separately — it builds chain_steps directly.
+        if let StrategyKind::PromptChain { steps } = &route.strategy {
+            if steps.is_empty() {
+                return Err(VkdgError::ConfigInvalid {
+                    field: "strategy.steps".into(),
+                    message: "PromptChain requires at least one step".into(),
+                });
+            }
+            // Validate that each step's connection_id exists in route targets.
+            for (i, step) in steps.iter().enumerate() {
+                if let Some(conn_id) = &step.connection_id {
+                    if !route.targets.contains(conn_id) {
+                        return Err(VkdgError::ConfigInvalid {
+                            field: format!("strategy.steps[{}].connection_id", i),
+                            message: format!("connection '{}' not in route targets", conn_id.0),
+                        });
+                    }
+                }
+            }
+            let excluded: Vec<ExcludedCandidate> = filter
+                .excluded_connections
+                .iter()
+                .map(|id| ExcludedCandidate {
+                    connection_id: id.clone(),
+                    reason: filter
+                        .reason_map
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| "filtered".into()),
+                })
+                .collect();
+            // Primary connection is the first step's target (or first route target).
+            let primary = steps[0]
+                .connection_id
+                .clone()
+                .or_else(|| route.targets.first().cloned())
+                .ok_or(VkdgError::NoEligibleConnection)?;
+            return Ok(RouteResult {
+                connection_id: primary,
+                route_id: route.id.clone(),
+                excluded,
+                fusion_targets: vec![],
+                chain_steps: steps.clone(),
             });
         }
 
@@ -109,6 +155,7 @@ impl Router {
             route_id: route.id.clone(),
             excluded,
             fusion_targets: vec![],
+            chain_steps: vec![],
         })
     }
 

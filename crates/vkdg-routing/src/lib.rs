@@ -15,8 +15,8 @@ pub use scored::ScoredStrategy;
 pub use scorer::{rank_candidates, CandidateSignals, ScoringWeights};
 pub use strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
 pub use types::{
-    ConnectionWeight, EligibilityFilter, PluginHooks, RouteConfig, RouteId, RouteResult,
-    RoutingHints, StrategyKind,
+    ChainStep, ConnectionWeight, EligibilityFilter, InjectMode, PluginHooks, RouteConfig, RouteId,
+    RouteResult, RoutingHints, StrategyKind,
 };
 
 #[cfg(test)]

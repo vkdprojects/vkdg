@@ -27,6 +27,32 @@ pub struct PluginHooks {
 
 // ── Strategy kind ─────────────────────────────────────────────────────────────
 
+/// How the previous step's response is injected into the next step's messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectMode {
+    /// Append the previous response as an assistant message before the last user message.
+    /// This creates a natural dialogue: user → assistant (previous output) → user (original).
+    AsAssistant,
+    /// Append the previous response to the last user message:
+    /// `"{original_user_message}\n\nPrevious output:\n{previous_response}"`
+    AppendToUser,
+    /// Prepend the previous response to the system prompt of this step.
+    AsSystem,
+}
+
+/// A single step in a PromptChain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainStep {
+    /// Connection to use for this step. `None` = auto-route from catalog using the request model.
+    pub connection_id: Option<vkdg_core::ConnectionId>,
+    /// System prompt override for this step. Replaces (not appends) the request system.
+    pub system: Option<String>,
+    /// How to inject the previous step's response into this step's input.
+    /// Ignored for the first step (there is no previous response).
+    pub inject_previous: InjectMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKind {
@@ -45,6 +71,12 @@ pub enum StrategyKind {
     /// `None` means fan out to all eligible targets.
     Fusion {
         max_candidates: Option<usize>,
+    },
+    /// Sequential prompt chain: steps run one after another.
+    /// The response of step N is injected into step N+1's messages via `inject_previous`.
+    /// If any step fails, the chain aborts immediately and the error is returned to the client.
+    PromptChain {
+        steps: Vec<ChainStep>,
     },
 }
 
@@ -99,4 +131,6 @@ pub struct RouteResult {
     /// Non-empty only for Fusion routes. Contains all targets to dispatch in parallel.
     /// The pipeline races these and returns the first successful response.
     pub fusion_targets: Vec<ConnectionId>,
+    /// Non-empty when strategy is PromptChain; steps to execute sequentially.
+    pub chain_steps: Vec<ChainStep>,
 }

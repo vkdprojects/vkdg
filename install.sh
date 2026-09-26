@@ -1,7 +1,7 @@
 #!/bin/sh
 # VKDG install script
-# Usage: curl -fsSL https://get.vkdg.dev/install.sh | sh
-#   or:  curl -fsSL https://get.vkdg.dev/install.sh | VKDG_VERSION=0.2.0 sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/vkdprojects/vkdg/main/install.sh | sh
+#   or:  curl -fsSL https://raw.githubusercontent.com/vkdprojects/vkdg/main/install.sh | VKDG_VERSION=0.2.0 sh
 set -eu
 
 VKDG_VERSION="${VKDG_VERSION:-latest}"

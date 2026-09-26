@@ -28,7 +28,7 @@ One 13MB binary. No Node, no Python, no Docker required. Run it on a $4/month VP
 
 ```bash
 # macOS / Linux — download the latest release
-curl -fsSL https://get.vkdg.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vkdprojects/vkdg/main/install.sh | sh
 
 # Or build from source
 git clone https://github.com/vkdprojects/vkdg

@@ -4,41 +4,43 @@
 Output assets/demo.gif
 
 Set Theme "Catppuccin Mocha"
-Set FontSize 14
-Set Width 900
-Set Height 500
-Set Padding 24
+Set FontSize 13
+Set Width 920
+Set Height 480
+Set Padding 20
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
-Set PlaybackSpeed 1.0
+Set PlaybackSpeed 0.9
 
-# Clear and set the scene
-Type "# Start VKDG with an API key"
-Sleep 500ms
-Enter
-Sleep 300ms
+# Setup PATH to include vkdg binary
+Env PATH "/tmp:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
-Type "export ANTHROPIC_API_KEY=sk-ant-demo"
+Sleep 200ms
+
+# Show the one-liner install concept
+Type "# Deploy your AI gateway"
+Sleep 600ms
 Enter
-Sleep 300ms
+Sleep 400ms
+
+Type "export ANTHROPIC_API_KEY=sk-ant-..."
+Enter
+Sleep 400ms
 
 Type "vkdg serve"
+Sleep 400ms
 Enter
-Sleep 2s
+Sleep 2.5s
 
-# The banner appears — let it breathe
+# Let the banner breathe
 Sleep 3s
 
-# Ctrl+C to stop
+# Show it's actually serving
 Ctrl+C
-Sleep 800ms
+Sleep 600ms
 
-Type "# Run a quick health check"
+Type "curl -s localhost:8080/health"
 Enter
-Sleep 300ms
-
-Type "curl -s localhost:8080/health | python3 -m json.tool"
-Enter
-Sleep 1.5s
+Sleep 1.2s
 
 Sleep 2s

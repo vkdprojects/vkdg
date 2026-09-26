@@ -16,7 +16,7 @@
 
 ---
 
-![VKDG terminal startup banner showing the gateway URL and bootstrap token](assets/demo.png)
+![VKDG terminal startup banner showing the gateway URL and bootstrap token](assets/demo.gif)
 
 ---
 

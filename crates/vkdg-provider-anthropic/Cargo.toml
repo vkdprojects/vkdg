@@ -12,3 +12,6 @@ vkdg-http        = { workspace = true }
 bytes            = { workspace = true }
 http             = { workspace = true }
 serde_json       = { workspace = true }
+
+[lib]
+doctest = false

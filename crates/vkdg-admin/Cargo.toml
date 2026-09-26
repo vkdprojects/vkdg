@@ -20,3 +20,6 @@ thiserror        = { workspace = true }
 tracing          = { workspace = true }
 vkdg-combos     = { workspace = true }
 parking_lot      = { workspace = true }
+
+[lib]
+doctest = false

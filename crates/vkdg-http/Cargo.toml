@@ -35,3 +35,6 @@ anyhow      = { workspace = true }
 reqwest         = { workspace = true }
 parking_lot = { workspace = true }
 chrono      = { workspace = true }
+
+[lib]
+doctest = false

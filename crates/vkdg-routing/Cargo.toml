@@ -10,3 +10,6 @@ vkdg-operations = { workspace = true }
 serde           = { workspace = true }
 async-trait     = { workspace = true }
 tokio           = { workspace = true }
+
+[lib]
+doctest = false

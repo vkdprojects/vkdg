@@ -21,3 +21,6 @@ async-trait      = { workspace = true }
 rusqlite         = { workspace = true }
 sha2             = { workspace = true }
 redis            = { workspace = true, optional = true }
+
+[lib]
+doctest = false

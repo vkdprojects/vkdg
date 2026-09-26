@@ -17,3 +17,6 @@ opentelemetry-otlp = { workspace = true }
 chrono             = { workspace = true }
 tokio              = { workspace = true }
 anyhow             = { workspace = true }
+
+[lib]
+doctest = false

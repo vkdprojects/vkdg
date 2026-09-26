@@ -12,3 +12,6 @@ tokio      = { workspace = true }
 chrono     = { workspace = true }
 uuid       = { workspace = true }
 thiserror  = { workspace = true }
+
+[lib]
+doctest = false

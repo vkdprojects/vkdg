@@ -19,3 +19,6 @@ notify           = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lib]
+doctest = false

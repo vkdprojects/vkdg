@@ -1,0 +1,22 @@
+id: auto_routing_zero_config
+title: Request routes to a catalog connection with no explicit route configured
+contract: when no RouteConfig matches the model, pipeline falls through to catalog.eligible() auto-route using round-robin
+phase: routing
+arrange:
+  router:
+    routes: []  # no explicit routes
+  catalog:
+    connections:
+      - id: anthropic-default
+        models: ["claude-*"]
+        status: healthy
+  request:
+    model: "claude-3-5-haiku-20241022"
+assert:
+  connection_chosen: "anthropic-default"
+  route_id: "auto"
+  invariants:
+    - auto-route only fires when no explicit route matches
+    - round-robin across all eligible catalog connections
+    - excluded connections from EligibilityFilter are respected
+    - returns NoEligibleConnection if catalog has no serving healthy connection

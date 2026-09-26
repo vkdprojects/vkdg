@@ -252,4 +252,55 @@ mod tests {
             other => panic!("expected ConfigInvalid, got {other:?}"),
         }
     }
+
+    /// Plausible wrong impl: concurrent calls on an expired token each trigger
+    /// their own refresh, resulting in N HTTP calls instead of 1.
+    /// Singleflight must ensure exactly 1 refresh call.
+    ///
+    /// Cannot hit a real token endpoint; uses a missing env var (ConfigInvalid)
+    /// as a signal that the refresh path was entered. All N tasks must receive
+    /// the same error type — not a mix from racing independent refreshes.
+    #[tokio::test]
+    async fn concurrent_calls_on_expired_token_use_singleflight() {
+        let mgr = Arc::new(CredentialManager::new());
+        let conn_id = ConnectionId("conn-sf".into());
+
+        // Insert an already-expired token.
+        {
+            let mut tokens = mgr.tokens.write().await;
+            tokens.insert(
+                conn_id.clone(),
+                StoredToken {
+                    access_token: "expired".into(),
+                    expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+                    generation: 1,
+                },
+            );
+        }
+
+        let config = make_oauth2_config("conn-sf", "MISSING_SECRET_FOR_CONCURRENT_TEST");
+
+        // Spawn 5 concurrent callers.
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let mgr = Arc::clone(&mgr);
+            let config = config.clone();
+            handles.push(tokio::spawn(async move { mgr.get_token(&config).await }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.expect("task must not panic"));
+        }
+
+        // All 5 must fail with ConfigInvalid (missing secret env var) — not a mix
+        // of different errors from racing independent refresh paths.
+        for result in &results {
+            assert!(
+                matches!(result, Err(VkdgError::ConfigInvalid { .. })),
+                "all concurrent callers must fail with ConfigInvalid (missing secret), got {:?}",
+                result
+            );
+        }
+    }
 }

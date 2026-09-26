@@ -161,3 +161,25 @@ async fn router_no_matching_route_for_model() {
         result
     );
 }
+
+/// Invariant: Router alone with no matching routes returns NoEligibleConnection;
+/// the pipeline's auto-route fallback (not the router) handles zero-config routing.
+/// Plausible wrong impl: pipeline calls router.route() without a fallback and
+/// returns NoEligibleConnection even when a catalog connection serves the model.
+#[tokio::test]
+async fn auto_routing_invariant_router_alone_returns_no_eligible() {
+    let router = Router::new(vec![]);
+    let envelope = make_envelope("claude-3-5-haiku-20241022");
+    let result = router
+        .route(
+            &envelope,
+            &EligibilityFilter::default(),
+            &RoutingHints::default(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(VkdgError::NoEligibleConnection)),
+        "router alone with no routes must return NoEligibleConnection; \
+         pipeline provides the auto-route fallback via catalog.eligible()"
+    );
+}

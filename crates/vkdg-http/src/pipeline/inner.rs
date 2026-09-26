@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use axum::response::Response;
@@ -8,7 +9,7 @@ use vkdg_cache::{cache_key, CacheEntry, CacheResult};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::{AttemptState, ConnectionId, VkdgError};
 use vkdg_operations::Operation;
-use vkdg_routing::{EligibilityFilter, RoutingHints};
+use vkdg_routing::{EligibilityFilter, RouteId, RouteResult, RoutingHints};
 
 use super::helpers::{
     error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs,
@@ -16,6 +17,10 @@ use super::helpers::{
 use super::phases::{post_response_accounting, prepare_operation, resolve_combo_and_session};
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
+
+// ── Auto-route counter ────────────────────────────────────────────────────────
+/// Round-robin index for auto-route fallback (no explicit RouteConfig matched).
+static AUTO_ROUTE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ── RAII dedup guard ──────────────────────────────────────────────────────────
 /// Calls `DedupTable::complete` on drop so in-flight tracking is always cleaned
@@ -125,10 +130,31 @@ pub(super) async fn run_pipeline_inner(
         }
         hints
     };
-    let route_result = pipeline
+    let route_result = match pipeline
         .router
         .route(&ctx.envelope, &filter, &routing_hints)
-        .await?;
+        .await
+    {
+        Ok(r) => r,
+        Err(VkdgError::NoEligibleConnection) => {
+            // Auto-route: find any healthy catalog connection that serves the model.
+            let model = &ctx.envelope.model_requested;
+            let excluded_ids = filter.excluded_connections.to_vec();
+            let candidates = pipeline.catalog.eligible(model, &excluded_ids);
+            if candidates.is_empty() {
+                return Err(VkdgError::NoEligibleConnection);
+            }
+            // Round-robin across all eligible connections.
+            let idx = AUTO_ROUTE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                % candidates.len();
+            RouteResult {
+                connection_id: candidates[idx].clone(),
+                route_id: RouteId("auto".into()),
+                excluded: vec![],
+            }
+        }
+        Err(e) => return Err(e),
+    };
     // Priority: session pin > combo redirect > routed connection.
     let connection_id = if let Some(preferred) = csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check

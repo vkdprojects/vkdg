@@ -639,3 +639,56 @@ async fn session_stickiness_stale_pin_falls_through_to_routing() {
         "real connection must be called exactly once"
     );
 }
+
+/// Plausible wrong impl: request with no explicit route fails immediately with
+/// NoEligibleConnection instead of falling through to auto-route via catalog.eligible().
+/// Auto-routing must find the catalog connection even when the router has no routes.
+#[tokio::test]
+async fn auto_routing_zero_config_routes_without_explicit_route() {
+    std::env::set_var("VKDG_SMOKE_KEY", "test-token");
+    let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk {
+        content: "auto-routed".into(),
+    })
+    .await;
+
+    let conn_id = ConnectionId("auto-conn".into());
+    let config = ConnectionConfig {
+        id: conn_id.clone(),
+        provider: ProviderKind::Custom {
+            base_url: fake.base_url.clone(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
+        models: vec!["claude-*".into()],
+        max_concurrent: 10,
+        weight: 1,
+        tags: vec![],
+        capabilities: CapabilitySet::default(),
+    };
+    // EMPTY router — no explicit routes. Auto-routing must find the catalog connection.
+    let pipeline = Arc::new(PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(10)),
+        Arc::new(Router::new(vec![])),
+        Arc::new(ConnectionCatalog::new(vec![config])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(AnthropicAdapter),
+    ));
+
+    let (ctx, op) = make_ctx("claude-3-5-haiku-20241022");
+    let resp = run_conversation_pipeline(pipeline, ctx, op).await;
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "auto-route must find catalog connection without explicit route, got {}",
+        resp.status()
+    );
+    assert_eq!(
+        fake.call_count(),
+        1,
+        "connection must be called exactly once"
+    );
+}

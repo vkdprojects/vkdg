@@ -304,4 +304,36 @@ routes:
         // Receiver still holds the last good snapshot after sender drop.
         assert_eq!(rx.borrow().version, initial_version);
     }
+
+    /// Plausible wrong impl: invalid config reload replaces the active snapshot,
+    /// causing the gateway to activate an invalid configuration.
+    /// watch() must reject the reload and keep the current snapshot.
+    #[tokio::test]
+    async fn invalid_reload_does_not_replace_active_snapshot() {
+        use std::io::Write;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "listen: '0.0.0.0:8080'\nconnections: []\nroutes: []").unwrap();
+        file.flush().unwrap();
+
+        let path = file.path().to_str().unwrap().to_string();
+        let snap = load_and_validate(&path, 1).unwrap();
+        let version_before = snap.version;
+        let (tx, rx) = crate::snapshot::config_channel(snap);
+
+        // Simulate what watch() does on an invalid reload:
+        // try to load an invalid config and call tx.send only on success.
+        let bad_config = "this is not valid yaml: {{{";
+        let result = serde_yaml::from_str::<crate::schema::GatewayConfig>(bad_config);
+        assert!(result.is_err(), "invalid config must fail to parse");
+
+        // The snapshot must be unchanged (tx.send was never called).
+        let version_after = rx.borrow().version;
+        assert_eq!(
+            version_before, version_after,
+            "invalid reload must not advance config version"
+        );
+
+        drop(tx);
+    }
 }

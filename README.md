@@ -174,17 +174,6 @@ See [docs/sdk/writing-a-plugin.md](docs/sdk/writing-a-plugin.md) and [docs/sdk/a
 
 ---
 
-## Phases
-
-| Phase | Description | Status |
-| --- | --- | --- |
-| A | Executable spec: types, state machine, 13 contract scenarios | Complete |
-| B | Data vertical: HTTP server, pipeline, SSE parser, Anthropic ingress/provider | Complete |
-| C | Interoperability: OpenAI ingress/provider, 429 fallback, bidirectional translation | Complete |
-| D | Modalities and extensions: config hot-reload, jobs, artifacts, WASM plugin host, compression, scoring, combos, memory, eval, admin API, console | Complete |
-| E | Scale/release: OAuth2 PKCE, WASM bindgen, benchmark suite, production hardening | In progress |
-
----
 
 ## Known gaps
 

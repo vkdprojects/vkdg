@@ -116,6 +116,8 @@ rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }
 tempfile         = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
+regex            = "1.11"
+redis            = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 
 [profile.dev]
 opt-level = 1

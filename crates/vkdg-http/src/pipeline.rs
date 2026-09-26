@@ -98,6 +98,19 @@ async fn run_pipeline_inner(
     let _permit = pipeline.admission.acquire().await?;
     ctx.transition(AttemptState::Admitted);
 
+    // 1.5. Combo resolution ────────────────────────────────────────────────────
+    // Resolve the requested model name to a combo before routing so the combo's
+    // configuration (targets, strategy, compression, cache policy) can shadow the
+    // default route.  Falls through to bare model routing when no combo matches.
+    let combo = pipeline
+        .combo_resolver
+        .as_ref()
+        .and_then(|r| r.resolve(&ctx.envelope.model_requested));
+
+    if let Some(c) = &combo {
+        tracing::debug!(combo_id = %c.id, "request resolved to combo");
+    }
+
     // 2. Route ─────────────────────────────────────────────────────────────────
     let filter = if excluded.is_empty() {
         EligibilityFilter::default()
@@ -344,6 +357,7 @@ mod tests {
             exporter: Arc::new(DecisionRecordExporter::new()),
             provider_adapter: Arc::new(StubAdapter),
             cache: None,
+            combo_resolver: None,
         })
     }
 

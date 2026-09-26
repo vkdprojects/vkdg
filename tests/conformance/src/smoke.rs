@@ -56,6 +56,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(AnthropicAdapter),
         cache: None,
+        combo_resolver: None,
     })
 }
 
@@ -347,6 +348,7 @@ where
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(adapter),
         cache: None,
+        combo_resolver: None,
     })
 }
 
@@ -400,6 +402,7 @@ where
         exporter: Arc::new(DecisionRecordExporter::new()),
         provider_adapter: Arc::new(adapter),
         cache: None,
+        combo_resolver: None,
     })
 }
 

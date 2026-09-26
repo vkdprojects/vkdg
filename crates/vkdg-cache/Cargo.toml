@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+redis = ["dep:redis"]
+
 [dependencies]
 vkdg-core        = { workspace = true }
 vkdg-operations  = { workspace = true }
@@ -16,3 +20,4 @@ thiserror        = { workspace = true }
 async-trait      = { workspace = true }
 rusqlite         = { workspace = true }
 sha2             = { workspace = true }
+redis            = { workspace = true, optional = true }

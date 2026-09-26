@@ -13,6 +13,27 @@ pub struct TruncateResult {
     pub metrics: CompressionMetrics,
 }
 
+/// `Compressor` impl wrapping the truncation strategy.
+pub struct TruncateCompressor {
+    pub max_tokens: u32,
+}
+
+impl crate::Compressor for TruncateCompressor {
+    fn name(&self) -> &str { "truncate" }
+
+    fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
+        estimated_tokens(&req.messages)
+    }
+
+    fn compress(
+        &self,
+        req: ConversationRequest,
+        budget: u32,
+    ) -> Result<(ConversationRequest, crate::CompressionMetrics), crate::CompressionError> {
+        apply(req, self.max_tokens, budget)
+    }
+}
+
 /// Apply truncation to a request.
 /// Estimate tokens by character count / 4 (rough approximation).
 /// Remove oldest non-system messages first.

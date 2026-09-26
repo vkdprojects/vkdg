@@ -11,6 +11,7 @@ vkdg-connections = { workspace = true }
 vkdg-operations = { workspace = true }
 vkdg-observe    = { workspace = true }
 vkdg-cache      = { workspace = true }
+vkdg-combos     = { workspace = true }
 
 serde       = { workspace = true }
 serde_json  = { workspace = true }

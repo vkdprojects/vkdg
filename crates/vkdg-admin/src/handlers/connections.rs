@@ -93,6 +93,8 @@ mod tests {
             sessions: crate::session::SessionStore::new("tok".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
+            key_store: crate::session::KeyStore::new(),
+            request_log: crate::handlers::requests::RequestLog::new(),
         }
     }
 
@@ -130,6 +132,8 @@ mod tests {
             sessions,
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
+            key_store: crate::session::KeyStore::new(),
+            request_log: crate::handlers::requests::RequestLog::new(),
         };
 
         let mut headers = HeaderMap::new();

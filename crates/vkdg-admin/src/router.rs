@@ -5,13 +5,16 @@ use axum::{
     Router,
 };
 use vkdg_config::ConfigRx;
-use crate::session::SessionStore;
+use crate::session::{KeyStore, SessionStore};
+use crate::handlers::requests::RequestLog;
 
 #[derive(Clone)]
 pub struct AdminState {
     pub sessions: Arc<SessionStore>,
     pub config_rx: ConfigRx,
     pub started_at: Arc<Instant>,
+    pub key_store: Arc<KeyStore>,
+    pub request_log: Arc<RequestLog>,
 }
 
 pub fn build_admin_router(state: AdminState) -> Router {
@@ -27,6 +30,27 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route(
             "/admin/v1/connections/{id}",
             get(crate::handlers::connections::get_connection),
+        )
+        .route(
+            "/admin/v1/keys",
+            get(crate::handlers::keys::list_keys).post(crate::handlers::keys::create_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}",
+            delete(crate::handlers::keys::revoke_key),
+        )
+        .route("/admin/v1/routes", get(crate::handlers::routes::list_routes))
+        .route(
+            "/admin/v1/routes/preview",
+            get(crate::handlers::routes::preview_route),
+        )
+        .route(
+            "/admin/v1/requests",
+            get(crate::handlers::requests::list_requests),
+        )
+        .route(
+            "/admin/v1/requests/{id}",
+            get(crate::handlers::requests::get_request),
         )
         .with_state(state)
 }

@@ -66,3 +66,52 @@ impl SessionStore {
         &self.bootstrap_token
     }
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClientKey {
+    pub id: String,
+    pub name: String,
+    pub role: Role,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub scopes: Vec<String>,
+    #[serde(skip)]
+    pub raw_hash: String,
+}
+
+pub struct KeyStore {
+    keys: RwLock<Vec<ClientKey>>,
+}
+
+impl KeyStore {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { keys: RwLock::new(Vec::new()) })
+    }
+
+    /// Create a new key. Returns (ClientKey metadata, raw_token).
+    pub fn create(&self, name: String, role: Role, scopes: Vec<String>) -> (ClientKey, String) {
+        let raw = Uuid::new_v4().to_string();
+        let key = ClientKey {
+            id: Uuid::new_v4().to_string(),
+            name,
+            role,
+            created_at: chrono::Utc::now(),
+            last_used_at: None,
+            scopes,
+            raw_hash: raw.clone(),
+        };
+        self.keys.write().push(key.clone());
+        (key, raw)
+    }
+
+    pub fn list(&self) -> Vec<ClientKey> {
+        self.keys.read().clone()
+    }
+
+    pub fn revoke(&self, id: &str) -> bool {
+        let mut keys = self.keys.write();
+        let before = keys.len();
+        keys.retain(|k| k.id != id);
+        keys.len() < before
+    }
+}

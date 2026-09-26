@@ -138,6 +138,8 @@ mod tests {
             sessions: crate::session::SessionStore::new(token.into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
+            key_store: crate::session::KeyStore::new(),
+            request_log: crate::handlers::requests::RequestLog::new(),
         }
     }
 

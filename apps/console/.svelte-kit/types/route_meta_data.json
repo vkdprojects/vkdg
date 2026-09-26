@@ -2,10 +2,22 @@
 	"/": [
 		"src/routes/+page.server.ts"
 	],
+	"/connections": [
+		"src/routes/connections/+page.server.ts"
+	],
+	"/keys": [
+		"src/routes/keys/+page.server.ts"
+	],
 	"/login": [
 		"src/routes/login/+page.server.ts"
 	],
 	"/logout": [
 		"src/routes/logout/+page.server.ts"
+	],
+	"/requests": [
+		"src/routes/requests/+page.server.ts"
+	],
+	"/routes": [
+		"src/routes/routes/+page.server.ts"
 	]
 }

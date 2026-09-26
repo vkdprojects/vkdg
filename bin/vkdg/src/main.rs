@@ -123,6 +123,8 @@ async fn serve(config_path: Option<String>, listen: String) -> Result<()> {
         sessions: vkdg_admin::session::SessionStore::new(bootstrap_token),
         config_rx,
         started_at: std::sync::Arc::new(std::time::Instant::now()),
+        key_store: vkdg_admin::session::KeyStore::new(),
+        request_log: vkdg_admin::handlers::requests::RequestLog::new(),
     };
     let admin_router = vkdg_admin::build_admin_router(admin_state);
     tokio::spawn(async move {

@@ -17,6 +17,14 @@
       <button type="submit">Sign out</button>
     </form>
   </header>
+  <nav>
+    <a href="/" aria-current="page">Overview</a>
+    <a href="/connections">Connections</a>
+    <a href="/keys">Keys</a>
+    <a href="/routes">Routes</a>
+    <a href="/requests">Requests</a>
+  </nav>
+
 
   <section aria-labelledby="system-heading">
     <h2 id="system-heading">System</h2>

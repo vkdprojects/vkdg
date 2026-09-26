@@ -43,31 +43,123 @@ components:
       type: object
       required: [user_id, role]
       properties:
-        user_id:  { type: string }
-        role:     { type: string, enum: [viewer, operator, admin] }
+        user_id: { type: string }
+        role:    { type: string, enum: [viewer, operator, admin] }
 
     LoginRequest:
       type: object
       required: [token]
       properties:
-        token: { type: string, description: "Bootstrap token from vkdg doctor or first-boot output" }
+        token: { type: string, description: "Bootstrap token from first-boot stdout or vkdg doctor" }
 
     ConnectionSummary:
       type: object
       required: [id, provider, status, model_count]
       properties:
-        id:           { type: string, example: "anthropic-default" }
-        provider:     { type: string, example: "anthropic" }
-        status:       { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
-        model_count:  { type: integer, example: 3 }
+        id:              { type: string, example: "anthropic-default" }
+        provider:        { type: string, example: "anthropic" }
+        status:          { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
+        model_count:     { type: integer, example: 3 }
         active_requests: { type: integer, example: 1 }
 
     ConnectionList:
       type: object
       required: [items, total]
       properties:
-        items:  { type: array, items: { $ref: "#/components/schemas/ConnectionSummary" } }
-        total:  { type: integer }
+        items: { type: array, items: { $ref: "#/components/schemas/ConnectionSummary" } }
+        total: { type: integer }
+
+    ClientKey:
+      type: object
+      required: [id, name, role, created_at]
+      properties:
+        id:           { type: string, format: uuid }
+        name:         { type: string, example: "claude-code-local" }
+        role:         { type: string, enum: [viewer, operator, admin] }
+        created_at:   { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        scopes:       { type: array, items: { type: string } }
+
+    KeyList:
+      type: object
+      required: [items, total]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ClientKey" } }
+        total: { type: integer }
+
+    CreateKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:   { type: string }
+        role:   { type: string, enum: [viewer, operator, admin], default: viewer }
+        scopes: { type: array, items: { type: string } }
+
+    CreatedKey:
+      type: object
+      required: [key, id, name]
+      properties:
+        key:  { type: string, description: "Raw key value shown once at creation, never again" }
+        id:   { type: string, format: uuid }
+        name: { type: string }
+
+    RouteSummary:
+      type: object
+      required: [id, match_models, strategy, targets]
+      properties:
+        id:           { type: string }
+        match_models: { type: array, items: { type: string } }
+        strategy:     { type: string, enum: [round_robin, weighted, fallback_chain, lowest_latency, power_of_two_choices, last_known_good] }
+        targets:      { type: array, items: { type: string } }
+
+    RouteList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RouteSummary" } }
+
+    RoutePreview:
+      type: object
+      required: [model, eligible_connections, excluded_connections]
+      properties:
+        model:                { type: string }
+        eligible_connections: { type: array, items: { type: string } }
+        excluded_connections:
+          type: array
+          items:
+            type: object
+            required: [id, reason]
+            properties:
+              id:     { type: string }
+              reason: { type: string }
+
+    RequestSummary:
+      type: object
+      required: [request_id, model, status, started_at_ms]
+      properties:
+        request_id:    { type: string, format: uuid }
+        model:         { type: string }
+        api_type:      { type: string }
+        status:        { type: string, enum: [completed, partial, cancelled, failed] }
+        connection_id: { type: string, nullable: true }
+        started_at_ms: { type: integer }
+        duration_ms:   { type: integer, nullable: true }
+        decision:
+          type: object
+          nullable: true
+          description: DecisionRecord fields without prompt or response content
+          properties:
+            route_id:            { type: string }
+            attempt_count:       { type: integer }
+            candidates_excluded: { type: array, items: { type: object } }
+
+    RequestList:
+      type: object
+      required: [items, has_more]
+      properties:
+        items:    { type: array, items: { $ref: "#/components/schemas/RequestSummary" } }
+        has_more: { type: boolean }
+        cursor:   { type: string, nullable: true }
 
 security:
   - sessionCookie: []
@@ -79,14 +171,9 @@ paths:
     get:
       operationId: getSystem
       summary: Gateway version, health, and active config state
-      description: |
-        No authentication required. Returns the running version, health status,
-        active config revision, and a few live counters. Use this to verify
-        the gateway is reachable before attempting authenticated operations.
       security: []
       responses:
         "200":
-          description: System info
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SystemInfo" }
@@ -97,12 +184,6 @@ paths:
     post:
       operationId: login
       summary: Exchange a bootstrap token for a session cookie
-      description: |
-        The bootstrap token is printed to stdout on first boot, or retrieved
-        via `cargo run -p vkdg -- doctor --bootstrap-token`. It is invalidated
-        after one successful use. Subsequent logins use the credentials set
-        during the bootstrap exchange (not yet implemented — Phase D admin).
-        On success, sets the HttpOnly `vkdg_session` cookie.
       security: []
       requestBody:
         required: true
@@ -111,12 +192,10 @@ paths:
             schema: { $ref: "#/components/schemas/LoginRequest" }
       responses:
         "200":
-          description: Session created
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SessionUser" }
         "401":
-          description: Invalid or expired token
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -124,8 +203,7 @@ paths:
       operationId: logout
       summary: Revoke the current session
       responses:
-        "204":
-          description: Session revoked, cookie cleared
+        "204": { description: Session revoked }
 
   /session/me:
     get:
@@ -133,12 +211,10 @@ paths:
       summary: Current session identity and role
       responses:
         "200":
-          description: Current user
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SessionUser" }
         "401":
-          description: No active session
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -153,15 +229,12 @@ paths:
         - name: status
           in: query
           schema: { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
-          required: false
       responses:
         "200":
-          description: Connection list
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ConnectionList" }
-        "403":
-          description: Insufficient role (viewer can list; operator and admin can mutate)
+        "401":
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -169,7 +242,7 @@ paths:
   /connections/{id}:
     get:
       operationId: getConnection
-      summary: Get a single connection's status and config (secrets excluded)
+      summary: Single connection status and config (secrets excluded)
       parameters:
         - name: id
           in: path
@@ -177,12 +250,139 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: Connection detail
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ConnectionSummary" }
         "404":
-          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Keys ─────────────────────────────────────────────────────────────────────
+
+  /keys:
+    get:
+      operationId: listKeys
+      summary: List client keys (raw value never returned after creation)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyList" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: createKey
+      summary: Create a client key, raw value in response only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateKeyRequest" }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedKey" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /keys/{id}:
+    delete:
+      operationId: revokeKey
+      summary: Revoke a client key permanently
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Revoked }
+        "404":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Routes ───────────────────────────────────────────────────────────────────
+
+  /routes:
+    get:
+      operationId: listRoutes
+      summary: Active routing rules from current config snapshot
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RouteList" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /routes/preview:
+    get:
+      operationId: previewRoute
+      summary: Simulate routing for a model using live eligibility logic; no quota consumed
+      parameters:
+        - name: model
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoutePreview" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ── Requests ─────────────────────────────────────────────────────────────────
+
+  /requests:
+    get:
+      operationId: listRequests
+      summary: Recent requests, paginated, no prompt or response payload
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [completed, partial, cancelled, failed] }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestList" }
+        "401":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /requests/{id}:
+    get:
+      operationId: getRequest
+      summary: Single request with DecisionRecord, no prompt or response content
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestSummary" }
+        "404":
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }

@@ -279,4 +279,40 @@ mod tests {
         let until = conn.record_upstream_error(429);
         assert!(until > now, "cooldown deadline must be in the future");
     }
+
+    // Plausible wrong impl: ConnectionCatalog.eligible() returns a connection
+    // that is in Cooldown state — is_healthy() guard missing or bypassed.
+    #[test]
+    fn connection_in_cooldown_is_not_eligible() {
+        use crate::catalog::ConnectionCatalog;
+
+        let conn_id = ConnectionId("c".into());
+        let config = ConnectionConfig {
+            id: conn_id.clone(),
+            provider: ProviderKind::Anthropic,
+            auth: AuthKind::ApiKey {
+                env_var: "K".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            capabilities: vkdg_core::CapabilitySet::default(),
+        };
+        let catalog = ConnectionCatalog::new(vec![config]);
+        // Set the connection into an unexpired future cooldown.
+        {
+            let conn_arc = catalog.get(&conn_id).unwrap();
+            let mut conn = conn_arc.try_write().unwrap();
+            conn.state = ConnectionState::Cooldown {
+                until: chrono::Utc::now() + chrono::Duration::seconds(300),
+                failure_count: 1,
+            };
+        }
+        let eligible = catalog.eligible("claude-3-5-haiku-20241022", &[]);
+        assert!(
+            eligible.is_empty(),
+            "connection in cooldown must not be eligible for routing"
+        );
+    }
 }

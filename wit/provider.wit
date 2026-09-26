@@ -9,6 +9,12 @@ interface provider-plugin {
 
     /// Translate a VKDG request into the provider's wire format.
     /// Returns: (url, body-bytes, is-streaming)
+    ///
+    /// connection-config-json: JSON-serialized ConnectionConfig without credentials.
+    /// Shape: { "id": string, "provider": string, "models": [string],
+    ///          "max_concurrent": u32, "weight": u32, "tags": [string] }
+    /// The auth token is passed separately as the `token` argument.
+    /// The gateway strips credentials before calling this function.
     translate-request: func(
         req: request,
         connection-config-json: string,
@@ -21,8 +27,15 @@ interface provider-plugin {
         request-id: string,
     ) -> result<response, plugin-error>;
 
-    /// Translate one SSE chunk. Returns none to indicate skip (e.g. comment lines).
-    /// Returns not-applicable when streaming is not supported.
+    /// Translate one SSE chunk from the provider's wire format.
+    ///
+    /// Return values:
+    /// - Ok(Some(response)): chunk produced a complete event; include in stream.
+    /// - Ok(None):           skip this chunk (comment line, heartbeat, empty event).
+    /// - Err(not-applicable): this plugin does not support streaming at all;
+    ///   the gateway will call translate-response on the complete buffered body
+    ///   instead. Return this only once; not once per chunk.
+    /// - Err(internal):      chunk could not be parsed; gateway will terminate stream.
     translate-chunk: func(
         chunk: list<u8>,
         request-id: string,

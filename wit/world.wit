@@ -1,8 +1,24 @@
 package vkdg:plugin@0.1.0;
 
-/// Top-level world for a plugin that implements multiple roles.
-/// A plugin component exports only the interfaces it handles.
-/// The gateway discovers capabilities at load time.
+// Top-level world for a plugin that implements multiple roles.
+//
+// HOOK EXECUTION ORDER (gateway-enforced):
+//   1. auth-plugin       — authentication and rate limiting
+//   2. router-plugin     — candidate selection and signal injection
+//   3. compressor-plugin — context compression (pre-dispatch)
+//   4. cache-backend-plugin lookup — before upstream
+//   5. provider-plugin   — request/response translation
+//   6. cache-backend-plugin store  — after upstream
+//
+// MANDATORY vs OPTIONAL:
+//   Any non-empty subset of these exports is valid. A plugin exporting
+//   only cache-backend-plugin is valid. A plugin exporting none is an
+//   error caught at install time (vkdg plugin install will reject it).
+//
+// MULTI-ROLE:
+//   A single .wasm can export multiple roles. Each role is called at its
+//   phase in the pipeline. Order within a phase across multiple plugins
+//   is determined by the route's plugin_hooks list (priority order).
 world vkdg-plugin {
     // A plugin may export any subset of these.
     // Exporting none is an error caught at install time.

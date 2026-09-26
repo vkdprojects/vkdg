@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use vkdg_combos::BudgetPolicy;
 use vkdg_core::{ConnectionId, RequestEnvelope};
 use vkdg_memory::inject_memories;
 use vkdg_operations::{MessageContent, Operation};
@@ -16,6 +17,8 @@ pub(super) struct ComboSessionResolution {
     pub(super) effective_compressor_id: Option<String>,
     pub(super) compression_threshold: u32,
     pub(super) session_preferred: Option<ConnectionId>,
+    /// Budget policy from matched combo, if any.
+    pub(super) budget_policy: Option<BudgetPolicy>,
 }
 
 pub(super) async fn resolve_combo_and_session(
@@ -32,6 +35,7 @@ pub(super) async fn resolve_combo_and_session(
     }
 
     let combo_compression = combo.as_ref().and_then(|c| c.compression.as_ref()).cloned();
+    let budget_policy = combo.as_ref().and_then(|c| c.budget.as_ref()).cloned();
     let effective_compressor_id: Option<String> = envelope
         .compression_override
         .clone()
@@ -55,6 +59,7 @@ pub(super) async fn resolve_combo_and_session(
         effective_compressor_id,
         compression_threshold,
         session_preferred,
+        budget_policy,
     }
 }
 

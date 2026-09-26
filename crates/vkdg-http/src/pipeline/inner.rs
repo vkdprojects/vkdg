@@ -58,6 +58,37 @@ pub(super) async fn run_pipeline_inner(
     // 2. Combo resolution + session stickiness ────────────────────────────────
     let csr = resolve_combo_and_session(pipeline, &ctx.envelope).await;
 
+    // 2b. Budget cap check ─────────────────────────────────────────────────────
+    // Reject before routing or any upstream call if the estimated cost exceeds
+    // the combo budget. Placed here so a budget rejection is cheap and does not
+    // consume routing, connection, or credential resources.
+    // Plausible wrong impl: check happens after the upstream call, so the budget
+    // is enforced too late and costs are already incurred.
+    if let Some(budget) = &csr.budget_policy {
+        if let Some(max_cost) = budget.max_cost_microdollars {
+            let estimated_tokens: u64 = if let Operation::Conversation(conv_req) = &operation {
+                conv_req
+                    .messages
+                    .iter()
+                    .map(|m| match &m.content {
+                        vkdg_operations::MessageContent::Text(s) => (s.len() as u64) / 4,
+                        _ => 50,
+                    })
+                    .sum()
+            } else {
+                0
+            };
+            // Rough rate: $3/M tokens = 3 microdollars per token.
+            let estimated_cost_microdollars = estimated_tokens * 3;
+            if estimated_cost_microdollars > max_cost {
+                return Err(VkdgError::BudgetExceeded {
+                    estimated_usd: estimated_cost_microdollars as f64 / 1_000_000.0,
+                    limit_usd: max_cost as f64 / 1_000_000.0,
+                });
+            }
+        }
+    }
+
     // 3. Route ─────────────────────────────────────────────────────────────────
     let filter = if excluded.is_empty() {
         EligibilityFilter::default()
@@ -178,7 +209,6 @@ pub(super) async fn run_pipeline_inner(
         &csr.effective_compressor_id,
     )
     .await;
-
     // 6. Request deduplication ─────────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
     // we still proceed (Phase D: register-and-proceed).  Phase E will add the
@@ -602,6 +632,118 @@ mod tests {
         assert_eq!(
             result_both, "Be concise.\n\nYou are a helpful assistant.",
             "separator must be exactly two newlines"
+        );
+    }
+
+    // Plausible wrong impl: budget check happens after the upstream call (or not at all),
+    // so a request that exceeds the cost cap still incurs charges before being rejected.
+    // This test defeats it: a combo with max_cost_microdollars=0 must produce 402 before
+    // any upstream attempt, proved by the pipeline never reaching step 8 (no catalog).
+    #[tokio::test]
+    async fn budget_exceeded_returns_402_before_upstream() {
+        use vkdg_combos::{BudgetPolicy, Combo, ComboResolver};
+        use vkdg_routing::StrategyKind;
+
+        let combo = Combo {
+            id: "zero-budget".into(),
+            match_patterns: vec!["zero-budget".into()],
+            strategy: StrategyKind::FallbackChain,
+            targets: vec![],
+            compression: None,
+            cache: None,
+            budget: Some(BudgetPolicy {
+                max_cost_microdollars: Some(0), // any non-empty request exceeds this
+                overflow: "strict".into(),
+            }),
+            mode_pack: None,
+        };
+        let mut state = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(vec![])),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(StubAdapter),
+        );
+        state.combo_resolver = Some(Arc::new(ComboResolver::new(vec![combo])));
+        let pipeline = Arc::new(state);
+
+        // Build a request with a non-trivial message so estimated_tokens > 0
+        // and estimated_cost_microdollars (tokens * 3) > 0 = max_cost.
+        use vkdg_operations::{Message, MessageContent, Role};
+        let op = Operation::Conversation(ConversationRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello world".into()),
+            }],
+            tools: vec![],
+            max_tokens: Some(100),
+            temperature: None,
+            stream: false,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+        });
+
+        let ctx = make_ctx("zero-budget");
+        let resp = run_conversation_pipeline(pipeline, ctx, op).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            402,
+            "combo with max_cost=0 and non-empty message must return 402 Payment Required"
+        );
+    }
+
+    // Plausible wrong impl: pipeline panics or returns 500 when the provider adapter's
+    // prepare() returns Err, instead of cleanly mapping it to an HTTP error.
+    // This test defeats it by driving the pipeline all the way to step 8 (adapter
+    // prepare) via a real route + connection, confirming StubAdapter's Err propagates
+    // as a non-panicking 500 response.
+    #[tokio::test]
+    async fn adapter_prepare_error_propagates_as_500() {
+        use vkdg_connections::{AuthKind, ConnectionConfig, ProviderKind};
+        use vkdg_core::CapabilitySet;
+        use vkdg_routing::{RouteConfig, RouteId, StrategyKind};
+
+        let conn_id = ConnectionId("stub-conn".into());
+        let conn_config = ConnectionConfig {
+            id: conn_id.clone(),
+            provider: ProviderKind::Custom {
+                base_url: "http://127.0.0.1:0".into(),
+            },
+            auth: AuthKind::ApiKey {
+                env_var: "HOME".into(), // always set on Unix; credential step passes → adapter reached
+            },
+            models: vec!["stub-model".into()],
+            max_concurrent: 100,
+            weight: 1,
+            tags: vec![],
+            capabilities: CapabilitySet::default(),
+        };
+        let route = RouteConfig {
+            id: RouteId("stub-route".into()),
+            match_models: vec!["stub-model".into()],
+            strategy: StrategyKind::FallbackChain,
+            targets: vec![conn_id],
+            plugin_hooks: Default::default(),
+        };
+
+        let pipeline = Arc::new(PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![route])),
+            Arc::new(ConnectionCatalog::new(vec![conn_config])),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(StubAdapter),
+        ));
+
+        let ctx = make_ctx("stub-model");
+        let resp = run_conversation_pipeline(pipeline, ctx, make_conv_op()).await;
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "adapter prepare() returning Err must produce 500, not panic"
         );
     }
 }

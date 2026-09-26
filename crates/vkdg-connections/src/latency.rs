@@ -131,4 +131,37 @@ mod tests {
         t.record(&b, 500).await;
         assert!(t.p50_ms(&a).await.unwrap() < t.p50_ms(&b).await.unwrap());
     }
+
+    // Plausible wrong impl: alpha clamp not applied — with_alpha(0.0) uses 0.0
+    // and produces NaN/zero scores because 0.0 * x + 1.0 * 0.0 = 0.0 forever.
+    #[tokio::test]
+    async fn alpha_zero_clamped_to_minimum() {
+        let t = LatencyTracker::with_alpha(0.0);
+        let conn = ConnectionId("c".into());
+        t.record(&conn, 100).await;
+        t.record(&conn, 200).await;
+        // Clamped to 0.01; EWMA must be finite and positive, not NaN or zero.
+        let p50 = t.p50_ms(&conn).await.unwrap();
+        assert!(
+            p50 > 0,
+            "clamped alpha must produce valid EWMA, not NaN or zero"
+        );
+    }
+
+    // Plausible wrong impl: EWMA does not converge toward steady-state value
+    // (alpha applied in wrong direction, e.g. (1-alpha)*new + alpha*old).
+    #[tokio::test]
+    async fn ewma_converges_toward_steady_state() {
+        let t = LatencyTracker::with_alpha(0.2);
+        let conn = ConnectionId("c".into());
+        // Feed 30 samples of 100ms; after convergence EWMA must be within 10ms of 100.
+        for _ in 0..30 {
+            t.record(&conn, 100).await;
+        }
+        let p50 = t.p50_ms(&conn).await.unwrap();
+        assert!(
+            (p50 as i64 - 100).abs() < 10,
+            "EWMA must converge to ~100ms after 30 samples, got {p50}"
+        );
+    }
 }

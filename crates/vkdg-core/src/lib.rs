@@ -132,6 +132,9 @@ pub enum VkdgError {
     #[error("capability unsupported: {capability}")]
     CapabilityUnsupported { capability: String },
 
+    #[error("budget exceeded: request estimated cost {estimated_usd} exceeds limit {limit_usd}")]
+    BudgetExceeded { estimated_usd: f64, limit_usd: f64 },
+
     #[error("no eligible connection")]
     NoEligibleConnection,
 
@@ -158,6 +161,7 @@ impl VkdgError {
             // 429 Too Many Requests: capacity rejection, not server error
             VkdgError::AdmissionRejected { .. } => 429,
             VkdgError::CapabilityUnsupported { .. } => 400,
+            VkdgError::BudgetExceeded { .. } => 402,
             VkdgError::NoEligibleConnection => 502,
             VkdgError::UpstreamError { code, .. } => *code,
             VkdgError::PluginError { .. } => 500,

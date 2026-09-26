@@ -8,9 +8,12 @@
 use std::sync::Arc;
 use vkdg_connections::{
     AuthKind, Connection, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
+    SessionRegistry,
 };
 use vkdg_core::pipeline::PipelineCtx;
-use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
+use vkdg_core::{
+    ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, SessionKey, TenantId,
+};
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::upstream::HttpClient;
 use vkdg_http::{AdmissionGuard, PipelineState};
@@ -546,5 +549,93 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
         fake2.call_count(),
         1,
         "fallback candidate must be attempted once"
+    );
+}
+
+/// Plausible wrong impl: stale session pin causes NoEligibleConnection (502)
+/// instead of falling through to route-based selection when the pinned
+/// connection no longer exists in the catalog.
+#[tokio::test]
+async fn session_stickiness_stale_pin_falls_through_to_routing() {
+    std::env::set_var("VKDG_SMOKE_KEY", "test-token");
+
+    let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk {
+        content: "ok".into(),
+    })
+    .await;
+
+    let registry = SessionRegistry::new(3600);
+    // Pin the session to a connection that does NOT exist in the catalog.
+    registry
+        .pin(
+            "sess-stale".into(),
+            ConnectionId("non-existent-conn".into()),
+        )
+        .await;
+
+    let conn_id = ConnectionId("real-conn".into());
+    let config = ConnectionConfig {
+        id: conn_id.clone(),
+        provider: ProviderKind::Custom {
+            base_url: fake.base_url.clone(),
+        },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_SMOKE_KEY".into(),
+        },
+        models: vec!["claude-*".into()],
+        max_concurrent: 10,
+        weight: 1,
+        tags: vec![],
+        capabilities: CapabilitySet::default(),
+    };
+    let route = RouteConfig {
+        id: RouteId("real".into()),
+        match_models: vec!["claude-*".into()],
+        strategy: StrategyKind::RoundRobin,
+        targets: vec![conn_id],
+        plugin_hooks: PluginHooks::default(),
+    };
+    let mut pipeline = PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(10)),
+        Arc::new(Router::new(vec![route])),
+        Arc::new(ConnectionCatalog::new(vec![config])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(AnthropicAdapter),
+    );
+    // SessionRegistry::new() already returns Arc<Self>; no extra wrapping needed.
+    pipeline.session_registry = Some(registry);
+    let pipeline = Arc::new(pipeline);
+
+    let envelope = RequestEnvelope {
+        request_id: RequestId::new(),
+        client_id: ClientId("test".into()),
+        tenant_id: TenantId("default".into()),
+        session_key: Some(SessionKey("sess-stale".into())),
+        api_type: ApiType::AnthropicMessages,
+        model_requested: "claude-3-5-haiku-20241022".into(),
+        deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: false,
+        include_think_tags: false,
+        client_ip: None,
+    };
+    let (_, op) = make_ctx("claude-3-5-haiku-20241022");
+    let ctx = PipelineCtx::new(envelope);
+
+    let resp = run_conversation_pipeline(pipeline, ctx, op).await;
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "stale session pin must fall through to route-based selection, got {}",
+        resp.status()
+    );
+    assert_eq!(
+        fake.call_count(),
+        1,
+        "real connection must be called exactly once"
     );
 }

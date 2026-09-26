@@ -268,3 +268,81 @@ What works today:
 What requires Phase E:
 - Actually calling `prepare()` or `name()` inside a loaded component
 - Passing `operation_json` / `config_json` across the WASM boundary
+
+## Minimal working example (Rust)
+
+A compressor plugin that removes lines starting with `//` from text messages:
+
+### Setup
+
+```bash
+cargo install cargo-component
+cargo component new vkdg-strip-comments --lib
+cd vkdg-strip-comments
+```
+
+### Cargo.toml additions
+
+```toml
+[package.metadata.component]
+package = "vkdg:strip-comments"
+
+[dependencies]
+vkdg-plugin-sdk = "0.1"  # not yet published; use the wit/ files directly for now
+```
+
+### src/lib.rs
+
+```rust
+// Implements vkdg:plugin@0.1.0 compressor-plugin world.
+// Removes comment lines (// ...) from user/assistant text messages.
+// Phase E: compile with cargo component build --release to get the .wasm file.
+
+// wit_bindgen::generate! is the Phase E path.
+// For now: the gateway call_prepare() stub returns Err — this example
+// shows the INTENDED implementation shape, not a runnable binary yet.
+
+pub fn name() -> String {
+    "strip-comments".into()
+}
+
+pub fn estimate_tokens(messages: &[vkdg_wit::Message]) -> u32 {
+    messages.iter().map(|m| m.content.len() as u32 / 4).sum()
+}
+
+pub fn compress(
+    mut req: vkdg_wit::Request,
+    _budget: u32,
+) -> Result<vkdg_wit::CompressedRequest, vkdg_wit::PluginError> {
+    let original = estimate_tokens(&req.messages);
+    for msg in req.messages.iter_mut() {
+        if matches!(msg.role.as_str(), "system") { continue; }
+        msg.content = msg.content.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    let compressed = estimate_tokens(&req.messages);
+    Ok(vkdg_wit::CompressedRequest {
+        messages: req.messages,
+        system: req.system,
+        report: vkdg_wit::CompressionReport {
+            tokens_before: original,
+            tokens_after: compressed,
+            algorithm: "strip-comments".into(),
+            ratio: if original > 0 { (original - compressed) as f32 / original as f32 } else { 0.0 },
+            lossy: original != compressed,
+        },
+    })
+}
+```
+
+Install the plugin:
+
+```bash
+# Build (once Phase E wires cargo-component)
+cargo component build --release
+vkdg plugin install --manifest plugin.toml ./target/wasm32-wasip2/release/vkdg_strip_comments.wasm
+```
+
+This example demonstrates: `name()`, `estimate_tokens()`, `compress()`, correct system-message preservation, and the compression report shape.

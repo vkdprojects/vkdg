@@ -1,3 +1,26 @@
+// VKDG Plugin Interface — vkdg:plugin@0.1.0
+//
+// VERSIONING
+// The package version (0.1.0) is the ABI version. Patch bumps (0.1.x) are
+// backwards-compatible. Minor bumps (0.2.0) may add types; they do not remove
+// or rename existing items. Major bumps are breaking. A plugin compiled against
+// 0.1.x loads on any host supporting 0.1.y where y >= x.
+//
+// ERROR CONVENTIONS
+// plugin-error variants carry freeform strings EXCEPT:
+// - rate-limit errors from auth-plugin::check-rate-limit use "retry-after:N"
+//   format where N is seconds: e.g. rejected("retry-after:30")
+// - not-applicable means "skip me, I do not handle this request type"
+//
+// SIGNAL NAMESPACES
+// The signal-map type (list<tuple<string, string>>) uses namespaced keys:
+//   compress:tokens_before    u32 as string, set by compressor plugins
+//   compress:tokens_after     u32 as string
+//   compress:algorithm        string name ("caveman", "rtk", etc.)
+//   auth:tenant_id            string, set by auth plugins
+//   router:cost_estimate      microdollars as string
+// Reserve your namespace with a PR to contracts/admin/openapi.yaml.
+
 /// Core domain types shared across all plugin interfaces.
 /// The gateway owns HTTP, I/O, credentials, and config.
 /// Plugins are pure transform functions with no ambient authority.

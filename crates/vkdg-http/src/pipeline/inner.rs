@@ -1,6 +1,8 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use futures::stream::{FuturesUnordered, StreamExt};
+
 use axum::response::Response;
 use bytes::Bytes;
 use http::header;
@@ -151,10 +153,24 @@ pub(super) async fn run_pipeline_inner(
                 connection_id: candidates[idx].clone(),
                 route_id: RouteId("auto".into()),
                 excluded: vec![],
+                fusion_targets: vec![],
             }
         }
         Err(e) => return Err(e),
     };
+    // Fusion fast-path: fan-out to all targets in parallel, return first success.
+    if route_result.fusion_targets.len() > 1 {
+        return run_fusion_dispatch(
+            pipeline,
+            ctx,
+            operation,
+            route_result.fusion_targets,
+            csr.compression_threshold,
+            &csr.effective_compressor_id,
+        )
+        .await;
+    }
+
     // Priority: session pin > combo redirect > routed connection.
     let connection_id = if let Some(preferred) = csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check
@@ -390,6 +406,106 @@ pub(super) async fn run_pipeline_inner(
         start_time,
         &operation,
     );
+    Ok(resp)
+}
+
+// ── Fusion dispatch ───────────────────────────────────────────────────────────
+
+/// Fan-out to all `fusion_targets` in parallel; return the first successful response.
+/// Operation is prepared once and shared across all branches.
+async fn run_fusion_dispatch(
+    pipeline: &PipelineState,
+    ctx: &mut PipelineCtx,
+    mut operation: Operation,
+    fusion_targets: Vec<ConnectionId>,
+    compression_threshold: u32,
+    effective_compressor_id: &Option<String>,
+) -> Result<Response, VkdgError> {
+    // Tag ctx with the primary target for tracing/decision-record.
+    ctx.connection_id = Some(fusion_targets[0].clone());
+    ctx.transition(AttemptState::AccountReserved);
+
+    // Prepare operation once — compression, system prompt, memory injection.
+    operation = prepare_operation(
+        pipeline,
+        operation,
+        &ctx.envelope,
+        compression_threshold,
+        effective_compressor_id,
+    )
+    .await;
+
+    // Race all targets; return first Ok, or NoEligibleConnection if all fail.
+    let mut futs: FuturesUnordered<_> = fusion_targets
+        .into_iter()
+        .map(|conn_id| {
+            let operation = operation.clone();
+            async move { fusion_one_target(pipeline, conn_id, operation).await }
+        })
+        .collect();
+
+    let mut last_err = VkdgError::NoEligibleConnection;
+    while let Some(result) = futs.next().await {
+        match result {
+            Ok(resp) => return Ok(resp),
+            Err(e) => {
+                tracing::debug!(error = %e, "fusion branch failed");
+                last_err = e;
+            }
+        }
+    }
+    Err(last_err)
+}
+
+/// Execute a single upstream call for one fusion target.
+async fn fusion_one_target(
+    pipeline: &PipelineState,
+    conn_id: ConnectionId,
+    operation: Operation,
+) -> Result<Response, VkdgError> {
+    let conn_arc = pipeline
+        .catalog
+        .get(&conn_id)
+        .ok_or(VkdgError::NoEligibleConnection)?;
+    let (config, _guard) = {
+        let conn = conn_arc.read().await;
+        let guard = conn.acquire().ok_or(VkdgError::NoEligibleConnection)?;
+        (conn.config.clone(), guard)
+    };
+
+    let token = pipeline.credentials.get_token(&config).await?;
+
+    let prepared = pipeline
+        .provider_adapter
+        .prepare(&operation, &config, &token)?;
+    let is_streaming = prepared.is_streaming;
+    let upstream_req = UpstreamRequest {
+        method: http::Method::POST,
+        url: prepared.url,
+        headers: prepared.headers,
+        body: prepared.body,
+    };
+
+    let upstream_resp = pipeline
+        .http_client
+        .send(upstream_req, is_streaming)
+        .await?;
+
+    let resp = match upstream_resp {
+        UpstreamResponse::Complete { status, body } => axum::response::Response::builder()
+            .status(http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(body))
+            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+        UpstreamResponse::Streaming { status: _, body } => axum::response::Response::builder()
+            .status(http::StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .header("cache-control", "no-cache")
+            .header("x-accel-buffering", "no")
+            .body(axum::body::Body::from_stream(body))
+            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+    };
+
     Ok(resp)
 }
 

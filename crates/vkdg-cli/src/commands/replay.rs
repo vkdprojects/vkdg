@@ -15,6 +15,8 @@
 //! ```
 //!
 //! Sends the request to VKDG_BASE_URL (default: http://127.0.0.1:8080).
+//! Pass `self_test: true` (or `--self-test` on the CLI) to start an in-process
+//! mock gateway instead.
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -41,11 +43,84 @@ struct FixtureExpected {
     body_contains: Option<String>,
 }
 
-pub async fn run(fixture_path: &str, base_url: Option<&str>) -> Result<()> {
-    let base = base_url
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("VKDG_BASE_URL").ok())
-        .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+// ── Self-test in-process server ───────────────────────────────────────────────
+
+async fn start_self_test_server() -> (String, tokio::sync::oneshot::Sender<()>) {
+    use axum::{
+        routing::{get, post},
+        Json, Router,
+    };
+    use tokio::net::TcpListener;
+
+    let app = Router::new()
+        .route(
+            "/health",
+            get(|| async { Json(serde_json::json!({"status": "ok"})) }),
+        )
+        .route(
+            "/vkdg/v1/info",
+            get(|| async { Json(serde_json::json!({"version": "0.1.0"})) }),
+        )
+        .route(
+            "/v1/messages",
+            post(|| async {
+                Json(serde_json::json!({
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "self-test response"}],
+                    "model": "claude-3-5-haiku-20241022",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 5, "output_tokens": 5}
+                }))
+            }),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(|| async {
+                Json(serde_json::json!({
+                    "id": "chatcmpl-test",
+                    "object": "chat.completion",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "self-test"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 5}
+                }))
+            }),
+        );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await
+            .ok();
+    });
+    // Give the server a moment to start accepting connections.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    (base_url, tx)
+}
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+pub async fn run(fixture_path: &str, base_url: Option<&str>, self_test: bool) -> Result<()> {
+    let (base, _shutdown) = if self_test {
+        let (url, tx) = start_self_test_server().await;
+        (url, Some(tx))
+    } else {
+        let url = base_url
+            .map(|s| s.to_string())
+            .or_else(|| std::env::var("VKDG_BASE_URL").ok())
+            .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+        (url, None)
+    };
 
     let fixture_text = std::fs::read_to_string(fixture_path)
         .map_err(|e| anyhow::anyhow!("cannot read fixture '{}': {}", fixture_path, e))?;
@@ -109,4 +184,40 @@ pub async fn run(fixture_path: &str, base_url: Option<&str>) -> Result<()> {
 
     println!("OK");
     Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Plausible wrong impl: --self-test starts a server that doesn't respond,
+    // causing the replay to hang or return a connection error.
+    #[tokio::test]
+    async fn self_test_replay_health_check_passes() {
+        let mut fixture = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            fixture.as_file_mut(),
+            b"request:\n  method: GET\n  path: /health\nexpected:\n  status: 200\n  body_contains: 'status'",
+        )
+        .unwrap();
+        let result = run(fixture.path().to_str().unwrap(), None, true).await;
+        assert!(result.is_ok(), "self-test replay must pass: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn self_test_replay_messages_passes() {
+        let mut fixture = tempfile::NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            fixture.as_file_mut(),
+            b"request:\n  method: POST\n  path: /v1/messages\n  headers:\n    content-type: application/json\n  body: |\n    {\"model\": \"claude-3-5-haiku-20241022\", \"messages\": [{\"role\": \"user\", \"content\": \"ping\"}], \"max_tokens\": 10}\nexpected:\n  status: 200\n  body_contains: '\"role\":\"assistant\"'",
+        )
+        .unwrap();
+        let result = run(fixture.path().to_str().unwrap(), None, true).await;
+        assert!(
+            result.is_ok(),
+            "self-test messages replay must pass: {result:?}"
+        );
+    }
 }

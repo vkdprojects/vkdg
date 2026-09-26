@@ -52,6 +52,9 @@ enum Command {
         /// Override the gateway base URL (default: VKDG_BASE_URL or http://127.0.0.1:8080).
         #[arg(long)]
         base_url: Option<String>,
+        /// Start an in-process mock gateway instead of connecting to a running instance.
+        #[arg(long)]
+        self_test: bool,
     },
 }
 
@@ -106,8 +109,12 @@ async fn main() -> Result<()> {
         } => {
             vkdg_cli::commands::explain::run(&id, json).await?;
         }
-        Command::Replay { fixture, base_url } => {
-            vkdg_cli::commands::replay::run(&fixture, base_url.as_deref()).await?;
+        Command::Replay {
+            fixture,
+            base_url,
+            self_test,
+        } => {
+            vkdg_cli::commands::replay::run(&fixture, base_url.as_deref(), self_test).await?;
         }
     }
     Ok(())

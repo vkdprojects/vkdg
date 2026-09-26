@@ -17,6 +17,10 @@ rusqlite     = { workspace = true }
 reqwest      = { workspace = true }
 tracing      = { workspace = true }
 
+
+[dev-dependencies]
+axum = { workspace = true }
+
 [lib]
 doctest = false
 

@@ -155,4 +155,141 @@ mod tests {
             "high-quota connection must be preferred when hints are fed to scorer"
         );
     }
+
+    // Plausible wrong impl: Fusion strategy returns NoEligibleConnection when targets exist.
+    #[tokio::test]
+    async fn fusion_strategy_returns_route_result_with_all_targets() {
+        let route = RouteConfig {
+            id: RouteId("fusion-route".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Fusion {
+                max_candidates: Some(2),
+            },
+            targets: vec![
+                vkdg_core::ConnectionId("conn-a".into()),
+                vkdg_core::ConnectionId("conn-b".into()),
+                vkdg_core::ConnectionId("conn-c".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-5-haiku-20241022");
+        let result = router
+            .route(
+                &envelope,
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        // max_candidates=2 → exactly 2 targets in fusion_targets
+        assert_eq!(
+            r.fusion_targets.len(),
+            2,
+            "Fusion with max_candidates=2 must return 2 targets"
+        );
+        assert_eq!(
+            r.connection_id,
+            vkdg_core::ConnectionId("conn-a".into()),
+            "primary connection must be the first eligible target"
+        );
+    }
+
+    // Plausible wrong impl: Fusion with no excluded connections still returns fewer than all targets.
+    #[tokio::test]
+    async fn fusion_strategy_no_max_returns_all_targets() {
+        let route = RouteConfig {
+            id: RouteId("fusion-all".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Fusion {
+                max_candidates: None,
+            },
+            targets: vec![
+                vkdg_core::ConnectionId("a".into()),
+                vkdg_core::ConnectionId("b".into()),
+                vkdg_core::ConnectionId("c".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-opus-20240229");
+        let result = router
+            .route(
+                &envelope,
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(
+            r.fusion_targets.len(),
+            3,
+            "Fusion with no max must return all 3 targets"
+        );
+    }
+
+    // Plausible wrong impl: Fusion includes excluded connections in fusion_targets.
+    #[tokio::test]
+    async fn fusion_strategy_excludes_filtered_connections() {
+        let route = RouteConfig {
+            id: RouteId("fusion-excl".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Fusion {
+                max_candidates: None,
+            },
+            targets: vec![
+                vkdg_core::ConnectionId("a".into()),
+                vkdg_core::ConnectionId("b".into()),
+                vkdg_core::ConnectionId("c".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-5-sonnet-20241022");
+        // Exclude "a" — only "b" and "c" should be in fusion_targets.
+        let mut filter = EligibilityFilter::default();
+        filter
+            .excluded_connections
+            .push(vkdg_core::ConnectionId("a".into()));
+        let result = router
+            .route(&envelope, &filter, &RoutingHints::default())
+            .await;
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert_eq!(r.fusion_targets.len(), 2);
+        assert!(
+            !r.fusion_targets
+                .contains(&vkdg_core::ConnectionId("a".into())),
+            "excluded connection must not appear in fusion_targets"
+        );
+    }
+
+    // Plausible wrong impl: Fusion returns Ok when all targets are excluded.
+    #[tokio::test]
+    async fn fusion_strategy_all_excluded_returns_no_eligible() {
+        let route = RouteConfig {
+            id: RouteId("fusion-empty".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::Fusion {
+                max_candidates: None,
+            },
+            targets: vec![vkdg_core::ConnectionId("only".into())],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("claude-3-haiku-20240307");
+        let mut filter = EligibilityFilter::default();
+        filter
+            .excluded_connections
+            .push(vkdg_core::ConnectionId("only".into()));
+        let result = router
+            .route(&envelope, &filter, &RoutingHints::default())
+            .await;
+        assert!(
+            matches!(result, Err(vkdg_core::VkdgError::NoEligibleConnection)),
+            "Fusion with all targets excluded must return NoEligibleConnection"
+        );
+    }
 }

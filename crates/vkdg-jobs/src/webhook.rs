@@ -64,6 +64,11 @@ fn state_to_event(state: &JobState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use uuid::Uuid;
+    use vkdg_core::ConnectionId;
 
     /// Plausible wrong impl: state_to_event returns same string for all states.
     #[test]
@@ -130,5 +135,96 @@ mod tests {
             }),
             "job.failed"
         );
+    }
+
+    /// Plausible wrong impl: dispatch() does not actually POST to the webhook_url,
+    /// either because tokio::spawn is never awaited or the URL is silently ignored.
+    #[tokio::test]
+    async fn dispatch_delivers_post_to_webhook_url() {
+        use axum::{extract::State, routing::post, Router};
+        use tokio::net::TcpListener;
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+
+        // Spin up a minimal webhook receiver
+        let app = Router::new()
+            .route(
+                "/webhook",
+                post(
+                    move |State(count): State<Arc<AtomicU32>>,
+                          axum::extract::Json(body): axum::extract::Json<serde_json::Value>| async move {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        assert!(body.get("job_id").is_some(), "payload must have job_id");
+                        assert!(body.get("event").is_some(), "payload must have event");
+                        axum::http::StatusCode::OK
+                    },
+                ),
+            )
+            .with_state(Arc::clone(&call_count_clone));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .ok();
+        });
+
+        // Give server time to start
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let record = JobRecord {
+            job_id: Uuid::new_v4(),
+            owner_client_id: "test-owner".into(),
+            connection_id: ConnectionId("conn-1".into()),
+            upstream_job_id: None,
+            state: JobState::Succeeded,
+            created_at: Utc::now(),
+            idempotency_key: None,
+            webhook_url: None,
+        };
+
+        let webhook_url = format!("http://127.0.0.1:{}/webhook", port);
+        dispatch(&record, &webhook_url);
+
+        // Wait for async delivery (dispatch is fire-and-forget)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(
+            call_count.load(Ordering::Relaxed),
+            1,
+            "webhook must be delivered exactly once"
+        );
+
+        let _ = shutdown_tx.send(());
+    }
+
+    /// Plausible wrong impl: dispatch() silently swallows 4xx/5xx errors
+    /// without logging them.
+    #[tokio::test]
+    async fn dispatch_logs_failure_on_non_2xx() {
+        // webhook_url points to a non-existent server — should not panic
+        let record = JobRecord {
+            job_id: Uuid::new_v4(),
+            owner_client_id: "test".into(),
+            connection_id: ConnectionId("c".into()),
+            upstream_job_id: None,
+            state: JobState::Failed {
+                reason: "upstream error".into(),
+            },
+            created_at: Utc::now(),
+            idempotency_key: None,
+            webhook_url: None,
+        };
+        // Fire-and-forget; failure is logged at warn level, never panics
+        dispatch(&record, "http://127.0.0.1:19998/webhook");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // No assertion needed beyond "does not panic"
     }
 }

@@ -1,0 +1,10 @@
+request:
+  method: POST
+  path: /v1/messages
+  headers:
+    content-type: application/json
+  body: |
+    {"model": "claude-3-5-haiku-20241022", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 10}
+expected:
+  status: 200
+  body_contains: '"role":"assistant"'

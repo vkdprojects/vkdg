@@ -41,6 +41,11 @@ pub enum StrategyKind {
     Scored {
         mode_pack: String,
     },
+    /// Fan-out to up to `max_candidates` targets in parallel; return the fastest response.
+    /// `None` means fan out to all eligible targets.
+    Fusion {
+        max_candidates: Option<usize>,
+    },
 }
 
 // ── Route config ──────────────────────────────────────────────────────────────
@@ -91,4 +96,7 @@ pub struct RouteResult {
     pub connection_id: ConnectionId,
     pub route_id: RouteId,
     pub excluded: Vec<ExcludedCandidate>,
+    /// Non-empty only for Fusion routes. Contains all targets to dispatch in parallel.
+    /// The pipeline races these and returns the first successful response.
+    pub fusion_targets: Vec<ConnectionId>,
 }

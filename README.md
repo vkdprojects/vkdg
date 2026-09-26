@@ -1,249 +1,198 @@
-# VKDG
+<div align="center">
+  <img src="apps/console/static/logo.svg" width="96" alt="VKDG" />
 
-**One endpoint for agents and applications. A real contract behind every route.**
+  # VKDG
 
-VKDG is an AI gateway in Rust. It receives requests from Claude Code, Codex, and OpenAI-compatible clients, routes them to one of multiple upstream provider accounts, and streams responses back. Every routing decision is recorded with its reasons.
+  **Route your AI tools through one endpoint on your own server.**
 
-> **Status:** Phase D complete + parity sprint. 247 tests, 0 failing, 0 clippy warnings. 22 crates. Phase E (OAuth2 PKCE, WASM bindgen, scale) in progress.
+  Claude Code, Codex, Kiro, Cursor — one URL, your infrastructure, your keys.
 
-[The idea](#the-idea) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Endpoints](#endpoints) · [Protocols](#protocols-and-capabilities) · [Plugin system](#plugin-system) · [Phases](#phases) · [Known gaps](#known-gaps) · [Development](#development) · [Architecture](VKDG-architecture-v0.md)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+  [![Tests](https://img.shields.io/badge/tests-290%20passing-brightgreen)](#)
+  [![Rust](https://img.shields.io/badge/rust-1.80+-orange)](https://rust-lang.org)
 
----
-
-## The idea
-
-Point Claude Code, another agent, or your own application at one address. Give each client its own VKDG credential. Connect the upstream accounts and providers you are allowed to use. VKDG handles the route between them.
-
-This sounds simple until a client sends a tool call that one provider cannot represent, two agents use the same OAuth account concurrently, or an upstream stream fails after bytes have already reached the client. VKDG is designed around those cases.
-
-| At the boundary | VKDG's responsibility |
-| --- | --- |
-| Different client protocols | Decode the incoming wire format and return a response in that same format. |
-| Multiple provider accounts | Choose an eligible connection, considering capability, quota, cooldown, policy, and session affinity. |
-| Streaming | Preserve event semantics, propagate backpressure, and never splice a second provider into a committed response. |
-| OAuth credentials | Keep upstream tokens in the gateway, refresh once per connection under concurrency, and issue separate client credentials. |
-| Failures | Report an unsupported capability before sending the request; explain routing, fallback, and errors with a request ID. |
-| Operations | Manage connections, keys, routes, and diagnostics from the admin console or the same versioned admin API. |
-
-VKDG does not execute an agent's tools, own its workspace, or store its conversation by default. Sharing an upstream OAuth account does not increase that account's quota or override provider rules.
+  [Docs](#documentation) · [Quick start](#quick-start) · [Providers](#providers) · [Roadmap](./ROADMAP.md) · [Contributing](#contributing)
+</div>
 
 ---
 
-## How it works
-
-```mermaid
-flowchart TB
-  C["Agents and applications"] --> I["Protocol ingress"]
-  I --> R["Policy and routing"]
-  R --> A["Provider connection"]
-  A --> P["Upstream provider"]
-  R --> O["Decision record"]
-  U["SvelteKit console"] --> M["Rust admin API /admin/v1"]
-  M --> R
-```
-
-The Rust gateway owns identity, admission, routing, transport, credentials, stream lifecycle, and observability. The SvelteKit console talks to its administrative API through a server-side BFF layer. The gateway remains operational if the console process is down. Configuration changes are validated, then activated as an immutable revision — an in-flight request keeps the snapshot it started with.
-
-The key routing unit is a **provider connection**: a particular provider account with its own credentials, limits, health, and model capabilities. A 429 on one connection does not take down other accounts on that provider.
+![VKDG terminal startup banner showing the gateway URL and bootstrap token](assets/demo.png)
 
 ---
+
+VKDG is a self-hosted AI gateway. It sits between your AI tools and the upstream providers (Anthropic, OpenAI, Groq, etc.), handles routing and fallback, manages your keys in one place, and gives you a web console to see what's happening.
+
+One 13MB binary. No Node, no Python, no Docker required. Run it on a $4/month VPS.
 
 ## Quick start
 
 ```bash
-cargo build --release -p vkdg
+# macOS / Linux — download the latest release
+curl -fsSL https://get.vkdg.dev/install.sh | sh
 
-# Start with a config file
-./target/release/vkdg serve --config vkdg.toml
-
-# Or with an environment variable (no config file needed)
-ANTHROPIC_API_KEY=sk-ant-... ./target/release/vkdg serve
-
-# Validate config before starting
-./target/release/vkdg config check --config vkdg.toml
+# Or build from source
+git clone https://github.com/vkdprojects/vkdg
+cd vkdg && just build
 ```
 
-Minimal `vkdg.toml` (see [docs/sdk/config-reference.md](docs/sdk/config-reference.md) for all options):
-
-```toml
-listen = "0.0.0.0:8080"
-
-[[connections]]
-id = "anthropic-default"
-provider = "anthropic"
-models = ["claude-*"]
-max_concurrent = 100
-
-  [connections.auth]
-  type = "api_key"
-  env_var = "ANTHROPIC_API_KEY"
-
-[[routes]]
-id = "default"
-match_models = ["claude-*"]
-strategy = "round_robin"
-targets = ["anthropic-default"]
-```
-
-Send a request using the Anthropic wire protocol:
+Start it:
 
 ```bash
-curl http://localhost:8080/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-haiku-20241022",
-    "max_tokens": 256,
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+export ANTHROPIC_API_KEY=sk-ant-...
+vkdg serve
 ```
 
-Or the OpenAI wire protocol:
+```
+  ╔══════════════════════════════════════════════════════╗
+  ║   ▶  VKDG  v0.1.0                                   ║
+  ╠══════════════════════════════════════════════════════╣
+  ║   Gateway   http://localhost:8080                    ║
+  ║   Console   http://localhost:9090                    ║
+  ╠══════════════════════════════════════════════════════╣
+  ║   Bootstrap token (use once to sign in):            ║
+  ║   a4f7c2b1-...                                      ║
+  ╚══════════════════════════════════════════════════════╝
+```
+
+Open `http://localhost:9090`, paste the token, done. Point Claude Code at `http://localhost:8080`.
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-haiku-20241022",
-    "messages": [{"role": "user", "content": "Hello"}]
-  }'
+# Claude Code
+claude config set ANTHROPIC_BASE_URL http://localhost:8080
+
+# OpenAI SDK / Codex
+OPENAI_BASE_URL=http://localhost:8080 codex "..."
 ```
 
----
+## What it actually does
 
-## Endpoints
+You connect one or more provider accounts (API keys, or OAuth for code agents). VKDG routes requests to them based on rules you define — or nothing, if you just want a single passthrough. You see every request in the console, with the routing decision and timing.
 
-### Data plane (port 8080 by default)
+The useful parts:
 
-| Method | Path | Protocol | Description |
-| --- | --- | --- | --- |
-| `POST` | `/v1/messages` | Anthropic Messages | Conversation generation; streaming supported |
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions | Conversation generation; streaming supported |
-| `POST` | `/v1/images/generations` | OpenAI Images | Image generation |
-| `GET` | `/health` | — | Returns `{"status":"ok"}` when ready |
-| `GET` | `/vkdg/v1/info` | — | Gateway version |
-| `GET` | `/mcp` | MCP | Tool discovery |
+**Routing strategies** — round-robin, weighted split, fallback chain, lowest latency, fusion (parallel fan-out), prompt chain, auto (9-factor scoring). You define a "combo" that maps a model name to a strategy and a list of connections.
 
-### Admin plane (port 9090 by default, `VKDG_ADMIN_ADDR`)
+**Compression** — RTK compresses tool outputs (git status, test results, build logs) before they hit the context window. Caveman strips obvious whitespace. Together they save 15–95% on tool-heavy agents. Pluggable if you want to add your own rules.
 
-| Method | Path | Description |
-| --- | --- | --- |
-| `GET` | `/admin/v1/system` | Version, health, active config revision (no auth required) |
-| `POST` | `/admin/v1/session` | Exchange bootstrap token for a session cookie |
-| `DELETE` | `/admin/v1/session` | Revoke session |
-| `GET` | `/admin/v1/session/me` | Current session identity |
-| `GET` | `/admin/v1/connections` | List configured connections |
-| `GET` | `/admin/v1/connections/{id}` | Single connection status |
-| `GET/POST` | `/admin/v1/keys` | List / create client keys |
-| `DELETE` | `/admin/v1/keys/{id}` | Revoke a key |
-| `GET` | `/admin/v1/routes` | Active routing rules |
-| `GET` | `/admin/v1/routes/preview?model=` | Simulate routing without consuming quota |
-| `GET` | `/admin/v1/requests` | Recent requests, paginated |
-| `GET` | `/admin/v1/requests/{id}` | Single request with DecisionRecord |
+**OAuth code agents** — Claude Code, Codex, Kiro/Amazon Q, GitHub Copilot, Kimi, Antigravity don't use API keys — they use OAuth flows. VKDG handles the auth and token refresh so you connect once and it stays connected.
 
----
+**Streaming done right** — VKDG injects an error event if an upstream closes the connection mid-stream before `[DONE]`. Your client can detect the incomplete response instead of silently getting half an answer.
 
-## Protocols and capabilities
+**Provider plugins** — providers are Rust crates in `plugins/providers/`. Adding one doesn't touch the core. WIT/WASM interface for languages other than Rust (Phase 3).
 
-Compatibility is declared per client protocol × provider adapter × capability. A working text response is not evidence that tool calls, images, or streaming work on the same route. If a required feature cannot survive translation, that connection is excluded or the request fails with an explicit error.
+## Providers
 
-| Surface | Status |
-| --- | --- |
-| Anthropic Messages (`/v1/messages`) | Implemented: text, streaming, tool calls, image blocks, think-tag filtering |
-| OpenAI Chat Completions (`/v1/chat/completions`) | Implemented: text, streaming, parallel tool calls |
-| OpenAI Images (`/v1/images/generations`) | Implemented |
-| Video generation (`/v1/videos/generations`) | 202 Accepted + async job; polling and webhook pending |
-| VKDG native API | Designed; not yet exposed as HTTP endpoints |
+Built in:
 
----
+| API key | OAuth / device code |
+|---------|---------------------|
+| Anthropic | Claude Code |
+| OpenAI | OpenAI Codex |
+| Google Gemini | Kiro / Amazon Q |
+| Groq | Kimi Coding |
+| DeepSeek | GitHub Copilot |
+| Mistral | Antigravity (Google Cloud Code) |
+| Together AI | |
+| Fireworks AI | |
 
-## Plugin system
+Any OpenAI-compatible endpoint also works as a connection — Ollama, vLLM, LM Studio, custom deployments.
 
-Everything extensible is a plugin. Providers, routing strategies, compressors, cache backends, and auth handlers all implement the same WIT interfaces defined in `wit/`. The gateway owns HTTP, credentials, stream lifecycle, and observability. Plugins translate data.
+## Configuration
 
-**Built-in compressors:** `truncate`, `caveman` (regex filler removal, ~30% savings), `rtk` (tool-output class detection, 60-90%), `stacked` (RTK then Caveman, 78-95%).
+VKDG reads a YAML file if you pass one. Without it, it picks up `ANTHROPIC_API_KEY` from the environment and creates a passthrough connection.
 
-**Routing mode packs:** `ship-fast`, `cost-saver`, `quality-first`, `offline-friendly`, `balanced`. Set per request with `X-VKDG-Mode` or per combo in config.
+```yaml
+# vkdg.yaml
+listen: "0.0.0.0:8080"
 
-**Override headers:**
-- `X-VKDG-Mode: ship-fast` — mode pack for this request
-- `X-VKDG-Compression: none` — skip compression
-- `X-VKDG-Cache: none` — bypass cache
-- `X-VKDG-Think-Tags: include` — preserve `<think>` blocks from reasoning models
+connections:
+  - id: anthropic-main
+    provider: anthropic
+    auth: { type: api_key, env_var: ANTHROPIC_API_KEY }
+    models: ["claude-*"]
+    max_concurrent: 50
 
-See [docs/sdk/writing-a-plugin.md](docs/sdk/writing-a-plugin.md) and [docs/sdk/adding-a-provider.md](docs/sdk/adding-a-provider.md).
+  - id: groq-fast
+    provider: groq
+    auth: { type: api_key, env_var: GROQ_API_KEY }
+    models: ["llama-*"]
+    max_concurrent: 30
 
----
+routes:
+  - id: claude-route
+    match_models: ["claude-*"]
+    strategy: fallback_chain
+    targets: [anthropic-main, groq-fast]  # falls back to Groq if Anthropic is down
+```
 
+Full config reference: [`config.example.yaml`](./config.example.yaml)
 
-## Known gaps
+## Deploying on a VPS
 
-Honest stubs that will be completed in Phase E. None silently breaks; each returns a safe, documented placeholder.
-
-- **WASM `call_prepare`** — plugins load, validate, and install. The Component Model bindgen call is stubbed; plugins cannot intercept requests until Phase E wires it.
-- **OAuth2 auth_code + PKCE** — the `client_credentials` M2M flow is implemented. Auth code + PKCE for Anthropic/OpenAI user accounts is Phase E.
-- **`video.generate` polling/webhook** — returns 202 Accepted with a job ID. Status polling and webhook delivery are Phase E.
-- **`ModelSummarize` compression** — context truncation and Caveman/RTK run. The LLM summarize path requires an internal metered call; placeholder returns `StrategyUnavailable`.
-- **SvelteKit console screens** — login, overview, connections, keys, routes, and requests are implemented. E2E browser flow tests are pending.
-
----
-
-## Development
-
-Changes to behavior start with a failing test. A good test names the defect it would catch, asserts an observable result, and uses an expectation independent of the implementation.
+VKDG is a single binary. Copy it to your server, set your API keys, start it. If you want custom domains and TLS, put Caddy in front — it handles certs automatically.
 
 ```bash
-# Full test suite
-cargo test --workspace --tests
+# On your VPS
+wget https://github.com/vkdprojects/vkdg/releases/latest/download/vkdg-linux-amd64
+chmod +x vkdg-linux-amd64
+mv vkdg-linux-amd64 /usr/local/bin/vkdg
 
-# Clippy with CI-equivalent flags
-cargo clippy --workspace --all-targets --locked -- -D warnings
-
-# Unused dependency check
-cargo machete
-
-# Spell check
-typos .
+# Install as a systemd service
+vkdg install --config /etc/vkdg/config.yaml
 ```
 
-Current baseline: **247 tests, 0 failing, 0 clippy warnings** across 22 crates.
+With Caddy for `api.example.com`:
 
-### Git hooks
+```caddyfile
+api.example.com {
+  reverse_proxy localhost:8080 {
+    flush_interval -1  # required for streaming
+  }
+}
+console.example.com {
+  reverse_proxy localhost:9090
+}
+```
+
+Full guides: [Caddy](./docs/deploy/caddy.md) · [Traefik](./docs/deploy/traefik.md) · [nginx](./docs/deploy/nginx.md)
+
+## Why not OmniRoute / LiteLLM?
+
+OmniRoute is a Next.js app — runs on Node, requires npm, ships with a browser-based dashboard that assumes cloud hosting. It's great at what it does.
+
+VKDG is a Rust binary that fits in 13MB, runs without a runtime, and is designed for self-hosted infrastructure first. The tradeoff is that OmniRoute has a much larger provider catalog and more routing strategies today. We're working on that.
+
+LiteLLM is Python — good for scripting and experimentation, less great as a persistent service.
+
+## Documentation
+
+- [Quick start guide](./docs/sdk/config-reference.md) — config options, routes, combos
+- [Adding a provider](./docs/sdk/adding-a-provider.md) — three paths: config-only, WASM plugin, or PR
+- [Deploy with Caddy](./docs/deploy/caddy.md) — custom domain + automatic TLS
+- [Deploy with Traefik](./docs/deploy/traefik.md) — docker-native
+- [Deploy with nginx](./docs/deploy/nginx.md) — streaming-safe config
+- [Roadmap](./ROADMAP.md) — where this is going
+
+## Contributing
+
+VKDG is in active development. The codebase is ~22 Rust crates + a SvelteKit console.
 
 ```bash
-brew install lefthook && lefthook install
+git clone https://github.com/vkdprojects/vkdg
+cd vkdg
+just dev  # starts the gateway + opens console at localhost:9090
 ```
 
-Pre-commit: typos + rustfmt on staged files.
-Pre-push: clippy `--all-targets -D warnings` + cargo-machete.
+See [AGENTS.md](./AGENTS.md) for the architecture overview and crate map. For the console, see [apps/console/CONTRIBUTING-i18n.md](./apps/console/CONTRIBUTING-i18n.md) for translation contributions.
 
-### Documents
+All pull requests welcome. If something is broken or confusing, open an issue.
 
-| Document | What it covers |
-| --- | --- |
-| [AGENTS.md](AGENTS.md) | Commands, crate map, module structure, invariants — start here for any code change |
-| [Architecture](VKDG-architecture-v0.md) | Product scope, protocols, routing, storage, plugins, phase milestones |
-| [Console architecture](VKDG-frontend-day0.md) | SvelteKit process, admin API contract, security model, operator journey |
-| [CHANGELOG](CHANGELOG.md) | Per-phase change history |
-| [Config reference](docs/sdk/config-reference.md) | Full `vkdg.toml` schema |
-| [Adding a provider](docs/sdk/adding-a-provider.md) | Step-by-step guide |
-| [Writing a plugin](docs/sdk/writing-a-plugin.md) | WIT interface and lifecycle |
-| [ADRs](docs/adr/) | Architecture decision records |
-| [Release blockers audit](docs/release/RELEASE-BLOCKERS-AUDIT.md) | Security and correctness verification |
+## License
+
+MIT. See [LICENSE](./LICENSE).
 
 ---
 
-## The console
-
-VKDG runs as two services: the Rust gateway and a SvelteKit operator console. The console is part of the first usable product — its own process, its own deployment. The gateway stays up if the console goes down.
-
-The operator journey is complete: set up an administrator, connect a provider account, create a scoped client key, configure a route, send a real inference request, and inspect the decision that handled it.
-
-See [VKDG-frontend-day0.md](VKDG-frontend-day0.md) for the API boundary, OAuth flow, session model, and deployment.
-
----
-
-## Project boundaries
-
-VKDG is an API gateway. It does not run an agent's tools or manage files. Its native API offers a common entry point and capability discovery, not a promise that every provider feature can be represented without loss. Compression and route composition are policy mechanisms that must preserve required semantics and be measured before they become defaults.
-
-The goal is a gateway you can reason about when a request succeeds, and one you can debug when it does not.
+<div align="center">
+  Built with Rust + SvelteKit. No VC funding, no cloud dependency, no lock-in.
+</div>

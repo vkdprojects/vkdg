@@ -1,17 +1,38 @@
-# Stage 1: Build with musl target
-FROM rust:1.80-alpine AS builder
-RUN apk add --no-cache musl-dev pkgconfig openssl-dev bun
+# Stage 1: Build SvelteKit console
+FROM oven/bun:1-alpine AS console-builder
+WORKDIR /app/apps/console
+COPY apps/console/package.json apps/console/bun.lock ./
+# No --frozen-lockfile: lockfile may have platform-specific entries
+RUN bun install
+COPY apps/console/src ./src
+COPY apps/console/static ./static
+COPY apps/console/svelte.config.js \
+     apps/console/tsconfig.json \
+     apps/console/vite.config.ts \
+     apps/console/vitest.config.ts ./
+COPY apps/console/project.inlang ./project.inlang
+COPY apps/console/messages ./messages
+RUN bun run build
+
+# Stage 2: Build static Rust binary (musl, zero glibc)
+FROM rust:1-alpine AS rust-builder
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev
 WORKDIR /app
 COPY . .
-# Build console first (gets embedded in binary)
-RUN cd apps/console && bun install --frozen-lockfile && bun run build
-# Build static binary
+# Inject pre-built console — rust-embed bakes it in at compile time
+COPY --from=console-builder /app/apps/console/build ./apps/console/build
 RUN cargo build --release -p vkdg --target x86_64-unknown-linux-musl
 
-# Stage 2: Minimal runtime (scratch = smallest possible)
+# Stage 3: CA certificates for upstream HTTPS calls
+FROM debian:bookworm-slim AS certs
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Stage 4: Minimal scratch runtime (no shell, no package manager)
 FROM scratch
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/vkdg /vkdg
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=rust-builder /app/target/x86_64-unknown-linux-musl/release/vkdg /vkdg
 EXPOSE 8080 9090
 ENTRYPOINT ["/vkdg"]
 CMD ["serve"]

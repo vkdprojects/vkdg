@@ -61,6 +61,7 @@ impl ConfigSnapshot {
             routes: vec![],
             limits: None,
             observe: None,
+            global_system_prompt: None,
         };
         Self {
             version: 0,

@@ -123,6 +123,7 @@ mod tests {
             routes: vec![],
             limits: None,
             observe: None,
+            global_system_prompt: None,
         };
         let snap = ConfigSnapshot::build(1, gateway_cfg).expect("build snapshot");
         let (_tx, rx) = watch::channel(Arc::new(snap));

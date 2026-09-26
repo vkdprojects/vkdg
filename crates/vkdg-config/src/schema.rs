@@ -9,6 +9,10 @@ pub struct GatewayConfig {
     pub routes: Vec<RouteDef>,
     pub limits: Option<LimitsDef>,
     pub observe: Option<ObserveDef>,
+    /// Prepended to every conversation request as the first system message.
+    /// If the request already has a system prompt, this is prepended to it.
+    #[serde(default)]
+    pub global_system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

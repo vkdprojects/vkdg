@@ -203,6 +203,7 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: snap.gateway.global_system_prompt.clone(),
     }
 }
 
@@ -250,5 +251,6 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: None,
     })
 }

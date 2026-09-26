@@ -36,6 +36,9 @@ pub struct PipelineState {
     pub session_registry: Option<Arc<SessionRegistry>>,
     /// Optional quota tracker.  None = no quota tracking.
     pub quota_tracker: Option<Arc<QuotaTracker>>,
+    /// Global system prompt prepended to every conversation request.
+    /// None = no injection.
+    pub global_system_prompt: Option<String>,
 }
 
 #[derive(Clone)]

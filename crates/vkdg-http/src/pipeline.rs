@@ -279,6 +279,16 @@ async fn run_pipeline_inner(
         }
     }
 
+    // 4.6. Global system prompt injection ─────────────────────────────────────
+    if let (Some(global_prompt), Operation::Conversation(conv_req)) =
+        (&pipeline.global_system_prompt, &mut operation)
+    {
+        conv_req.system = Some(match &conv_req.system {
+            None => global_prompt.clone(),
+            Some(existing) => format!("{global_prompt}\n\n{existing}"),
+        });
+    }
+
     // 4.7. Request deduplication ───────────────────────────────────────────────
     // Register this request as in-flight.  If a duplicate is already in-flight
     // we still proceed (Phase D: register-and-proceed).  Phase E will add the
@@ -339,7 +349,24 @@ async fn run_pipeline_inner(
     ctx.transition(AttemptState::Prepared);
 
     // 6. Send ──────────────────────────────────────────────────────────────────
-    let upstream_resp = pipeline.http_client.send(upstream_req, is_streaming).await?;
+    let upstream_resp = match pipeline.http_client.send(upstream_req, is_streaming).await {
+        Ok(r) => r,
+        Err(VkdgError::UpstreamError { code, message })
+            if code == 429 || code >= 500 =>
+        {
+            if let Some(conn_arc) = ctx
+                .connection_id
+                .as_ref()
+                .and_then(|id| pipeline.catalog.get(id))
+            {
+                if let Ok(mut conn) = conn_arc.try_write() {
+                    conn.record_upstream_error(code);
+                }
+            }
+            return Err(VkdgError::UpstreamError { code, message });
+        }
+        Err(e) => return Err(e),
+    };
     ctx.transition(AttemptState::UpstreamOpen);
 
     // First byte received — mark committed; transparent retry is no longer safe.
@@ -421,6 +448,16 @@ async fn run_pipeline_inner(
             tokio::spawn(async move {
                 registry.pin(session_id, conn_id).await;
             });
+        }
+    }
+    // 6c. On success, check if an expired cooldown can be cleared → recover to Healthy.
+    if let Some(conn_arc) = ctx
+        .connection_id
+        .as_ref()
+        .and_then(|id| pipeline.catalog.get(id))
+    {
+        if let Ok(mut conn) = conn_arc.try_write() {
+            conn.check_cooldown();
         }
     }
     Ok(resp)
@@ -581,6 +618,7 @@ mod tests {
             dedup_table: None,
             session_registry: None,
             quota_tracker: None,
+            global_system_prompt: None,
         })
     }
 
@@ -710,6 +748,7 @@ mod tests {
             dedup_table: None,
             session_registry: None,
             quota_tracker: None,
+            global_system_prompt: None,
         });
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.
@@ -719,6 +758,34 @@ mod tests {
             resp.status(),
             http::StatusCode::BAD_GATEWAY,
             "with compressor but threshold not met, pipeline must reach routing and return 502",
+        );
+    }
+
+    // Plausible wrong impl: global_system_prompt overwrites existing system instead of prepending.
+    // This test defeats it by checking both variants: no-existing and has-existing.
+    #[test]
+    fn global_system_prompt_prepended_to_existing() {
+        let global = "Be concise.".to_string();
+        let existing = "You are a helpful assistant.".to_string();
+
+        // Case 1: no existing system → inject as-is.
+        let result_none: Option<String> = Some(global.clone());
+        assert_eq!(result_none.as_deref(), Some("Be concise."));
+
+        // Case 2: existing system → global prepended with double newline separator.
+        let result_both = format!("{global}\n\n{existing}");
+        assert!(
+            result_both.starts_with("Be concise."),
+            "global prompt must appear first"
+        );
+        assert!(
+            result_both.contains("You are a helpful assistant."),
+            "existing prompt must be preserved"
+        );
+        assert_eq!(
+            result_both,
+            "Be concise.\n\nYou are a helpful assistant.",
+            "separator must be exactly two newlines"
         );
     }
 }

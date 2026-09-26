@@ -65,6 +65,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: None,
     })
 }
 

@@ -172,6 +172,7 @@ mod tests {
             }],
             limits: None,
             observe: None,
+            global_system_prompt: None,
         };
         let snap = ConfigSnapshot::build(1, cfg).expect("build snapshot");
         let (_tx, rx) = watch::channel(Arc::new(snap));

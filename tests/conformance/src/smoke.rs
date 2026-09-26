@@ -61,6 +61,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: None,
     })
 }
 
@@ -365,6 +366,7 @@ where
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: None,
     })
 }
 
@@ -423,6 +425,7 @@ where
         dedup_table: None,
         session_registry: None,
         quota_tracker: None,
+        global_system_prompt: None,
     })
 }
 

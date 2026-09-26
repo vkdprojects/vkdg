@@ -201,6 +201,8 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
+        session_registry: None,
+        quota_tracker: None,
     }
 }
 
@@ -246,5 +248,7 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
+        session_registry: None,
+        quota_tracker: None,
     })
 }

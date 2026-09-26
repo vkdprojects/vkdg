@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use vkdg_connections::{ConnectionCatalog, CredentialManager};
+use vkdg_connections::{ConnectionCatalog, CredentialManager, SessionRegistry, QuotaTracker};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
@@ -32,6 +32,10 @@ pub struct PipelineState {
     pub compressor: Option<Arc<dyn Compressor>>,
     /// Optional request deduplication table.  None = dedup disabled.
     pub dedup_table: Option<Arc<DedupTable>>,
+    /// Optional session affinity registry.  None = no session stickiness.
+    pub session_registry: Option<Arc<SessionRegistry>>,
+    /// Optional quota tracker.  None = no quota tracking.
+    pub quota_tracker: Option<Arc<QuotaTracker>>,
 }
 
 #[derive(Clone)]

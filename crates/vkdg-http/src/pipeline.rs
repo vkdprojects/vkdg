@@ -12,7 +12,7 @@ use vkdg_cache::{CacheEntry, CacheResult, cache_key};
 use vkdg_core::{AttemptResult, AttemptState, ConnectionId, DecisionRecord, VkdgError};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_operations::{ContentBlock, MessageContent, Operation, Role};
-use vkdg_routing::EligibilityFilter;
+use vkdg_routing::{EligibilityFilter, RoutingHints};
 
 use crate::sse::{SseEvent, SseParser};
 use crate::upstream::{UpstreamRequest, UpstreamResponse};
@@ -130,6 +130,20 @@ async fn run_pipeline_inner(
         tracing::debug!(combo_id = %c.id, "request resolved to combo");
     }
 
+    // 1.6. Session stickiness ──────────────────────────────────────────────────
+    // If the request carries a session_key and the registry has a valid pin for
+    // it, record the preferred connection now.  We apply it after routing (below)
+    // so the combo override logic is unaffected.
+    let session_preferred_connection: Option<ConnectionId> =
+        if let (Some(registry), Some(session_key)) = (
+            &pipeline.session_registry,
+            &ctx.envelope.session_key,
+        ) {
+            registry.get(&session_key.0).await
+        } else {
+            None
+        };
+
     // 2. Route ─────────────────────────────────────────────────────────────────
     let filter = if excluded.is_empty() {
         EligibilityFilter::default()
@@ -142,13 +156,52 @@ async fn run_pipeline_inner(
                 .collect(),
         }
     };
+    // Build routing hints from live quota signals.
+    // We iterate all known connection IDs so the scorer gets real headroom for
+    // every candidate; the router uses only the subset that matches the route.
+    let routing_hints = {
+        let mut hints = RoutingHints::default();
+        if let Some(mode) = &ctx.envelope.mode_pack_override {
+            hints.mode_pack = Some(mode.clone());
+        }
+        if let Some(tracker) = &pipeline.quota_tracker {
+            for conn_id in pipeline.catalog.connection_ids() {
+                if let Some(h) = tracker.headroom(&conn_id).await {
+                    hints.quota_headroom.insert(conn_id, h);
+                }
+            }
+        }
+        hints
+    };
     let route_result = pipeline
         .router
-        .route(&ctx.envelope, &filter)
+        .route(&ctx.envelope, &filter, &routing_hints)
         .await?;
     // Apply combo target override: if a combo matched and its targets don't
     // include the routed connection, redirect to the first combo target.
-    let connection_id = if let Some(c) = &combo {
+    // Apply combo target override, then honor session preference.
+    // Priority: session pin > combo redirect > routed connection.
+    let connection_id = if let Some(preferred) = session_preferred_connection {
+        // Only use the pin if the connection is still in the catalog (healthy check
+        // happens inside acquire() at step 3; here we just guard against stale pins
+        // for connections that were removed from the catalog entirely).
+        if pipeline.catalog.get(&preferred).is_some() {
+            tracing::debug!(
+                session_key = ?ctx.envelope.session_key,
+                pinned = %preferred.0,
+                "session stickiness: using pinned connection",
+            );
+            preferred
+        } else if let Some(c) = &combo {
+            if !c.targets.is_empty() && !c.targets.contains(&route_result.connection_id) {
+                c.targets[0].clone()
+            } else {
+                route_result.connection_id
+            }
+        } else {
+            route_result.connection_id
+        }
+    } else if let Some(c) = &combo {
         if !c.targets.is_empty() && !c.targets.contains(&route_result.connection_id) {
             tracing::debug!(
                 combo_id = %c.id,
@@ -294,6 +347,9 @@ async fn run_pipeline_inner(
     ctx.transition(AttemptState::Committed);
 
     // 7. Build response ────────────────────────────────────────────────────────
+    // `response_body_len` is set in the Complete arm for post-response quota
+    // accounting; streaming leaves it None (Phase E: wrap stream on completion).
+    let mut response_body_len: Option<usize> = None;
     let resp = match upstream_resp {
         UpstreamResponse::Complete { status, body } => {
             // 8. Cache store (fire-and-forget, non-streaming only) ─────────────
@@ -310,6 +366,7 @@ async fn run_pipeline_inner(
                 let key = key.clone();
                 tokio::spawn(async move { let _ = cache.store(&key, entry).await; });
             }
+            response_body_len = Some(body.len());
             let status_code =
                 http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY);
             axum::response::Response::builder()
@@ -339,6 +396,33 @@ async fn run_pipeline_inner(
                 )))
         }
     };
+
+    // 9. Post-response: record quota usage + pin session ──────────────────────
+    // Only for non-streaming complete responses (body len captured above).
+    // Streaming: approximate usage recorded when stream completes (Phase E).
+    if let Some(approx_tokens) = response_body_len.map(|n| (n / 4) as u64) {
+        if let Some(tracker) = &pipeline.quota_tracker {
+            if let Some(conn_id) = &ctx.connection_id {
+                let tracker = Arc::clone(tracker);
+                let conn_id = conn_id.clone();
+                tokio::spawn(async move {
+                    tracker.record_usage(&conn_id, approx_tokens).await;
+                });
+            }
+        }
+        if let (Some(registry), Some(session_key), Some(conn_id)) = (
+            &pipeline.session_registry,
+            &ctx.envelope.session_key,
+            &ctx.connection_id,
+        ) {
+            let registry = Arc::clone(registry);
+            let session_id = session_key.0.clone();
+            let conn_id = conn_id.clone();
+            tokio::spawn(async move {
+                registry.pin(session_id, conn_id).await;
+            });
+        }
+    }
     Ok(resp)
 }
 
@@ -495,6 +579,8 @@ mod tests {
             combo_resolver: None,
             compressor: None,
             dedup_table: None,
+            session_registry: None,
+            quota_tracker: None,
         })
     }
 
@@ -622,6 +708,8 @@ mod tests {
             combo_resolver: None,
             compressor: Some(Arc::new(CavemanCompressor)),
             dedup_table: None,
+            session_registry: None,
+            quota_tracker: None,
         });
         let ctx = make_ctx("claude-3-5-sonnet-20241022");
         // Tiny request → estimated tokens << 2000 threshold → compression skipped.

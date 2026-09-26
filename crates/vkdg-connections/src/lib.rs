@@ -269,6 +269,12 @@ impl ConnectionCatalog {
             })
             .collect()
     }
+
+    /// Returns all connection IDs in this catalog.
+    /// Used by the pipeline to populate RoutingHints for all known connections.
+    pub fn connection_ids(&self) -> Vec<ConnectionId> {
+        self.connections.keys().cloned().collect()
+    }
 }
 
 // ── Credential manager ────────────────────────────────────────────────────────

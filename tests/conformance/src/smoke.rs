@@ -59,6 +59,8 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
+        session_registry: None,
+        quota_tracker: None,
     })
 }
 
@@ -361,6 +363,8 @@ where
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
+        session_registry: None,
+        quota_tracker: None,
     })
 }
 
@@ -417,6 +421,8 @@ where
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
+        session_registry: None,
+        quota_tracker: None,
     })
 }
 

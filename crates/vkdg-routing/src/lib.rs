@@ -71,6 +71,21 @@ impl EligibilityFilter {
         self.excluded_connections.contains(id)
     }
 }
+// ── Routing hints ─────────────────────────────────────────────────────────────
+
+/// Optional live signals to improve routing decisions.
+/// Populated by the gateway from QuotaTracker and latency measurements.
+/// All maps are keyed by ConnectionId; absent entries use scorer defaults.
+#[derive(Debug, Default, Clone)]
+pub struct RoutingHints {
+    /// quota_headroom per connection: 0.0 = exhausted, 1.0 = full
+    pub quota_headroom: HashMap<ConnectionId, f32>,
+    /// p50 latency per connection in milliseconds
+    pub latency_p50_ms: HashMap<ConnectionId, u32>,
+    /// Request-level mode pack override (from X-VKDG-Mode header or combo)
+    pub mode_pack: Option<String>,
+}
+
 
 // ── Route result ──────────────────────────────────────────────────────────────
 
@@ -91,6 +106,7 @@ pub trait Strategy: Send + Sync {
         candidates: &[ConnectionId],
         envelope: &RequestEnvelope,
         filter: &EligibilityFilter,
+        hints: &RoutingHints,
     ) -> Result<ConnectionId>;
 }
 
@@ -123,6 +139,7 @@ impl Strategy for RoundRobinStrategy {
         candidates: &[ConnectionId],
         _envelope: &RequestEnvelope,
         filter: &EligibilityFilter,
+        _hints: &RoutingHints,
     ) -> Result<ConnectionId> {
         let eligible: Vec<&ConnectionId> =
             candidates.iter().filter(|c| !filter.is_excluded(c)).collect();
@@ -149,6 +166,7 @@ impl Strategy for FallbackChainStrategy {
         candidates: &[ConnectionId],
         _envelope: &RequestEnvelope,
         filter: &EligibilityFilter,
+        _hints: &RoutingHints,
     ) -> Result<ConnectionId> {
         candidates
             .iter()
@@ -174,16 +192,18 @@ impl Strategy for ScoredStrategy {
         candidates: &[ConnectionId],
         _envelope: &RequestEnvelope,
         filter: &EligibilityFilter,
+        hints: &RoutingHints,
     ) -> Result<ConnectionId> {
+        let effective_mode = hints.mode_pack.as_deref().unwrap_or(&self.mode_pack);
         let signals: Vec<scorer::CandidateSignals> = candidates
             .iter()
             .filter(|id| !filter.is_excluded(id))
             .map(|id| scorer::CandidateSignals {
                 connection_id: id.0.clone(),
                 health: 1.0,
-                quota_headroom: None,
+                quota_headroom: hints.quota_headroom.get(id).copied(),
                 cost_per_ktoken: None,
-                latency_p50_ms: None,
+                latency_p50_ms: hints.latency_p50_ms.get(id).copied(),
                 instability_events: 0,
             })
             .collect();
@@ -192,7 +212,7 @@ impl Strategy for ScoredStrategy {
             return Err(VkdgError::NoEligibleConnection);
         }
 
-        let weights = scorer::ScoringWeights::from_mode_pack(&self.mode_pack);
+        let weights = scorer::ScoringWeights::from_mode_pack(effective_mode);
         scorer::rank_candidates(&signals, &weights)
             .into_iter()
             .next()
@@ -221,6 +241,7 @@ impl Router {
         &self,
         envelope: &RequestEnvelope,
         filter: &EligibilityFilter,
+        hints: &RoutingHints,
     ) -> Result<RouteResult> {
         let route = self.match_route(envelope).ok_or(VkdgError::NoEligibleConnection)?;
 
@@ -260,7 +281,7 @@ impl Router {
             .collect();
 
         let connection_id = strategy
-            .select(&route.targets, envelope, filter)
+            .select(&route.targets, envelope, filter, hints)
             .await?;
 
         Ok(RouteResult {
@@ -317,7 +338,7 @@ mod tests {
         };
         let router = Router::new(vec![route]);
         let envelope = test_envelope("claude-3-5-haiku-20241022");
-        let result = router.route(&envelope, &EligibilityFilter::default()).await;
+        let result = router.route(&envelope, &EligibilityFilter::default(), &RoutingHints::default()).await;
         assert!(result.is_ok(), "scored strategy must select from available candidates");
         assert_eq!(result.unwrap().connection_id, conn);
     }
@@ -333,7 +354,7 @@ mod tests {
         };
         let router = Router::new(vec![route]);
         let envelope = test_envelope("gpt-4o");
-        let result = router.route(&envelope, &EligibilityFilter::default()).await;
+        let result = router.route(&envelope, &EligibilityFilter::default(), &RoutingHints::default()).await;
         assert!(result.is_ok());
     }
 
@@ -351,7 +372,39 @@ mod tests {
         let envelope = test_envelope("claude-3-opus-20240229");
         let mut filter = EligibilityFilter::default();
         filter.excluded_connections.push(conn);
-        let result = router.route(&envelope, &filter).await;
+        let result = router.route(&envelope, &filter, &RoutingHints::default()).await;
         assert!(matches!(result, Err(VkdgError::NoEligibleConnection)));
+    }
+
+    // Plausible wrong impl: hints.quota_headroom not plumbed into CandidateSignals,
+    // so ScoredStrategy ignores live quota data and treats all headroom as neutral 0.5.
+    #[tokio::test]
+    async fn scored_strategy_uses_quota_hints() {
+        // high-quota (0.9) vs low-quota (0.1); quality-first weights quota at 0.2
+        // so the score gap is 0.16 — enough to dominate over equal health/latency.
+        let mut hints = RoutingHints::default();
+        hints.quota_headroom.insert(ConnectionId("high-quota".into()), 0.9);
+        hints.quota_headroom.insert(ConnectionId("low-quota".into()), 0.1);
+        hints.mode_pack = Some("quality-first".into());
+
+        let route = RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["gpt-*".into()],
+            strategy: StrategyKind::Scored { mode_pack: "balanced".into() },
+            targets: vec![
+                ConnectionId("high-quota".into()),
+                ConnectionId("low-quota".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        };
+        let router = Router::new(vec![route]);
+        let envelope = test_envelope("gpt-4o");
+        let result = router.route(&envelope, &EligibilityFilter::default(), &hints).await;
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().connection_id,
+            ConnectionId("high-quota".into()),
+            "high-quota connection must be preferred when hints are fed to scorer"
+        );
     }
 }

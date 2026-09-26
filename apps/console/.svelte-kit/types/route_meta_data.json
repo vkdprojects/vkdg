@@ -1,27 +1,52 @@
 {
 	"/": [
-		"src/routes/+page.server.ts"
+		"src/routes/+page.server.ts",
+		"src/routes/+layout.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/combos": [
-		"src/routes/combos/+page.server.ts"
+		"src/routes/combos/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/connections": [
-		"src/routes/connections/+page.server.ts"
+		"src/routes/connections/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/keys": [
-		"src/routes/keys/+page.server.ts"
+		"src/routes/keys/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/login": [
-		"src/routes/login/+page.server.ts"
+		"src/routes/login/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/logout": [
-		"src/routes/logout/+page.server.ts"
+		"src/routes/logout/+page.server.ts",
+		"src/routes/+layout.server.ts"
+	],
+	"/playground": [
+		"src/routes/playground/+page.server.ts",
+		"src/routes/+layout.server.ts"
+	],
+	"/playground/chat": [
+		"src/routes/playground/chat/+server.ts"
 	],
 	"/requests": [
-		"src/routes/requests/+page.server.ts"
+		"src/routes/requests/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
 	"/routes": [
-		"src/routes/routes/+page.server.ts"
+		"src/routes/routes/+page.server.ts",
+		"src/routes/+layout.server.ts"
 	],
-	"/strategies": []
+	"/settings": [
+		"src/routes/+layout.server.ts"
+	],
+	"/setup": [
+		"src/routes/setup/+page.server.ts",
+		"src/routes/+layout.server.ts"
+	],
+	"/strategies": [
+		"src/routes/+layout.server.ts"
+	]
 }

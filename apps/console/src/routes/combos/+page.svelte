@@ -1,72 +1,254 @@
 <script lang="ts">
-  import type { PageData } from './$types';
-  export let data: PageData;
+  import type { PageData, ActionData } from './$types';
+  import { m } from '$lib/paraglide/messages.js';
+  import { Badge, EmptyState, Button, Select } from '$lib/components/index.js';
+
+  let { data, form }: { data: PageData; form: ActionData } = $props();
+
+  let dialogEl = $state<HTMLDialogElement | null>(null);
+  let name = $state('');
+  let patterns = $state('');
+  let strategy = $state('round_robin');
+  let targets = $state('');
+
+  function openDialog() {
+    name = '';
+    patterns = '';
+    strategy = 'round_robin';
+    targets = '';
+    dialogEl?.showModal();
+  }
+
+  function closeDialog() {
+    dialogEl?.close();
+  }
+
+  const strategyOptions = [
+    { value: 'round_robin', label: m.combo_strategy_round_robin() },
+    { value: 'weighted', label: m.combo_strategy_weighted() },
+    { value: 'fallback_chain', label: m.combo_strategy_fallback_chain() },
+    { value: 'lowest_latency', label: m.combo_strategy_lowest_latency() },
+    { value: 'power_of_two_choices', label: m.combo_strategy_power_of_two_choices() },
+    { value: 'last_known_good', label: m.combo_strategy_last_known_good() },
+    { value: 'fusion', label: m.combo_strategy_fusion() },
+    { value: 'prompt_chain', label: m.combo_strategy_prompt_chain() },
+    { value: 'auto', label: m.combo_strategy_auto() },
+  ];
 </script>
 
-<main>
-  <header>
-    <h1>Combos</h1>
-    <a href="/">Back to overview</a>
-  </header>
+<div class="page">
+  <div class="page-header">
+    <h1 class="page-title">{m.nav_combos()} ({data.combos.length})</h1>
+    <Button onclick={openDialog}>{m.combo_create()}</Button>
+  </div>
 
-  <section aria-labelledby="combos-heading">
-    <h2 id="combos-heading">Combos ({data.combos.length})</h2>
-    {#if data.combos.length === 0}
-      <p class="muted">No combos configured.</p>
-    {:else}
-      <table>
-        <thead>
+  {#if data.combos.length === 0}
+    <EmptyState title={m.combo_empty()} description="Create a combo to define routing strategy across connections." />
+  {:else}
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">{m.combo_id()}</th>
+          <th scope="col">{m.combo_strategy()}</th>
+          <th scope="col">{m.combo_patterns()}</th>
+          <th scope="col">{m.combo_targets()}</th>
+          <th scope="col">{m.combo_policies()}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each data.combos as c (c.id)}
           <tr>
-            <th scope="col">ID</th>
-            <th scope="col">Strategy</th>
-            <th scope="col">Patterns</th>
-            <th scope="col">Targets</th>
-            <th scope="col">Policies</th>
+            <td>{c.id}</td>
+            <td>{c.strategy}</td>
+            <td>{c.match_patterns.join(', ') || m.common_none()}</td>
+            <td>{c.targets.join(', ') || m.common_none()}</td>
+            <td class="badges">
+              {#if c.has_compression}<Badge status="compression" label="compression" />{/if}
+              {#if c.has_cache}<Badge status="cache" label="cache" />{/if}
+              {#if c.has_budget}<Badge status="budget" label="budget" />{/if}
+              {#if !c.has_compression && !c.has_cache && !c.has_budget}<span class="muted">{m.common_none()}</span>{/if}
+            </td>
           </tr>
-        </thead>
-        <tbody>
-          {#each data.combos as c (c.id)}
-            <tr>
-              <td>{c.id}</td>
-              <td>{c.strategy}</td>
-              <td>{c.match_patterns.join(', ') || '—'}</td>
-              <td>{c.targets.join(', ') || '—'}</td>
-              <td class="badges">
-                {#if c.has_compression}<span class="badge compression">compression</span>{/if}
-                {#if c.has_cache}<span class="badge cache">cache</span>{/if}
-                {#if c.has_budget}<span class="badge budget">budget</span>{/if}
-                {#if !c.has_compression && !c.has_cache && !c.has_budget}<span class="muted">—</span>{/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+</div>
+
+<!-- Create combo dialog -->
+<dialog bind:this={dialogEl} class="modal" aria-labelledby="dialog-title">
+  <div class="modal-header">
+    <h2 id="dialog-title">{m.combo_create()}</h2>
+    <button class="close-btn" onclick={closeDialog} aria-label={m.common_cancel()}>✕</button>
+  </div>
+
+  <form method="POST" action="?/create" class="modal-form">
+    <input type="hidden" name="strategy" value={strategy} />
+
+    <div class="field">
+      <label for="name-input">{m.combo_name_label()}</label>
+      <input
+        id="name-input"
+        type="text"
+        name="name"
+        bind:value={name}
+        placeholder={m.combo_name_placeholder()}
+        required
+      />
+    </div>
+
+    <div class="field">
+      <label for="patterns-input">{m.combo_patterns_label()}</label>
+      <input
+        id="patterns-input"
+        type="text"
+        name="patterns"
+        bind:value={patterns}
+        placeholder={m.combo_patterns_placeholder()}
+      />
+      <p class="hint">{m.combo_patterns_hint()}</p>
+    </div>
+
+    <Select
+      label={m.combo_strategy()}
+      options={strategyOptions}
+      bind:value={strategy}
+    />
+
+    <div class="field">
+      <label for="targets-input">{m.combo_targets_label()}</label>
+      <input
+        id="targets-input"
+        type="text"
+        name="targets"
+        bind:value={targets}
+        placeholder={m.combo_targets_placeholder()}
+      />
+      <p class="hint">{m.combo_targets_hint()}</p>
+    </div>
+
+    {#if form?.error}
+      <p class="form-error" role="alert">{form.error}</p>
     {/if}
-  </section>
-</main>
+
+    <div class="modal-actions">
+      <Button variant="ghost" type="button" onclick={closeDialog}>{m.common_cancel()}</Button>
+      <Button type="submit">{m.combo_create()}</Button>
+    </div>
+  </form>
+</dialog>
 
 <style>
-  main { max-width: 900px; margin: 2rem auto; font-family: system-ui, sans-serif; padding: 0 1rem; }
-  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; }
-  h1 { margin: 0; font-size: 1.5rem; }
-  h2 { margin-top: 0; font-size: 1.1rem; border-bottom: 1px solid #eee; padding-bottom: 0.25rem; }
-  section { margin-bottom: 2rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; }
-  th { background: #f5f5f5; font-weight: 600; }
-  .muted { color: #888; font-size: 0.875rem; }
-  a { color: #1a1a2e; font-size: 0.875rem; }
-  .badges { display: flex; gap: 0.35rem; flex-wrap: wrap; }
-  .badge {
-    display: inline-block;
-    padding: 0.1rem 0.45rem;
-    border-radius: 3px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
+  .badges {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
   }
-  .badge.compression { background: #e8f4fd; color: #1a6fa8; }
-  .badge.cache       { background: #e9fbe9; color: #1e7e34; }
-  .badge.budget      { background: #fff3cd; color: #856404; }
+
+  .muted {
+    color: var(--text-3);
+  }
+
+  /* Dialog */
+  .modal {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-1);
+    padding: 0;
+    width: min(480px, calc(100vw - 32px));
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
+  }
+
+  .modal::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px 0;
+  }
+
+  .modal-header h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 4px;
+    border-radius: var(--radius-sm);
+    transition: color 0.1s;
+  }
+
+  .close-btn:hover {
+    color: var(--text-1);
+  }
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px 24px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .field label {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-2);
+  }
+
+  .field input {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-1);
+    font-size: 0.875rem;
+    padding: 0.4375rem 0.625rem;
+    transition: border-color 0.15s;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .field input:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  .field input::placeholder {
+    color: var(--text-3);
+  }
+
+  .hint {
+    font-size: 0.75rem;
+    color: var(--text-3);
+    margin: 0;
+  }
+
+  .form-error {
+    font-size: 0.8125rem;
+    color: var(--danger);
+    margin: 0;
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 4px;
+  }
 </style>

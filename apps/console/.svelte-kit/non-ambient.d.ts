@@ -29,7 +29,7 @@ declare module "$app/types" {
 	type MatcherParam<M> = M extends (param : string) => param is (infer U extends string) ? U : string;
 
 	export interface AppTypes {
-		RouteId(): "/" | "/combos" | "/connections" | "/keys" | "/login" | "/logout" | "/requests" | "/routes" | "/strategies";
+		RouteId(): "/" | "/combos" | "/connections" | "/keys" | "/login" | "/logout" | "/playground" | "/playground/chat" | "/requests" | "/routes" | "/settings" | "/setup" | "/strategies";
 		RouteParams(): {
 			
 		};
@@ -40,11 +40,15 @@ declare module "$app/types" {
 			"/keys": Record<string, never>;
 			"/login": Record<string, never>;
 			"/logout": Record<string, never>;
+			"/playground": Record<string, never>;
+			"/playground/chat": Record<string, never>;
 			"/requests": Record<string, never>;
 			"/routes": Record<string, never>;
+			"/settings": Record<string, never>;
+			"/setup": Record<string, never>;
 			"/strategies": Record<string, never>
 		};
-		Pathname(): "/" | "/combos" | "/connections" | "/keys" | "/login" | "/logout" | "/requests" | "/routes" | "/strategies";
+		Pathname(): "/" | "/combos" | "/connections" | "/keys" | "/login" | "/logout" | "/playground" | "/playground/chat" | "/requests" | "/routes" | "/settings" | "/setup" | "/strategies";
 		ResolvedPathname(): `${"" | `/${string}`}${ReturnType<AppTypes['Pathname']>}`;
 		Asset(): string & {};
 	}

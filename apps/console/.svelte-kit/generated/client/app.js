@@ -4,7 +4,7 @@
 import.meta.hot;
 
 
-
+import * as universal_hooks from '../../../src/hooks.ts';
 
 export { matchers } from './matchers.js';
 
@@ -19,10 +19,13 @@ export const nodes = [
 	() => import('./nodes/7'),
 	() => import('./nodes/8'),
 	() => import('./nodes/9'),
-	() => import('./nodes/10')
+	() => import('./nodes/10'),
+	() => import('./nodes/11'),
+	() => import('./nodes/12'),
+	() => import('./nodes/13')
 ];
 
-export const server_loads = [];
+export const server_loads = [0];
 
 export const dictionary = {
 		"/": [~2],
@@ -31,16 +34,19 @@ export const dictionary = {
 		"/keys": [~5],
 		"/login": [~6],
 		"/logout": [~7],
-		"/requests": [~8],
-		"/routes": [~9],
-		"/strategies": [10]
+		"/playground": [~8],
+		"/requests": [~9],
+		"/routes": [~10],
+		"/settings": [11],
+		"/setup": [~12],
+		"/strategies": [13]
 	};
 
 export const hooks = {
 	handleError: (({ error }) => { console.error(error) }),
 	
-	reroute: (() => {}),
-	transport: {}
+	reroute: universal_hooks.reroute || (() => {}),
+	transport: universal_hooks.transport || {}
 };
 
 export const decoders = Object.fromEntries(Object.entries(hooks.transport).map(([k, v]) => [k, v.decode]));

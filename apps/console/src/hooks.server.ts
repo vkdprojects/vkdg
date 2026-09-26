@@ -1,7 +1,21 @@
 import type { Handle } from '@sveltejs/kit';
+import { sequence } from '@sveltejs/kit/hooks';
+import { paraglideMiddleware } from '$lib/paraglide/server';
+import { getTextDirection } from '$lib/paraglide/runtime';
 import { getMe } from '$lib/server/vkdg/client';
 
-export const handle: Handle = async ({ event, resolve }) => {
+const i18n: Handle = ({ event, resolve }) =>
+  paraglideMiddleware(event.request, ({ request: localizedRequest, locale }) => {
+    event.request = localizedRequest;
+    return resolve(event, {
+      transformPageChunk: ({ html }) =>
+        html
+          .replace('%paraglide.lang%', locale)
+          .replace('%paraglide.dir%', getTextDirection(locale)),
+    });
+  });
+
+const auth: Handle = async ({ event, resolve }) => {
   const cookie = event.request.headers.get('cookie') ?? '';
   const sessionCookie = cookie
     .split(';')
@@ -24,3 +38,5 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   return resolve(event);
 };
+
+export const handle = sequence(i18n, auth);

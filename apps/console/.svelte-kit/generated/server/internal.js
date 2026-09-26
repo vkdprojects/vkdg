@@ -3,7 +3,7 @@ import root from '../root.js';
 import { set_building, set_prerendering } from '$app/env/internal';
 import { set_assets } from '$app/paths/internal/server';
 import { set_manifest, set_read_implementation } from '__sveltekit/server';
-import { set_private_env, set_public_env } from '../../../node_modules/.bun/@sveltejs+kit@2.70.3+6a6534c8d78a65dc/node_modules/@sveltejs/kit/src/runtime/shared-server.js';
+import { set_private_env, set_public_env } from '../../../node_modules/.bun/@sveltejs+kit@2.70.3+f594e4a5883df123/node_modules/@sveltejs/kit/src/runtime/shared-server.js';
 import error from '../shared/error-template.js';
 
 export const options = {
@@ -23,10 +23,10 @@ export const options = {
 	service_worker_options: undefined,
 	server_error_boundaries: false,
 	templates: {
-		app: ({ head, body, assets, nonce, env }) => "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <link rel=\"icon\" href=\"" + assets + "/favicon.png\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    " + head + "\n  </head>\n  <body data-sveltekit-preload-data=\"hover\">\n    <div style=\"display: contents\">" + body + "</div>\n  </body>\n</html>\n",
+		app: ({ head, body, assets, nonce, env }) => "<!doctype html>\n<html lang=\"%paraglide.lang%\" dir=\"%paraglide.dir%\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <link rel=\"icon\" href=\"" + assets + "/favicon.png\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    " + head + "\n  </head>\n  <body data-sveltekit-preload-data=\"hover\">\n    <div style=\"display: contents\">" + body + "</div>\n  </body>\n</html>\n",
 		error
 	},
-	version_hash: "18jia2a"
+	version_hash: "14cn1w8"
 };
 
 export async function get_hooks() {
@@ -39,7 +39,7 @@ export async function get_hooks() {
 
 	let reroute;
 	let transport;
-	
+	({ reroute, transport } = await import("../../../src/hooks.ts"));
 
 	return {
 		handle,

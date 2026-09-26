@@ -1,109 +1,172 @@
 <script lang="ts">
   import type { PageData } from './$types';
-  export let data: PageData;
+  import { Badge, StatusDot, Card, Button, EmptyState } from '$lib/components/index.js';
+  import { m } from '$lib/paraglide/messages.js';
+  import { PlusIcon } from 'lucide-svelte';
 
-  const statusColor: Record<string, string> = {
-    healthy: '#27ae60',
-    degraded: '#e67e22',
-    circuit_open: '#c0392b',
-    cooldown: '#8e44ad',
-  };
+  let { data }: { data: PageData } = $props();
+
+  function formatUptime(secs: number): string {
+    const h = Math.floor(secs / 3600);
+    const min = Math.floor((secs % 3600) / 60);
+    return h > 0 ? `${h}h ${min}m` : `${min}m`;
+  }
 </script>
 
-<main>
-  <header>
-    <h1>VKDG Console</h1>
-    <form method="POST" action="/logout">
-      <button type="submit">Sign out</button>
-    </form>
-  </header>
-  <nav>
-    <a href="/" aria-current="page">Overview</a>
-    <a href="/connections">Connections</a>
-    <a href="/keys">Keys</a>
-    <a href="/routes">Routes</a>
-    <a href="/requests">Requests</a>
-    <a href="/combos">Combos</a>
-    <a href="/strategies">Strategies</a>
-  </nav>
+<div class="page">
+  <div class="page-header">
+    <h1 class="page-title">{m.nav_overview()}</h1>
+    {#if data.connections.length === 0}
+      <Button variant="primary" size="sm" onclick={() => (window.location.href = '/connections')}>
+        <PlusIcon size={14} />
+        {m.connection_add()}
+      </Button>
+    {/if}
+  </div>
 
-
-  <section aria-labelledby="system-heading">
-    <h2 id="system-heading">System</h2>
-    <dl>
-      <dt>Version</dt>
-      <dd>{data.system.version}</dd>
-      <dt>Status</dt>
-      <dd>{data.system.status}</dd>
-      <dt>Config revision</dt>
-      <dd>{data.system.config_revision}</dd>
-      <dt>Uptime</dt>
-      <dd>{data.system.uptime_secs}s</dd>
-      <dt>Active requests</dt>
-      <dd>{data.system.active_requests}</dd>
-    </dl>
-  </section>
+  <div class="stats-bar">
+    <Card>
+      <div class="stat-card">
+        <span class="stat-label">{m.system_version()}</span>
+        <span class="stat-value">{data.system.version}</span>
+      </div>
+    </Card>
+    <Card>
+      <div class="stat-card">
+        <span class="stat-label">{m.system_status()}</span>
+        <Badge status={data.system.status} />
+      </div>
+    </Card>
+    <Card>
+      <div class="stat-card">
+        <span class="stat-label">{m.system_uptime()}</span>
+        <span class="stat-value">{formatUptime(data.system.uptime_secs)}</span>
+      </div>
+    </Card>
+    <Card>
+      <div class="stat-card">
+        <span class="stat-label">{m.system_active_requests()}</span>
+        <span class="stat-value">{data.system.active_requests} <span class="stat-unit">requests</span></span>
+      </div>
+    </Card>
+  </div>
 
   <section aria-labelledby="connections-heading">
-    <h2 id="connections-heading">Connections ({data.connections.length})</h2>
+    <h2 id="connections-heading" class="section-title">{m.nav_connections()}</h2>
     {#if data.connections.length === 0}
-      <p>No connections configured.</p>
+      <EmptyState
+        title={m.connection_empty()}
+        description="Add a provider connection to start routing requests."
+      />
     {:else}
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">ID</th>
-            <th scope="col">Provider</th>
-            <th scope="col">Status</th>
-            <th scope="col">Models</th>
-            <th scope="col">Active requests</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each data.connections as conn (conn.id)}
-            <tr>
-              <td>{conn.id}</td>
-              <td>{conn.provider}</td>
-              <td style="color: {statusColor[conn.status] ?? 'inherit'}">{conn.status}</td>
-              <td>{conn.model_count}</td>
-              <td>{conn.active_requests}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+      <div class="conn-grid">
+        {#each data.connections as conn (conn.id)}
+          <Card>
+            <div class="conn-card">
+              <div class="conn-header">
+                <div class="conn-name">
+                  <StatusDot status={conn.status} />
+                  <span class="provider">{conn.provider}</span>
+                </div>
+                <Badge status={conn.status} />
+              </div>
+              <div class="conn-meta">
+                {conn.model_count} models · {conn.active_requests} active
+              </div>
+              <div class="conn-id">{conn.id}</div>
+            </div>
+          </Card>
+        {/each}
+      </div>
     {/if}
   </section>
-</main>
+</div>
 
 <style>
-  main {
-    max-width: 900px;
-    margin: 2rem auto;
-    font-family: system-ui, sans-serif;
-    padding: 0 1rem;
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
   }
-  header {
+
+  .stat-card {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 2rem;
+    flex-direction: column;
+    gap: 6px;
   }
-  h1 { margin: 0; font-size: 1.5rem; }
-  h2 { margin-top: 0; font-size: 1.1rem; border-bottom: 1px solid #eee; padding-bottom: 0.25rem; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; }
-  dt { font-weight: 600; }
-  dd { margin: 0; }
-  section { margin-bottom: 2rem; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #eee; }
-  th { background: #f5f5f5; font-weight: 600; }
-  button {
-    padding: 0.4rem 0.75rem;
-    background: #1a1a2e;
-    color: #fff;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
+
+  .stat-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--text-3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .stat-value {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+
+  .stat-unit {
+    font-size: 0.8125rem;
+    font-weight: 400;
+    color: var(--text-3);
+  }
+
+  .section-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0 0 16px;
+  }
+
+  .conn-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .conn-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .conn-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .conn-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .provider {
     font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+
+  .conn-meta {
+    font-size: 0.8125rem;
+    color: var(--text-2);
+  }
+
+  .conn-id {
+    font-size: 0.75rem;
+    color: var(--text-3);
+    font-family: monospace;
+  }
+
+  @media (max-width: 768px) {
+    .stats-bar {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 </style>

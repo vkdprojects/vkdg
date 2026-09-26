@@ -12,15 +12,23 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@inlang/paraglide-js": "^2.25.4",
     "@sveltejs/adapter-node": "5.5.7",
     "@sveltejs/kit": "2.70.3",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "26.6.3",
     "msw": "2.7.5",
     "svelte": "5.57.1",
     "svelte-check": "4.7.6",
+    "tailwindcss": "^4.3.3",
     "typescript": "5.9.3",
     "vite": "8.3.1",
     "vitest": "^5.0.2"
+  },
+  "dependencies": {
+    "bits-ui": "^2.19.3",
+    "lucide-svelte": "^1.0.1",
+    "svelte-sonner": "^1.2.1"
   }
 }

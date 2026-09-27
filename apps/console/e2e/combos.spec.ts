@@ -63,13 +63,14 @@ test('a combo made in the console routes the next request, and deleting it stops
   await expect(row).toHaveCount(0);
   expect(await listedModels(page, key)).not.toContain('e2e-fast');
 
-  // With the combo gone no route claims the name: the call is refused, and any
-  // row it leaves was not routed through the combo.
+  // With the combo gone no route claims the name: the call is refused, and the
+  // row it leaves (failed requests are logged too) was not routed through it.
   before = new Set((await history(page)).map((r) => r.request_id));
   const res = await call();
   expect(res.status()).toBeGreaterThanOrEqual(400);
+  await expect.poll(async () => (await newRow(page, 'e2e-fast', before)) !== undefined).toBe(true);
   const after = await newRow(page, 'e2e-fast', before);
-  expect(after?.decision?.route_id ?? null).not.toBe('combo:e2e-fast');
+  expect(after!.decision?.route_id ?? null).not.toBe('combo:e2e-fast');
 });
 
 test('a combo with no model or an unknown target is refused in the form', async ({ page }) => {

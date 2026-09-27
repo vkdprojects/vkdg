@@ -360,7 +360,7 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
         scopes: serde_json::from_str(&scopes).unwrap_or_default(),
         created_at: parse_time(Some(created)).unwrap_or_else(Utc::now),
         last_used_at: parse_time(row.get(7)?),
-        revoked_at: parse_time(row.get(8)?),
+        revoked_at: policy_time(row, 8)?,
         expires_at: policy_time(row, 9)?,
         allowed_models: policy_json(row, 10)?,
         allowed_ips: policy_json::<Vec<String>>(row, 11)?
@@ -600,6 +600,8 @@ mod tests {
     fn corrupt_policy_columns_fail_closed() {
         for (col, garbage) in [
             ("expires_at", "not-a-time"),
+            // A revoked key must not come back because its timestamp is garbage.
+            ("revoked_at", "not-a-time"),
             ("allowed_models", "{broken"),
             ("allowed_ips", "{broken"),
             ("allowed_ips", "[\"192.168.\"]"),

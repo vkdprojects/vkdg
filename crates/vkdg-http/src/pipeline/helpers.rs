@@ -137,176 +137,65 @@ pub(super) fn filter_think_tags_stream(
     ))
 }
 
-/// Decodes a protocol-specific stream (e.g., AWS EventStream) to SSE events
-/// encoded in the client's API dialect (Anthropic Messages or OpenAI ChatCompletions).
+/// Decodes a provider-specific stream (e.g. AWS EventStream) and re-encodes it
+/// in the dialect the client spoke.
+///
+/// The encoder lives in `vkdg-operations` so a dialect is written in exactly one
+/// place. When upstream ends, `decoder.finish()` and the encoder's own close run
+/// before the stream terminates: providers that send no stop event (Kiro) still
+/// produce a well-formed terminal sequence.
 pub(super) fn decode_stream_to_sse(
     body: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
     decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
-    api_type: vkdg_core::ApiType,
+    api_type: &vkdg_core::ApiType,
+    ctx: &vkdg_operations::StreamContext<'_>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
-    // State: (upstream stream, decoder, buffered events, api_type for encode)
-    // Use ApiType that implements Clone
-    let state = (
-        body,
+    struct State {
+        upstream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+        decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
+        encoder: Box<dyn vkdg_operations::StreamEncoder>,
+        pending: VecDeque<vkdg_operations::ConversationEvent>,
+        drained: bool,
+    }
+
+    let state = State {
+        upstream: body,
         decoder,
-        VecDeque::<vkdg_operations::ConversationEvent>::new(),
-        api_type.clone(),
-    );
-    Box::pin(futures::stream::unfold(
-        state,
-        |(mut upstream, mut decoder, mut pending, api_type)| async move {
-            loop {
-                // Drain any events already decoded from the last chunk.
-                if let Some(event) = pending.pop_front() {
-                    let encoded = encode_event_for_api_type(&event, api_type.clone());
-                    return Some((
-                        Ok(Bytes::from(encoded)),
-                        (upstream, decoder, pending, api_type),
-                    ));
-                }
-                // Pull the next chunk from upstream.
-                match upstream.next().await {
-                    Some(Ok(chunk)) => {
-                        for e in decoder.feed(chunk) {
-                            pending.push_back(e);
-                        }
-                    }
-                    Some(Err(e)) => return Some((Err(e), (upstream, decoder, pending, api_type))),
-                    None => return None,
+        encoder: vkdg_operations::stream_encoder_for(api_type, ctx),
+        pending: VecDeque::new(),
+        drained: false,
+    };
+
+    Box::pin(futures::stream::unfold(Some(state), |state| async move {
+        let mut state = state?;
+        loop {
+            // Emit events already decoded from an earlier chunk.
+            while let Some(event) = state.pending.pop_front() {
+                let encoded = state.encoder.encode(&event);
+                if !encoded.is_empty() {
+                    return Some((Ok(Bytes::from(encoded)), Some(state)));
                 }
             }
-        },
-    ))
-}
-
-/// Encodes a single ConversationEvent to SSE format for the given API type.
-fn encode_event_for_api_type(
-    event: &vkdg_operations::ConversationEvent,
-    api_type: vkdg_core::ApiType,
-) -> String {
-    match api_type {
-        vkdg_core::ApiType::AnthropicMessages => encode_event_anthropic(event),
-        vkdg_core::ApiType::OpenAiChatCompletions => encode_event_openai(event),
-        _ => {
-            // Default: JSON serialize as SSE data
-            let json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
-            format!("data: {}\n\n", json)
+            if state.drained {
+                return None;
+            }
+            match state.upstream.next().await {
+                Some(Ok(chunk)) => state.pending.extend(state.decoder.feed(chunk)),
+                Some(Err(e)) => return Some((Err(e), Some(state))),
+                None => {
+                    // Upstream closed: flush the decoder, then close the dialect.
+                    state.drained = true;
+                    state.pending.extend(state.decoder.finish());
+                    while let Some(event) = state.pending.pop_front() {
+                        let encoded = state.encoder.encode(&event);
+                        if !encoded.is_empty() {
+                            return Some((Ok(Bytes::from(encoded)), Some(state)));
+                        }
+                    }
+                    let tail = state.encoder.finish();
+                    return (!tail.is_empty()).then(|| (Ok(Bytes::from(tail)), None));
+                }
+            }
         }
-    }
-}
-
-/// Encode a single ConversationEvent to Anthropic Messages streaming format.
-fn encode_event_anthropic(event: &vkdg_operations::ConversationEvent) -> String {
-    use vkdg_operations::ConversationEvent::*;
-    match event {
-        Started { .. } => "event: message_start\ndata: {}\n\n".to_string(),
-        OutputDelta { delta, index: _ } => {
-            let json = serde_json::json!({
-                "index": 0,
-                "type": "content_block_delta",
-                "delta": { "type": "text_delta", "text": delta }
-            });
-            format!(
-                "event: content_block_delta\ndata: {}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        Completed { stop_reason } => {
-            let reason = match stop_reason {
-                vkdg_operations::StopReason::EndTurn => "end_turn",
-                vkdg_operations::StopReason::MaxTokens => "max_tokens",
-                vkdg_operations::StopReason::StopSequence => "stop_sequence",
-                vkdg_operations::StopReason::ToolUse => "tool_use",
-                vkdg_operations::StopReason::Cancelled => "end_turn",
-            };
-            let json = serde_json::json!({
-                "type": "message_delta",
-                "delta": { "stop_reason": reason },
-                "usage": { "output_tokens": 0 }
-            });
-            format!(
-                "event: content_block_stop\ndata: {{}}\n\nevent: message_delta\ndata: {}\n\nevent: message_stop\ndata: {{}}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        Failed { error } => {
-            let json = serde_json::json!({ "type": "error", "error": { "type": "server_error", "message": error.to_string() } });
-            format!(
-                "event: error\ndata: {}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        Usage {
-            input_tokens,
-            output_tokens,
-        } => {
-            let input = match input_tokens {
-                vkdg_operations::UsageCount::Reported(n) => *n,
-                vkdg_operations::UsageCount::Estimated(n) => *n,
-                vkdg_operations::UsageCount::Unknown => 0,
-            };
-            let output = match output_tokens {
-                vkdg_operations::UsageCount::Reported(n) => *n,
-                vkdg_operations::UsageCount::Estimated(n) => *n,
-                vkdg_operations::UsageCount::Unknown => 0,
-            };
-            let json = serde_json::json!({
-                "type": "message_delta",
-                "usage": { "input_tokens": input, "output_tokens": output }
-            });
-            format!(
-                "event: message_delta\ndata: {}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        _ => String::new(),
-    }
-}
-
-/// Encode a single ConversationEvent to OpenAI ChatCompletions streaming format.
-fn encode_event_openai(event: &vkdg_operations::ConversationEvent) -> String {
-    use vkdg_operations::ConversationEvent::*;
-    match event {
-        OutputDelta { delta, index: _ } => {
-            let json = serde_json::json!({
-                "id": "chatcmpl",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": "",
-                "choices": [{ "index": 0, "delta": { "content": delta }, "finish_reason": serde_json::Value::Null }]
-            });
-            format!(
-                "data: {}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        Completed { stop_reason } => {
-            let reason = match stop_reason {
-                vkdg_operations::StopReason::EndTurn => "stop",
-                vkdg_operations::StopReason::MaxTokens => "length",
-                vkdg_operations::StopReason::StopSequence => "stop",
-                vkdg_operations::StopReason::ToolUse => "tool_calls",
-                vkdg_operations::StopReason::Cancelled => "stop",
-            };
-            let json = serde_json::json!({
-                "id": "chatcmpl",
-                "object": "chat.completion.chunk",
-                "created": 0,
-                "model": "",
-                "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }]
-            });
-            format!(
-                "data: {}\n\ndata: [DONE]\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        Failed { error } => {
-            let json = serde_json::json!({ "error": { "message": error.to_string(), "type": "server_error" } });
-            format!(
-                "data: {}\n\n",
-                serde_json::to_string(&json).unwrap_or_default()
-            )
-        }
-        _ => String::new(),
-    }
+    }))
 }

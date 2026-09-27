@@ -254,7 +254,7 @@ pub(super) async fn run_pipeline_inner(
     };
 
     // 4. Credential ────────────────────────────────────────────────────────────
-    let token = pipeline.credentials.get_token(&config).await?;
+    let credential = pipeline.credentials.get_token(&config).await?;
     ctx.transition(AttemptState::CredentialReady);
     // 4b. VideoGenerate: async job path — skip upstream send, return 202 immediately.
     // The provider adapter still builds the request so we validate the operation;
@@ -347,7 +347,7 @@ pub(super) async fn run_pipeline_inner(
             ))
         })?;
     let prepared = adapter
-        .prepare(&operation, &config, &token)
+        .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
@@ -425,10 +425,18 @@ pub(super) async fn run_pipeline_inner(
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
-            // Check if adapter has a stream decoder for protocol transformation
-            // Decode: raw bytes -> ConversationEvent -> re-encode to client dialect SSE
+            // Providers whose wire protocol is not SSE (e.g. Kiro's AWS EventStream)
+            // are decoded to events and re-encoded in the client's dialect.
             let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(body, decoder, ctx.envelope.api_type.clone())
+                super::helpers::decode_stream_to_sse(
+                    body,
+                    decoder,
+                    &ctx.envelope.api_type,
+                    &vkdg_operations::StreamContext {
+                        model: &ctx.envelope.model_requested,
+                        request_id: &ctx.envelope.request_id,
+                    },
+                )
             } else {
                 body
             };
@@ -506,13 +514,13 @@ async fn run_fusion_dispatch(
     operation = op;
 
     // Race all targets; return first Ok, or NoEligibleConnection if all fail.
-    let api_type = ctx.envelope.api_type.clone();
+    let envelope = ctx.envelope.clone();
     let mut futs: FuturesUnordered<_> = fusion_targets
         .into_iter()
         .map(|conn_id| {
             let operation = operation.clone();
-            let api_type = api_type.clone();
-            async move { fusion_one_target(pipeline, conn_id, operation, api_type).await }
+            let envelope = envelope.clone();
+            async move { fusion_one_target(pipeline, conn_id, operation, envelope).await }
         })
         .collect();
     let mut last_err = VkdgError::NoEligibleConnection;
@@ -532,7 +540,7 @@ async fn fusion_one_target(
     pipeline: &PipelineState,
     conn_id: ConnectionId,
     operation: Operation,
-    api_type: vkdg_core::ApiType,
+    envelope: vkdg_core::RequestEnvelope,
 ) -> Result<Response, VkdgError> {
     let conn_arc = pipeline
         .catalog
@@ -544,7 +552,7 @@ async fn fusion_one_target(
         (conn.config.clone(), guard)
     };
 
-    let token = pipeline.credentials.get_token(&config).await?;
+    let credential = pipeline.credentials.get_token(&config).await?;
 
     let adapter = pipeline
         .provider_registry
@@ -556,7 +564,7 @@ async fn fusion_one_target(
             ))
         })?;
     let prepared = adapter
-        .prepare(&operation, &config, &token)
+        .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
@@ -578,9 +586,16 @@ async fn fusion_one_target(
             .body(axum::body::Body::from(body))
             .map_err(|e| VkdgError::Internal(e.to_string()))?,
         UpstreamResponse::Streaming { status: _, body } => {
-            // Check if adapter has a stream decoder for protocol transformation
             let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(body, decoder, api_type)
+                super::helpers::decode_stream_to_sse(
+                    body,
+                    decoder,
+                    &envelope.api_type,
+                    &vkdg_operations::StreamContext {
+                        model: &envelope.model_requested,
+                        request_id: &envelope.request_id,
+                    },
+                )
             } else {
                 body
             };
@@ -705,13 +720,8 @@ async fn run_prompt_chain(
         );
 
         // Execute the step.
-        let resp = fusion_one_target(
-            pipeline,
-            conn_id,
-            operation.clone(),
-            ctx.envelope.api_type.clone(),
-        )
-        .await?;
+        let resp =
+            fusion_one_target(pipeline, conn_id, operation.clone(), ctx.envelope.clone()).await?;
 
         if step_idx + 1 < step_count {
             // Not the last step: consume the body and extract text for the next step.
@@ -787,7 +797,7 @@ mod tests {
             &self,
             _op: &Operation,
             _cfg: &vkdg_connections::ConnectionConfig,
-            _token: &str,
+            _credential: &vkdg_provider_sdk::Credential,
         ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
             Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
         }

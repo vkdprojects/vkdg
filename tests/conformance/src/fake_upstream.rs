@@ -41,6 +41,9 @@ pub enum FakeUpstreamBehavior {
     OpenAIStreamOk { content: String },
     /// Return HTTP 429 in OpenAI error format.
     OpenAI429,
+    /// Stream raw bytes with an arbitrary content-type: lets a test serve a
+    /// non-SSE upstream protocol such as Kiro's AWS EventStream framing.
+    RawStream { content_type: String, body: Vec<u8> },
 }
 
 #[derive(Clone)]
@@ -155,6 +158,15 @@ async fn handle(State(state): State<FakeUpstreamState>) -> impl IntoResponse {
                 serde_json::to_vec(&body).unwrap(),
             )
                 .into_response()
+        }
+        // Raw non-SSE stream bytes (e.g. Kiro's AWS EventStream framing), so the
+        // pipeline's decode + re-encode path can be exercised end to end.
+        FakeUpstreamBehavior::RawStream { content_type, body } => {
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", content_type.clone())
+                .body(axum::body::Body::from(body.clone()))
+                .unwrap()
         }
     }
 }

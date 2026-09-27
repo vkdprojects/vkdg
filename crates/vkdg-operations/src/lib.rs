@@ -233,15 +233,30 @@ pub enum ConversationEvent {
         delta: String,
         index: u32,
     },
+    /// Model reasoning ("thinking") text; never mixed into the visible answer.
+    ReasoningDelta {
+        delta: String,
+        index: u32,
+    },
+    /// A tool-call fragment. The first event for an `index` carries `name` and
+    /// `tool_use_id`; later ones carry `input_delta` (JSON text) only.
     ToolCallDelta {
         tool_use_id: String,
         name: String,
         input_delta: String,
         index: u32,
     },
+    /// The tool call at `index` is complete (its input will not grow).
+    ToolCallEnd {
+        index: u32,
+    },
     Usage {
         input_tokens: UsageCount,
         output_tokens: UsageCount,
+        /// Prompt tokens served from the provider's prompt cache.
+        cache_read_tokens: UsageCount,
+        /// Prompt tokens written to the provider's prompt cache.
+        cache_creation_tokens: UsageCount,
     },
     Completed {
         stop_reason: StopReason,
@@ -249,6 +264,59 @@ pub enum ConversationEvent {
     Failed {
         error: VkdgError,
     },
+}
+
+impl UsageCount {
+    /// The count if known (reported or estimated), else 0.
+    pub fn value(&self) -> u32 {
+        match self {
+            UsageCount::Reported(n) | UsageCount::Estimated(n) => *n,
+            UsageCount::Unknown => 0,
+        }
+    }
+}
+
+// ── Stream contracts ──────────────────────────────────────────────────────────
+
+/// Request data a provider stream decoder may need (e.g. per-model limits).
+#[derive(Debug, Clone, Copy)]
+pub struct StreamContext<'a> {
+    /// Model id requested by the client.
+    pub model: &'a str,
+    pub request_id: &'a RequestId,
+}
+
+/// Encodes [`ConversationEvent`]s into one client wire dialect (Anthropic SSE,
+/// OpenAI chunks). Stateful: one instance per response stream. Implemented by
+/// the ingress crates; the pipeline only drives it.
+pub trait StreamEncoder: Send {
+    /// Wire bytes for one event (may be empty; may open/close blocks first).
+    fn encode(&mut self, event: &ConversationEvent) -> Vec<u8>;
+
+    /// Called once when the event stream ends. Closes anything still open so the
+    /// client always receives a well-formed terminal sequence.
+    fn finish(&mut self) -> Vec<u8>;
+}
+
+/// Builds a [`StreamEncoder`] for one response. Passed by the ingress to the pipeline.
+pub type StreamEncoderFactory = fn(&StreamContext<'_>) -> Box<dyn StreamEncoder>;
+
+pub mod stream_encode;
+pub use stream_encode::{AnthropicStreamEncoder, OpenAiStreamEncoder};
+
+/// Builds the encoder for the dialect the client spoke.
+///
+/// The pipeline uses this whenever a provider needs protocol translation, so a
+/// dialect is written in exactly one place.
+pub fn stream_encoder_for(
+    api_type: &vkdg_core::ApiType,
+    ctx: &StreamContext<'_>,
+) -> Box<dyn StreamEncoder> {
+    match api_type {
+        vkdg_core::ApiType::OpenAiChatCompletions => Box::new(OpenAiStreamEncoder::new(ctx)),
+        // Anthropic Messages is the internal default dialect.
+        _ => Box::new(AnthropicStreamEncoder::new(ctx)),
+    }
 }
 
 // ── Non-streaming response ────────────────────────────────────────────────────

@@ -148,7 +148,8 @@ describe('listKeys', () => {
       {
         id: 'key-1', name: 'ci-key', tenant_id: 'default', prefix: 'vkdg_1a2b3c4d',
         scopes: ['data_inference'], created_at: '2026-01-01T00:00:00Z',
-        last_used_at: null, revoked_at: '2026-01-02T00:00:00Z', status: 'revoked',
+        last_used_at: null, revoked_at: '2026-01-02T00:00:00Z', expires_at: null,
+        allowed_models: [], allowed_ips: [], status: 'revoked',
       },
     ];
     server.use(http.get(`${BASE}/admin/v1/keys`, () =>
@@ -167,7 +168,8 @@ describe('createKey', () => {
     const created: CreatedKey = {
       key: 'vkdg_1a2b3c4dfull', id: 'key-uuid', name: 'test-key', tenant_id: 'default',
       prefix: 'vkdg_1a2b3c4d', scopes: ['data_inference'], created_at: '2026-01-01T00:00:00Z',
-      last_used_at: null, revoked_at: null, status: 'active',
+      last_used_at: null, revoked_at: null, expires_at: '2026-12-31T00:00:00+00:00',
+      allowed_models: ['claude-*'], allowed_ips: ['10.0.0.0/8'], status: 'active',
     };
     let sent: unknown;
     server.use(http.post(`${BASE}/admin/v1/keys`, async ({ request }) => {
@@ -178,6 +180,24 @@ describe('createKey', () => {
     expect(result.key).toBe('vkdg_1a2b3c4dfull');
     // The admin API takes scopes; a stale `role` field would be silently ignored.
     expect(sent).toEqual({ name: 'test-key', scopes: ['data_inference'] });
+  });
+
+  // Plausible wrong impl: limits dropped or nested instead of top-level fields the Rust body reads
+  it('sends limits as top-level fields', async () => {
+    let sent: unknown;
+    server.use(http.post(`${BASE}/admin/v1/keys`, async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json({}, { status: 201 });
+    }));
+    await createKey('session=tok', 'k', ['data_inference'], {
+      expires_at: '2026-12-31T00:00:00.000Z', allowed_models: ['claude-*'],
+      allowed_ips: ['10.0.0.0/8'], monthly_token_limit: 1000, requests_per_minute: 60,
+    });
+    expect(sent).toEqual({
+      name: 'k', scopes: ['data_inference'], expires_at: '2026-12-31T00:00:00.000Z',
+      allowed_models: ['claude-*'], allowed_ips: ['10.0.0.0/8'],
+      monthly_token_limit: 1000, requests_per_minute: 60,
+    });
   });
 });
 

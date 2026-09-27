@@ -59,6 +59,10 @@ struct KeySummary {
     expires_at: Option<String>,
     allowed_models: Vec<String>,
     allowed_ips: Vec<String>,
+    monthly_token_limit: Option<u64>,
+    requests_per_minute: Option<u32>,
+    /// Tokens and requests this calendar month (UTC); absent if unreadable.
+    usage_this_month: Option<UsageSummary>,
     /// `active`, `expired`, or `revoked`.
     status: &'static str,
 }
@@ -77,6 +81,9 @@ impl From<&VirtualKey> for KeySummary {
             expires_at: k.expires_at.map(|t| t.to_rfc3339()),
             allowed_models: k.allowed_models.clone(),
             allowed_ips: k.allowed_ips.iter().map(ToString::to_string).collect(),
+            monthly_token_limit: k.monthly_token_limit,
+            requests_per_minute: k.requests_per_minute,
+            usage_this_month: None,
             status: if k.is_revoked() {
                 "revoked"
             } else if k.is_expired_at(chrono::Utc::now()) {
@@ -86,6 +93,13 @@ impl From<&VirtualKey> for KeySummary {
             },
         }
     }
+}
+
+#[derive(Serialize)]
+struct UsageSummary {
+    input_tokens: u64,
+    output_tokens: u64,
+    requests: u64,
 }
 
 #[derive(Serialize)]
@@ -120,7 +134,22 @@ pub async fn list_keys(State(state): State<AdminState>, headers: HeaderMap) -> R
     }
     match state.key_store.list() {
         Ok(keys) => {
-            let items: Vec<KeySummary> = keys.iter().map(KeySummary::from).collect();
+            let items: Vec<KeySummary> =
+                keys.iter()
+                    .map(|k| {
+                        let mut summary = KeySummary::from(k);
+                        summary.usage_this_month = state
+                            .key_store
+                            .usage_this_month(&k.id)
+                            .ok()
+                            .map(|u| UsageSummary {
+                                input_tokens: u.input_tokens,
+                                output_tokens: u.output_tokens,
+                                requests: u.requests,
+                            });
+                        summary
+                    })
+                    .collect();
             let total = items.len();
             Json(KeyListResponse { items, total }).into_response()
         }
@@ -376,5 +405,6 @@ mod tests {
         assert_eq!(item["allowed_ips"][0], "10.0.0.0/8");
         assert!(item["expires_at"].is_string());
         assert_eq!(item["status"], "active");
+        assert_eq!(item["usage_this_month"]["requests"], 0);
     }
 }

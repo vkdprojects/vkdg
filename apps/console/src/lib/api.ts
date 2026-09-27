@@ -18,6 +18,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
       : `HTTP ${r.status}`;
     throw new Error(message);
   }
+  // DELETE endpoints answer 204 with no body.
+  if (r.status === 204) return undefined as T;
   return r.json() as T;
 }
 
@@ -56,13 +58,75 @@ export interface ClientKey {
   created_at: string;
   last_used_at?: string | null;
   revoked_at?: string | null;
-  status: 'active' | 'revoked';
+  expires_at?: string | null;
+  allowed_models: string[];
+  allowed_ips: string[];
+  monthly_token_limit?: number | null;
+  requests_per_minute?: number | null;
+  /** Tokens and requests this calendar month (UTC). */
+  usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
+  status: 'active' | 'expired' | 'revoked';
+}
+
+/** Optional create-time limits; absent = unrestricted. */
+export interface KeyLimits {
+  /** RFC 3339 instant. */
+  expires_at?: string;
+  allowed_models?: string[];
+  /** Addresses or CIDR ranges. */
+  allowed_ips?: string[];
+  monthly_token_limit?: number;
+  requests_per_minute?: number;
 }
 
 /** Returned once by createKey; `key` is never shown again. */
 export interface CreatedKey extends ClientKey {
   key: string;
 }
+
+export interface Account {
+  id: string;
+  provider: string;
+  label: string;
+  expires_at: string | null;
+  has_refresh_token: boolean;
+  status: 'active' | 'needs_login';
+  revoked_reason?: string;
+}
+
+export type OAuthFlow = 'authorization_code_pkce' | 'device_code' | 'import_token';
+
+export interface LoginField {
+  id: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+  default: string | null;
+}
+
+export interface LoginMethod {
+  id: string;
+  label: string;
+  flow: OAuthFlow;
+  fields: LoginField[];
+}
+
+export type LoginStart =
+  | {
+      flow: 'device_code';
+      login_id: string;
+      user_code: string;
+      verification_uri: string;
+      verification_uri_complete: string | null;
+      interval_secs: number;
+      expires_in_secs: number;
+    }
+  | { flow: 'authorization_code_pkce'; login_id: string; authorize_url: string };
+
+export type LoginPoll =
+  | { status: 'pending' | 'slow_down' }
+  | { status: 'failed'; message: string }
+  | { status: 'done'; account: Account };
 
 export interface RouteSummary {
   id: string;
@@ -121,10 +185,22 @@ export const api = {
     req<{ items: ConnectionSummary[]; total: number }>('GET', '/admin/v1/connections'),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
-  createKey: (name: string, scopes: KeyScope[]) =>
-    req<CreatedKey>('POST', '/admin/v1/keys', { name, scopes }),
+  createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>
+    req<CreatedKey>('POST', '/admin/v1/keys', { name, scopes, ...limits }),
   revokeKey: (id: string) =>
     req<void>('DELETE', `/admin/v1/keys/${id}`),
+  listAccounts: () =>
+    req<{ items: Account[]; total: number }>('GET', '/admin/v1/accounts'),
+  deleteAccount: (id: string) =>
+    req<void>('DELETE', `/admin/v1/accounts/${encodeURIComponent(id)}`),
+  loginMethods: (provider: string) =>
+    req<{ provider: string; items: LoginMethod[] }>('GET', `/admin/v1/providers/${encodeURIComponent(provider)}/login-methods`),
+  startLogin: (provider: string, method: string, params: Record<string, string> = {}) =>
+    req<LoginStart>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/start`, { method, params }),
+  pollLogin: (provider: string, login_id: string, code?: string) =>
+    req<LoginPoll>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/poll`, { login_id, code }),
+  importToken: (provider: string, method: string, params: Record<string, string>) =>
+    req<{ status: 'done'; account: Account }>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params }),
   listRoutes: () =>
     req<{ items: RouteSummary[] }>('GET', '/admin/v1/routes'),
   previewRoute: (model: string) =>

@@ -107,7 +107,22 @@ export interface ClientKey {
   created_at: string;
   last_used_at: string | null;
   revoked_at: string | null;
-  status: 'active' | 'revoked';
+  expires_at: string | null;
+  allowed_models: string[];
+  allowed_ips: string[];
+  monthly_token_limit?: number | null;
+  requests_per_minute?: number | null;
+  /** Tokens and requests this calendar month (UTC). */
+  usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
+  status: 'active' | 'expired' | 'revoked';
+}
+/** Optional create-time limits; absent = unrestricted. */
+export interface KeyLimits {
+  expires_at?: string;
+  allowed_models?: string[];
+  allowed_ips?: string[];
+  monthly_token_limit?: number;
+  requests_per_minute?: number;
 }
 /** Only the create response carries the raw `key`. */
 export interface CreatedKey extends ClientKey { key: string }
@@ -136,11 +151,16 @@ export async function listKeys(cookie: string): Promise<ClientKey[]> {
   return d.items;
 }
 
-export async function createKey(cookie: string, name: string, scopes: KeyScope[]): Promise<CreatedKey> {
+export async function createKey(
+  cookie: string,
+  name: string,
+  scopes: KeyScope[],
+  limits: KeyLimits = {},
+): Promise<CreatedKey> {
   const res = await fetch(`${BASE}/admin/v1/keys`, {
     method: 'POST',
     headers: adminHeaders(cookie),
-    body: JSON.stringify({ name, scopes }),
+    body: JSON.stringify({ name, scopes, ...limits }),
   });
   if (!res.ok) throw new Error(`create key failed: ${res.status}`);
   return res.json() as Promise<CreatedKey>;

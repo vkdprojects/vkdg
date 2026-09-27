@@ -292,4 +292,31 @@ mod tests {
             "Fusion with all targets excluded must return NoEligibleConnection"
         );
     }
+
+    fn rr_route(id: &str, model: &str, target: &str) -> RouteConfig {
+        RouteConfig {
+            id: RouteId(id.into()),
+            match_models: vec![model.into()],
+            strategy: StrategyKind::RoundRobin,
+            targets: vec![vkdg_core::ConnectionId(target.into())],
+            plugin_hooks: PluginHooks::default(),
+        }
+    }
+
+    // Found live: editing config.yaml bumped the admin revision but the data
+    // plane kept routing with the startup route table.
+    #[tokio::test]
+    async fn replaced_routes_take_effect_on_the_next_request() {
+        let router = Router::new(vec![rr_route("r1", "foo-*", "c1")]);
+        let (f, h) = (EligibilityFilter::default(), RoutingHints::default());
+        assert!(router.route(&test_envelope("foo-1"), &f, &h).await.is_ok());
+
+        router.replace_routes(vec![rr_route("r2", "bar-*", "c2")]);
+        assert!(matches!(
+            router.route(&test_envelope("foo-1"), &f, &h).await,
+            Err(vkdg_core::VkdgError::NoEligibleConnection)
+        ));
+        let r = router.route(&test_envelope("bar-1"), &f, &h).await.unwrap();
+        assert_eq!(r.route_id, RouteId("r2".into()));
+    }
 }

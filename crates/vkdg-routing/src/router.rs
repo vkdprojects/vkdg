@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use vkdg_core::{ConnectionId, ExcludedCandidate, RequestEnvelope, Result, VkdgError};
 
 use crate::scored::ScoredStrategy;
@@ -10,7 +12,10 @@ use crate::types::{EligibilityFilter, RouteConfig, RouteResult, RoutingHints, St
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub struct Router {
-    routes: Vec<RouteConfig>,
+    /// Swapped whole on config reload; a request routes against the snapshot it
+    /// read, never a half-applied one.
+    routes: RwLock<Arc<Vec<RouteConfig>>>,
+    /// Kept across reloads so round-robin positions do not reset.
     strategies: HashMap<String, Arc<dyn Strategy>>,
 }
 
@@ -19,7 +24,20 @@ impl Router {
         let mut strategies: HashMap<String, Arc<dyn Strategy>> = HashMap::new();
         strategies.insert("round_robin".into(), Arc::new(RoundRobinStrategy::new()));
         strategies.insert("fallback_chain".into(), Arc::new(FallbackChainStrategy));
-        Self { routes, strategies }
+        Self {
+            routes: RwLock::new(Arc::new(routes)),
+            strategies,
+        }
+    }
+
+    /// Replace the route table from a new, already validated config snapshot.
+    pub fn replace_routes(&self, routes: Vec<RouteConfig>) {
+        *self.routes.write() = Arc::new(routes);
+    }
+
+    /// The route table currently in force.
+    pub fn routes(&self) -> Arc<Vec<RouteConfig>> {
+        Arc::clone(&self.routes.read())
     }
 
     pub async fn route(
@@ -28,9 +46,8 @@ impl Router {
         filter: &EligibilityFilter,
         hints: &RoutingHints,
     ) -> Result<RouteResult> {
-        let route = self
-            .match_route(envelope)
-            .ok_or(VkdgError::NoEligibleConnection)?;
+        let routes = self.routes();
+        let route = Self::match_route(&routes, envelope).ok_or(VkdgError::NoEligibleConnection)?;
 
         // Fusion is handled separately — it builds fusion_targets directly.
         if let StrategyKind::Fusion { max_candidates } = &route.strategy {
@@ -159,9 +176,12 @@ impl Router {
         })
     }
 
-    fn match_route(&self, envelope: &RequestEnvelope) -> Option<&RouteConfig> {
+    fn match_route<'r>(
+        routes: &'r [RouteConfig],
+        envelope: &RequestEnvelope,
+    ) -> Option<&'r RouteConfig> {
         let model = &envelope.model_requested;
-        self.routes.iter().find(|r| {
+        routes.iter().find(|r| {
             r.match_models.iter().any(|pattern| {
                 if let Some(prefix) = pattern.strip_suffix('*') {
                     model.starts_with(prefix)

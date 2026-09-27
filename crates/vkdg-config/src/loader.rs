@@ -114,6 +114,11 @@ pub fn watch(path: String, tx: ConfigTx, mut version: u64) -> tokio::task::JoinH
             .expect("failed to watch config path");
 
         while nrx.recv().await.is_some() {
+            // One save is several notify events (truncate, write, metadata). Let
+            // the burst settle and reload once, so a save bumps the version once
+            // and never reads a half-written file.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            while nrx.try_recv().is_ok() {}
             version += 1;
             match load_and_validate(&path, version) {
                 Ok(snap) => {

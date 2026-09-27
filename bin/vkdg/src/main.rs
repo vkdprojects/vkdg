@@ -354,6 +354,7 @@ async fn serve(
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
                 admin_config_rx = Some(tx.subscribe());
+                spawn_config_applier(tx.subscribe(), &pipeline);
                 drop(vkdg_config::watch(path.clone(), tx, 1));
                 Some(pipeline)
             }
@@ -798,6 +799,29 @@ fn cmd_accounts(sub: AccountsSub) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ── Config hot reload ─────────────────────────────────────────────────────────
+
+/// Apply every validated config snapshot to the live pipeline.
+///
+/// Only config-derived parts are swapped: the route table and connection
+/// configs. Live state (in-flight counters, health, credentials, key store,
+/// trackers) is kept, so a reload never resets capacity accounting. The
+/// watcher already rejects invalid files, so this only ever sees valid ones.
+fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState) {
+    let router = Arc::clone(&pipeline.router);
+    let catalog = Arc::clone(&pipeline.catalog);
+    // The first value is the startup snapshot, already applied.
+    rx.mark_unchanged();
+    tokio::spawn(async move {
+        while rx.changed().await.is_ok() {
+            let snap = Arc::clone(&rx.borrow_and_update());
+            catalog.apply(snap.connections.as_ref().clone()).await;
+            router.replace_routes(snap.routes.as_ref().clone());
+            tracing::info!(version = snap.version, "config applied to data plane");
+        }
+    });
 }
 
 // ── Data-plane API keys ───────────────────────────────────────────────────────

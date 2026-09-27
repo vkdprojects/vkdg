@@ -101,17 +101,34 @@ pub fn watch(path: String, tx: ConfigTx, mut version: u64) -> tokio::task::JoinH
 
         let (ntx, mut nrx) = mpsc::channel::<Event>(8);
 
-        let mut watcher: RecommendedWatcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-                if let Ok(event) = res {
+        // Watch the directory, not the file: editors, `sed -i` and ConfigMap
+        // symlink swaps replace the file by rename, and an inotify watch on the
+        // old inode then never fires again.
+        let file = std::path::Path::new(&path);
+        let dir = match file.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(d) => d.to_path_buf(),
+            None => std::path::PathBuf::from("."),
+        };
+        let name = file.file_name().map(std::ffi::OsStr::to_owned);
+
+        let watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                if event.paths.iter().any(|p| p.file_name() == name.as_deref()) {
                     let _ = ntx.try_send(event);
                 }
-            })
-            .expect("failed to create file watcher");
-
-        watcher
-            .watch(std::path::Path::new(&path), RecursiveMode::NonRecursive)
-            .expect("failed to watch config path");
+            }
+        });
+        let mut watcher: RecommendedWatcher = match watcher {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(error = %e, "config watcher unavailable; hot reload disabled");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&dir, RecursiveMode::NonRecursive) {
+            tracing::error!(error = %e, dir = %dir.display(), "cannot watch config directory; hot reload disabled");
+            return;
+        }
 
         while nrx.recv().await.is_some() {
             // One save is several notify events (truncate, write, metadata). Let
@@ -366,5 +383,37 @@ routes:
         .unwrap();
         let snap = load_and_validate(path.to_str().unwrap(), 1).unwrap();
         assert!(!snap.ip_rules.allows(Some("2001:db8::1".parse().unwrap())));
+    }
+
+    // Editors and `sed -i` save by renaming a new file over the old one. A
+    // watch on the file's inode then goes silent after the first save.
+    #[tokio::test]
+    async fn atomic_saves_keep_reloading_once_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.yaml");
+        let body = |m: &str| {
+            format!(
+                "listen: 0.0.0.0:8080\nconnections: []\nroutes: []\nglobal_system_prompt: {m}\n"
+            )
+        };
+        std::fs::write(&path, body("v1")).unwrap();
+        let snap = load_and_validate(path.to_str().unwrap(), 1).unwrap();
+        let (tx, mut rx) = crate::snapshot::config_channel(snap);
+        let _h = watch(path.to_str().unwrap().to_owned(), tx, 1);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        for (i, m) in ["v2", "v3"].iter().enumerate() {
+            let tmp = dir.path().join(format!(".c.yaml.tmp{i}"));
+            std::fs::write(&tmp, body(m)).unwrap();
+            std::fs::rename(&tmp, &path).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), rx.changed())
+                .await
+                .unwrap_or_else(|_| panic!("save {m} was not picked up"))
+                .unwrap();
+            let got = rx.borrow_and_update().gateway.global_system_prompt.clone();
+            assert_eq!(got.as_deref(), Some(*m));
+        }
+        // Each save moved the version exactly once.
+        assert_eq!(rx.borrow().version, 3);
     }
 }

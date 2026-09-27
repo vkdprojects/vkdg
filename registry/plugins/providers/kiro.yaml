@@ -1,0 +1,16 @@
+name: kiro
+version: "1.0.0"
+kind: provider
+description: "Kiro / Amazon Q — Amazon Q Developer models over the CodeWhisperer streaming protocol"
+author: "VKDG Team"
+repository: "https://github.com/vkdprojects/vkdg"
+license: MIT
+tags: [built-in, amazon-q, claude, multi-family, oauth-device-code]
+models: ["claude-*", "gpt-5.6-*", "minimax-*", "deepseek-*", "glm-*", "qwen3-*", "auto"]
+
+install:
+  config_snippet: |
+    provider: kiro
+    auth:
+      type: api_key
+      env_var: KIRO_API_KEY

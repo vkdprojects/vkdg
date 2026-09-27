@@ -5,11 +5,16 @@ edition = "2021"
 
 [dependencies]
 vkdg-provider-sdk = { workspace = true }
+vkdg-core = { workspace = true }
 vkdg-connections  = { workspace = true }
 vkdg-operations   = { workspace = true }
+serde             = { workspace = true }
 serde_json        = { workspace = true }
-reqwest           = { workspace = true, features = ["json"] }
-futures           = { workspace = true }
+uuid              = { workspace = true }
+crc32fast         = "1.4"
+bytes             = { workspace = true }
+http              = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 
 [lib]
 doctest = false

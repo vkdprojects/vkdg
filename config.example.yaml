@@ -46,6 +46,17 @@ connections:
     weight: 1
     tags: [fast, cheap]
 
+  # Kiro / Amazon Q — Claude, GPT, MiniMax, GLM, Qwen and DeepSeek families
+  # Endpoint is fixed (q.us-east-1.amazonaws.com); no base_url needed.
+  - id: kiro-default
+    provider: kiro
+    auth:
+      type: api_key
+      env_var: KIRO_API_KEY            # export KIRO_API_KEY=ksk_...
+    models: ["claude-*", "gpt-5.6-*", "minimax-*", "deepseek-*", "glm-*", "qwen3-*", "auto"]
+    max_concurrent: 20
+    weight: 1
+
   # Custom OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, etc.)
   # - id: local-ollama
   #   provider: "openai-compat"
@@ -79,6 +90,12 @@ routes:
     match_models: ["llama-*", "mixtral-*"]
     strategy: round_robin
     targets: [groq-default]
+
+  # Kiro-only model families (Claude/GPT names above already match earlier routes)
+  - id: kiro-route
+    match_models: ["gpt-5.6-*", "minimax-*", "deepseek-*", "glm-*", "qwen3-*", "auto"]
+    strategy: round_robin
+    targets: [kiro-default]
 
   # Catch-all fallback: try anthropic first, then openai
   # - id: fallback

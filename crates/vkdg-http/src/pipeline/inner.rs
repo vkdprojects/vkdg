@@ -425,6 +425,14 @@ pub(super) async fn run_pipeline_inner(
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
+            // Check if adapter has a stream decoder for protocol transformation
+            // Decode: raw bytes -> ConversationEvent -> re-encode to client dialect SSE
+            let body = if let Some(decoder) = adapter.stream_decoder() {
+                super::helpers::decode_stream_to_sse(body, decoder, ctx.envelope.api_type.clone())
+            } else {
+                body
+            };
+
             // Streaming responses are never cached — the body is a stream.
             // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
             let filtered_body = if !ctx.envelope.include_think_tags {
@@ -498,14 +506,15 @@ async fn run_fusion_dispatch(
     operation = op;
 
     // Race all targets; return first Ok, or NoEligibleConnection if all fail.
+    let api_type = ctx.envelope.api_type.clone();
     let mut futs: FuturesUnordered<_> = fusion_targets
         .into_iter()
         .map(|conn_id| {
             let operation = operation.clone();
-            async move { fusion_one_target(pipeline, conn_id, operation).await }
+            let api_type = api_type.clone();
+            async move { fusion_one_target(pipeline, conn_id, operation, api_type).await }
         })
         .collect();
-
     let mut last_err = VkdgError::NoEligibleConnection;
     while let Some(result) = futs.next().await {
         match result {
@@ -519,11 +528,11 @@ async fn run_fusion_dispatch(
     Err(last_err)
 }
 
-/// Execute a single upstream call for one fusion target.
 async fn fusion_one_target(
     pipeline: &PipelineState,
     conn_id: ConnectionId,
     operation: Operation,
+    api_type: vkdg_core::ApiType,
 ) -> Result<Response, VkdgError> {
     let conn_arc = pipeline
         .catalog
@@ -568,13 +577,21 @@ async fn fusion_one_target(
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
             .map_err(|e| VkdgError::Internal(e.to_string()))?,
-        UpstreamResponse::Streaming { status: _, body } => axum::response::Response::builder()
-            .status(http::StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header("cache-control", "no-cache")
-            .header("x-accel-buffering", "no")
-            .body(axum::body::Body::from_stream(body))
-            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+        UpstreamResponse::Streaming { status: _, body } => {
+            // Check if adapter has a stream decoder for protocol transformation
+            let body = if let Some(decoder) = adapter.stream_decoder() {
+                super::helpers::decode_stream_to_sse(body, decoder, api_type)
+            } else {
+                body
+            };
+            axum::response::Response::builder()
+                .status(http::StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .header("cache-control", "no-cache")
+                .header("x-accel-buffering", "no")
+                .body(axum::body::Body::from_stream(body))
+                .map_err(|e| VkdgError::Internal(e.to_string()))?
+        }
     };
 
     Ok(resp)
@@ -688,7 +705,7 @@ async fn run_prompt_chain(
         );
 
         // Execute the step.
-        let resp = fusion_one_target(pipeline, conn_id, operation.clone()).await?;
+        let resp = fusion_one_target(pipeline, conn_id, operation.clone(), ctx.envelope.api_type.clone()).await?;
 
         if step_idx + 1 < step_count {
             // Not the last step: consume the body and extract text for the next step.

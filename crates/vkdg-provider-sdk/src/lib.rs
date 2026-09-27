@@ -15,6 +15,5 @@ pub mod registry;
 pub mod request;
 
 pub use error::ProviderError;
-pub use oauth::{OAuthConfig, OAuthFlow, OAuthProvider, TokenPair};
 pub use registry::ProviderRegistry;
-pub use request::{PreparedRequest, ProviderAdapter};
+pub use request::{PreparedRequest, ProviderAdapter, ConversationStreamDecoder};

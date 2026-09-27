@@ -33,6 +33,11 @@ Combos:
 - ComboResolver: exact ID match -> glob pattern -> bare model routing
 - Active in pipeline: combo targets override route result, combo compression threshold respected
 
+Providers:
+- Kiro / Amazon Q provider (`kiro`): API key auth via `KIRO_API_KEY` or device code OAuth (AWS SSO OIDC), fixed `q.us-east-1.amazonaws.com` endpoint
+- Kiro exposed end to end: `vkdg setup` wizard, console connection and setup pages, registry manifest, `config.example.yaml`
+- Kiro model families: `claude-*`, `gpt-5.6-*`, `minimax-*`, `deepseek-*`, `glm-*`, `qwen3-*`, `auto` (20 model ids)
+
 Credentials and OAuth:
 - OAuth2 client_credentials flow with per-connection singleflight and conditional generation write
 - Cooldown: exponential backoff (2^(n-1)s, cap 300s, jitter) wired to 429/5xx upstream errors

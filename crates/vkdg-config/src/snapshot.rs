@@ -144,13 +144,17 @@ fn parse_provider(s: &str) -> ProviderKind {
         "anthropic" => ProviderKind::Anthropic,
         "openai" => ProviderKind::OpenAI,
         "google" => ProviderKind::Google,
-        other => {
-            // "custom:<url>" or bare URL → Custom
+        // "custom:<url>" or a bare URL → OpenAI-compatible endpoint at that URL.
+        other if other.starts_with("custom:") || other.starts_with("http") => {
             let url = other.strip_prefix("custom:").unwrap_or(other);
             ProviderKind::Custom {
                 base_url: url.to_owned(),
             }
         }
+        // Anything else names a provider plugin in the adapter registry.
+        other => ProviderKind::Plugin {
+            id: other.to_owned(),
+        },
     }
 }
 
@@ -204,5 +208,32 @@ fn parse_strategy(s: &str) -> Option<StrategyKind> {
         "fallback_chain" => Some(StrategyKind::FallbackChain),
         "last_known_good" => Some(StrategyKind::LastKnownGood),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_provider_id_resolves_to_its_own_adapter() {
+        // A provider id that is not a core kind must address the plugin adapter
+        // registered under that exact id — not fall back to "openai".
+        for id in ["kiro", "groq", "deepseek", "github-copilot"] {
+            assert_eq!(parse_provider(id).adapter_id(), id);
+        }
+    }
+
+    #[test]
+    fn core_and_custom_provider_kinds_are_preserved() {
+        assert_eq!(parse_provider("anthropic").adapter_id(), "anthropic");
+        assert_eq!(parse_provider("openai").adapter_id(), "openai");
+        assert_eq!(parse_provider("google").adapter_id(), "google");
+
+        // An explicit URL still means "OpenAI-compatible endpoint at this URL".
+        let custom = parse_provider("custom:https://api.example.com/v1");
+        assert_eq!(custom.adapter_id(), "openai");
+        assert_eq!(custom.as_str(), "https://api.example.com/v1");
+        assert_eq!(parse_provider("https://api.example.com/v1").adapter_id(), "openai");
     }
 }

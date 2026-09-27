@@ -30,6 +30,7 @@
     { id: 'gemini',      label: 'Google Gemini',           desc: 'API key',                    color: '#1d4ed8', dot: '#60a5fa', url: 'https://aistudio.google.com/app/apikey' },
     { id: 'deepseek',    label: 'DeepSeek',                desc: 'API key',                    color: '#0d9488', dot: '#2dd4bf', url: 'https://platform.deepseek.com/api_keys' },
     { id: 'mistral',     label: 'Mistral',                 desc: 'API key',                    color: '#374151', dot: '#9ca3af', url: 'https://console.mistral.ai/api-keys/' },
+    { id: 'kiro',        label: 'Kiro (Amazon Q)',         desc: 'API key',                    color: '#c2410c', dot: '#fb923c', url: 'https://kiro.dev/' },
     { id: 'custom',      label: 'Custom (OpenAI-compat)',  desc: 'Any OpenAI-compat endpoint', color: '#4b5563', dot: '#6b7280', url: '' },
   ];
 

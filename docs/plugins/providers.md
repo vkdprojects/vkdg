@@ -40,6 +40,7 @@ These ship with every VKDG binary. We maintain the adapters — when an API chan
 | Mistral | `mistral` | — | OpenAI-compat. Good European alternative. |
 | Together AI | `together` | — | Large model catalog. OpenAI-compat. |
 | Fireworks AI | `fireworks` | — | Fast inference. OpenAI-compat. |
+| Kiro / Amazon Q | `kiro` | — | Amazon Q / CodeWhisperer protocol. Claude, GPT, MiniMax, GLM, Qwen, DeepSeek families. Fixed endpoint. Also supports device code OAuth. |
 
 ```yaml
 # Example: API key connection
@@ -55,13 +56,13 @@ connections:
 
 ### OAuth / device code (code agents)
 
-These are AI coding tools that don't use API keys — they use OAuth. You authenticate once and VKDG stores and refreshes the token automatically.
+Most of these are AI coding tools that don't use API keys — they use OAuth. You authenticate once and VKDG stores and refreshes the token automatically.
 
 | Provider | ID | Flow | What it is |
 |----------|----|------|------------|
 | Claude Code | `claude-code` | OAuth PKCE | Anthropic's Claude as a CLI agent |
 | OpenAI Codex | `codex` | OAuth PKCE | OpenAI's Codex CLI |
-| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | AWS's AI coding assistant |
+| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | AWS's AI coding assistant — also accepts a plain `KIRO_API_KEY` |
 | Kimi Coding | `kimi-coding` | Device code | Moonshot AI's coding agent |
 | GitHub Copilot | `github-copilot` | Device code | GitHub's Copilot (short-lived tokens, auto-refreshed) |
 | Antigravity | `antigravity` | Google OAuth | Google Cloud Code (requires GCP project) |

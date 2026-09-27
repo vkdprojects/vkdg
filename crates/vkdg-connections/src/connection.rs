@@ -13,6 +13,8 @@ pub enum ProviderKind {
     Anthropic,
     OpenAI,
     Google,
+    /// A provider plugin addressed by its registry id, e.g. `kiro`, `groq`.
+    Plugin { id: String },
     Custom { base_url: String },
 }
 
@@ -22,17 +24,20 @@ impl ProviderKind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAI => "openai",
             ProviderKind::Google => "google",
+            ProviderKind::Plugin { id } => id.as_str(),
             ProviderKind::Custom { base_url } => base_url.as_str(),
         }
     }
 
     /// Returns the registry key used to look up a [`ProviderAdapter`] for this kind.
-    /// `Custom` connections use the OpenAI-compatible adapter by default.
+    /// `Custom` connections are bare OpenAI-compatible endpoints, so they use the
+    /// OpenAI adapter; `Plugin` connections address their own adapter by id.
     pub fn adapter_id(&self) -> &str {
         match self {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAI => "openai",
             ProviderKind::Google => "google",
+            ProviderKind::Plugin { id } => id.as_str(),
             ProviderKind::Custom { .. } => "openai",
         }
     }

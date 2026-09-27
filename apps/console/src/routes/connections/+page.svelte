@@ -33,6 +33,7 @@
     { value: 'sambanova',  label: 'SambaNova (free tier)' },
     { value: 'cerebras',   label: 'Cerebras (free tier)' },
     { value: 'nvidia-nim', label: 'NVIDIA NIM' },
+    { value: 'kiro',       label: 'Kiro (Amazon Q)' },
   ];
 
   const showBaseUrl = $derived(provider === 'openai-compat' || provider === 'anthropic-compat');
@@ -50,6 +51,7 @@
     'sambanova':     'SAMBANOVA_API_KEY',
     'cerebras':      'CEREBRAS_API_KEY',
     'nvidia-nim':    'NVIDIA_API_KEY',
+    'kiro':          'KIRO_API_KEY',
     'openai-compat': 'API_KEY',
   };
 
@@ -65,6 +67,7 @@
     'sambanova':  'Meta-Llama-*',
     'cerebras':   'llama3.1-*',
     'nvidia-nim': 'meta/llama-*',
+    'kiro':       'claude-*, gpt-5.6-*, minimax-*, deepseek-*, glm-*, qwen3-*, auto',
   };
 
   $effect(() => {

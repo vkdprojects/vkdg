@@ -55,7 +55,10 @@ connections:
 | `anthropic` | Anthropic Messages API (`https://api.anthropic.com`) |
 | `openai` | OpenAI API (`https://api.openai.com`) |
 | `google` | Google Generative Language API |
+| `kiro` | Kiro / Amazon Q (fixed endpoint `https://q.us-east-1.amazonaws.com`) |
 | `custom:<url>` | Any URL, e.g. `custom:https://my-proxy.internal` |
+
+Any registered provider plugin id is also accepted — see [providers.md](../plugins/providers.md) for the full built-in list.
 
 ### models patterns
 
@@ -285,6 +288,6 @@ What does **not** trigger a reload:
 | `"duplicate connection id: <id>"` | Two connections share the same `id` | Give each connection a unique `id` |
 | `"route '<id>' targets unknown connection '<cid>'"` | A route's `targets` entry has no matching connection `id` | Add the connection or fix the target name |
 | `"route '<id>' has unknown strategy '<s>'"` | `strategy` value is not one of the accepted strings | Use one of the values listed in `strategies` above |
-| `"provider parse error"` | `provider` is not `anthropic`/`openai`/`google` or `custom:<url>` | Check spelling; custom providers need the `custom:` prefix |
+| `"provider parse error"` | `provider` is not a registered provider id (e.g. `anthropic`, `openai`, `kiro`) nor `custom:<url>` | Check spelling; custom endpoints need the `custom:` prefix |
 
 Run `vkdg config check --file gateway.yaml` to validate without starting the server.

@@ -4579,10 +4579,15 @@ dependencies = [
 name = "vkdg-provider-kiro"
 version = "0.1.0"
 dependencies = [
- "futures",
- "reqwest 0.12.28",
+ "bytes",
+ "crc32fast",
+ "http",
+ "serde",
  "serde_json",
+ "tokio",
+ "uuid",
  "vkdg-connections",
+ "vkdg-core",
  "vkdg-operations",
  "vkdg-provider-sdk",
 ]

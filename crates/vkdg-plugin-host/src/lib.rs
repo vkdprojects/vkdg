@@ -5,10 +5,34 @@
 //! is deferred to Phase E; for now we validate that a component binary is
 //! well-formed and reserve the call surface.
 
+pub mod store;
+pub use store::{InstalledPlugin, PluginStore, StoreError};
+
+pub mod registry_index;
+pub use registry_index::{IndexEntry, IndexError, RegistryIndex, DEFAULT_REGISTRY};
+
+pub mod registry_manifest;
+pub use registry_manifest::{ManifestError, PluginManifestKind, RegistryManifest, SourceKind};
+
+pub mod wasm_auth;
+pub use wasm_auth::{AuthContext, AuthOutcome, AuthPlugin, RateLimitOutcome, WasmAuth};
+
+pub mod wasm_cache;
+pub use wasm_cache::WasmCache;
+
+pub mod wasm_router;
+pub use wasm_router::WasmRouter;
+
+pub mod wasm_compressor;
+pub use wasm_compressor::WasmCompressor;
+
+pub mod wasm_provider;
+pub use wasm_provider::WasmProviderAdapter;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use wasmtime::component::Component;
-use wasmtime::Engine;
+use wasmtime::component::{Component, Linker};
+use wasmtime::{Config, Engine, Store};
 
 // ── PluginId ──────────────────────────────────────────────────────────────────
 
@@ -126,53 +150,181 @@ impl Default for PluginRegistry {
 
 // ── WasmPluginInstance ────────────────────────────────────────────────────────
 
-/// A loaded and validated WASM component.
+/// Default ceiling on a plugin's linear memory.
+const DEFAULT_MEMORY_LIMIT_MB: u32 = 256;
+
+/// Default execution budget per call, in Wasmtime fuel units.
 ///
-/// The component binary is validated at construction time via Wasmtime; the
-/// engine is stored per-instance so callers don't need to manage its lifetime.
-/// In a production deployment the engine would be shared across all instances
-/// (it is expensive to construct); that optimisation is deferred to Phase E
-/// together with full bindgen codegen.
+/// Fuel bounds work, not wall-clock, so a plugin stuck in a loop is cut off
+/// deterministically instead of hanging a request. Roughly a few hundred million
+/// instructions: far more than a translate needs, far less than forever.
+const DEFAULT_FUEL: u64 = 200_000_000;
+
+/// Per-instance limits, enforced by the host rather than trusted to the plugin.
+struct PluginLimits {
+    memory_bytes: usize,
+    fuel: u64,
+}
+
+/// Store state for one call.
+///
+/// A plugin gets a WASI context that grants nothing: no preopened directories, no
+/// environment, no network, stdio to /dev/null. The context exists only because a
+/// guest built for `wasm32-wasip2` links Rust's `libstd`, which imports WASI even
+/// when the plugin never touches I/O. Refusing the imports outright would make
+/// every Rust plugin fail to instantiate; granting them empty means an attempt at
+/// I/O fails at the syscall instead. The gateway still owns all real I/O.
+struct PluginState {
+    limiter: MemoryLimiter,
+    wasi: wasmtime_wasi::WasiCtx,
+    table: wasmtime::component::ResourceTable,
+}
+
+impl wasmtime_wasi::WasiView for PluginState {
+    fn ctx(&mut self) -> &mut wasmtime_wasi::WasiCtx {
+        &mut self.wasi
+    }
+
+    fn table(&mut self) -> &mut wasmtime::component::ResourceTable {
+        &mut self.table
+    }
+}
+
+/// Refuses growth past the manifest's memory ceiling.
+struct MemoryLimiter {
+    max_bytes: usize,
+}
+
+impl wasmtime::ResourceLimiter for MemoryLimiter {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(desired <= self.max_bytes)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(true)
+    }
+}
+
+/// A compiled WASM component, ready to call.
+///
+/// The component is compiled once at install time; each call gets a fresh
+/// [`Store`] so one request cannot observe or corrupt another's state.
 pub struct WasmPluginInstance {
-    component_bytes: Vec<u8>,
     engine: Engine,
+    component: Component,
+    linker: Linker<PluginState>,
+    limits: PluginLimits,
 }
 
 impl WasmPluginInstance {
-    /// Load and validate a `.wasm` component from disk.
-    ///
-    /// Returns `Err` with a human-readable message if the file cannot be read
-    /// or the binary is not a valid Wasmtime component.
-    pub fn load(path: &str) -> Result<Self, String> {
+    /// Compile a `.wasm` component from disk under the manifest's limits.
+    pub fn load(path: &str, manifest: &PluginManifest) -> Result<Self, String> {
         let bytes =
             std::fs::read(path).map_err(|e| format!("failed to read wasm at {path:?}: {e}"))?;
-        let engine = Engine::default();
-        // Validate by attempting a compile; drops the compiled artifact.
-        Component::from_binary(&engine, &bytes)
-            .map_err(|e| format!("invalid wasm component at {path:?}: {e}"))?;
+        Self::from_bytes(&bytes, manifest)
+            .map_err(|e| format!("invalid wasm component at {path:?}: {e}"))
+    }
+
+    /// Compile a component from memory. Used by tests and by future registry
+    /// installs that stream bytes rather than write a file first.
+    pub fn from_bytes(bytes: &[u8], manifest: &PluginManifest) -> Result<Self, String> {
+        let mut config = Config::new();
+        // Fuel is what makes a runaway plugin terminate rather than hang.
+        config.consume_fuel(true);
+        config.wasm_component_model(true);
+        let engine = Engine::new(&config).map_err(|e| e.to_string())?;
+        let component = Component::from_binary(&engine, bytes).map_err(|e| e.to_string())?;
+        // Satisfy the WASI imports a `wasm32-wasip2` guest links via libstd. The
+        // context granted below is empty, so these resolve but do nothing useful.
+        let mut linker = Linker::new(&engine);
+        wasmtime_wasi::add_to_linker_sync(&mut linker)
+            .map_err(|e| format!("failed to wire WASI stubs: {e}"))?;
+
+        let memory_mb = manifest.memory_limit_mb.unwrap_or(DEFAULT_MEMORY_LIMIT_MB);
         Ok(Self {
-            component_bytes: bytes,
             engine,
+            component,
+            linker,
+            limits: PluginLimits {
+                memory_bytes: memory_mb as usize * 1024 * 1024,
+                fuel: DEFAULT_FUEL,
+            },
         })
     }
 
-    /// Call the `prepare` WIT export with JSON-serialised inputs.
+    /// A store for one call, with memory and fuel limits applied.
+    fn store(&self) -> Result<Store<PluginState>, String> {
+        let mut store = Store::new(
+            &self.engine,
+            PluginState {
+                limiter: MemoryLimiter {
+                    max_bytes: self.limits.memory_bytes,
+                },
+                // Nothing is granted: no preopened dirs, no env, no network, and
+                // stdio goes nowhere. A plugin that tries I/O fails at the call.
+                wasi: wasmtime_wasi::WasiCtxBuilder::new().build(),
+                table: wasmtime::component::ResourceTable::new(),
+            },
+        );
+        store.limiter(|state| &mut state.limiter);
+        store
+            .set_fuel(self.limits.fuel)
+            .map_err(|e| format!("failed to set fuel: {e}"))?;
+        Ok(store)
+    }
+
+    /// Instantiate the component, proving its imports are satisfiable.
     ///
-    /// Returns the serialised `PreparedRequest` JSON on success.
+    /// A component that needs host imports we do not provide fails here rather
+    /// than mid-request.
+    pub fn instantiate(&self) -> Result<(), String> {
+        let mut store = self.store()?;
+        self.linker
+            .instantiate(&mut store, &self.component)
+            .map_err(|e| format!("instantiation failed: {e}"))?;
+        Ok(())
+    }
+
+    /// Call an exported function that takes a string and returns a string.
     ///
-    /// **Phase D stub**: instantiation and typed call are Phase E (requires
-    /// `wasmtime::component::bindgen!` codegen).  This method re-validates the
-    /// component binary and returns `Err` to signal that the call surface is
-    /// reserved but not yet wired.
-    pub fn call_prepare(
-        &self,
-        _operation_json: &str,
-        _config_json: &str,
-        _token: &str,
-    ) -> Result<String, String> {
-        // Re-validate to prove the component is still well-formed.
-        Component::from_binary(&self.engine, &self.component_bytes).map_err(|e| e.to_string())?;
-        Err("wasm call not yet wired (Phase E)".to_string())
+    /// Most of the provider contract has this shape once inputs are JSON-encoded,
+    /// so a single typed call covers `prepare`, `decode-response` and friends
+    /// without one bespoke binding per function.
+    pub fn call_string_fn(&self, export: &str, input: &str) -> Result<String, String> {
+        let mut store = self.store()?;
+        let instance = self
+            .linker
+            .instantiate(&mut store, &self.component)
+            .map_err(|e| format!("instantiation failed: {e}"))?;
+        let func = instance
+            .get_typed_func::<(String,), (String,)>(&mut store, export)
+            .map_err(|e| format!("export {export:?} not found or wrong type: {e}"))?;
+        let (out,) = func
+            .call(&mut store, (input.to_owned(),))
+            .map_err(|e| format!("call to {export:?} failed: {e}"))?;
+        func.post_return(&mut store)
+            .map_err(|e| format!("post_return failed: {e}"))?;
+        Ok(out)
+    }
+
+    /// Fuel budget applied to each call.
+    pub fn fuel_budget(&self) -> u64 {
+        self.limits.fuel
+    }
+
+    /// Memory ceiling in bytes.
+    pub fn memory_limit_bytes(&self) -> usize {
+        self.limits.memory_bytes
     }
 }
 
@@ -237,7 +389,7 @@ impl PluginHost {
             _ => return Err("manifest kind must be Wasm".to_string()),
         }
         // Load and validate first — no state mutation until this succeeds.
-        let instance = WasmPluginInstance::load(wasm_path)?;
+        let instance = WasmPluginInstance::load(wasm_path, &manifest)?;
         self.wasm_instances.insert(manifest.id.clone(), instance);
         self.registry.register(manifest);
         Ok(())
@@ -309,7 +461,8 @@ mod tests {
     // Plausible wrong impl: panics (unwrap) instead of returning Err for an invalid path.
     #[test]
     fn wasm_plugin_load_invalid_path() {
-        let result = WasmPluginInstance::load("/nonexistent/path/plugin.wasm");
+        let manifest = role_manifest("missing", vec![PluginRole::Provider]);
+        let result = WasmPluginInstance::load("/nonexistent/path/plugin.wasm", &manifest);
         assert!(result.is_err(), "expected Err for missing path");
         let msg = result.err().unwrap();
         assert!(

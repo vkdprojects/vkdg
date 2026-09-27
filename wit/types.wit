@@ -60,9 +60,10 @@ interface types {
         messages:   list<message>,
         /// system prompt, if provided separately from messages
         system:     option<string>,
-        stream:     bool,
+        /// `%` escapes the WIT keyword; the field is still named `stream`.
+        %stream:    bool,
         max-tokens: option<u32>,
-        temperature: option<float32>,
+        temperature: option<f32>,
         /// arbitrary key-value metadata threaded through the pipeline
         metadata:   list<tuple<string, string>>,
         /// raw extension bytes preserved from the incoming protocol
@@ -87,6 +88,156 @@ interface types {
         cache-write-tokens: option<u32>,
     }
 
+    // ── Credentials ───────────────────────────────────────────────────────────
+
+    /// The credential for one upstream call.
+    ///
+    /// `extra` is the plugin's own per-account data, persisted by the gateway at
+    /// login and refresh and handed back verbatim: region, tenant/profile ids,
+    /// which login method issued the token, whatever the provider needs. The
+    /// gateway never interprets these keys.
+    record credential {
+        /// API key or access token. Already refreshed; use as-is.
+        token: string,
+        extra: list<tuple<string, string>>,
+    }
+
+    /// Tokens plus the account data to persist alongside them.
+    record token-pair {
+        access-token:    string,
+        refresh-token:   option<string>,
+        /// Seconds until `access-token` expires; none = unknown.
+        expires-in-secs: option<u64>,
+        /// Merged into the stored account; keys returned here overwrite stored ones.
+        extra:           list<tuple<string, string>>,
+    }
+
+    // ── Interactive login ─────────────────────────────────────────────────────
+
+    /// One input a login method needs, rendered as a CLI flag or a form field.
+    record login-field {
+        id:       string,
+        label:    string,
+        required: bool,
+        /// Mask the value in UIs (pasted tokens, secrets).
+        secret:   bool,
+        default-value: option<string>,
+    }
+
+    /// A login method the plugin supports, e.g. device code or pasted token.
+    /// The gateway renders these generically; it knows nothing provider-specific.
+    record login-method {
+        id:     string,
+        label:  string,
+        /// "device-code" | "pkce" | "import"
+        flow:   string,
+        fields: list<login-field>,
+    }
+
+    /// Plugin-defined login inputs, keyed by `login-field.id`.
+    type login-params = list<tuple<string, string>>;
+
+    /// Opaque plugin state carried between the start and the end of a login
+    /// (device code, PKCE verifier, client registration). Never shown to users.
+    type login-state = list<tuple<string, string>>;
+
+    /// What the user must do to approve a device-code login.
+    record device-authorization {
+        verification-uri:          string,
+        verification-uri-complete: option<string>,
+        user-code:                 string,
+        /// Minimum seconds between polls.
+        interval-secs:             u64,
+        expires-in-secs:           u64,
+        state:                     login-state,
+    }
+
+    /// Where to send the user for a PKCE login.
+    record pkce-authorization {
+        authorize-url: string,
+        state:         login-state,
+    }
+
+    /// A completed login.
+    record login-result {
+        tokens: token-pair,
+        /// Account identity for listings (email, profile name). Empty = plugin id.
+        label:  string,
+    }
+
+    /// Outcome of one device-code poll.
+    variant device-poll {
+        /// Not approved yet; poll again after the interval.
+        pending,
+        /// Server asked to slow down; add 5s to the interval (RFC 8628 §3.5).
+        slow-down,
+        done(login-result),
+        /// Terminal failure (denied, expired, invalid); message is safe to show.
+        failed(string),
+    }
+
+    // ── Streaming ─────────────────────────────────────────────────────────────
+
+    /// One decoded event from a provider stream.
+    ///
+    /// A provider whose wire protocol is not SSE (AWS EventStream, a custom binary
+    /// framing) decodes to these, and the gateway re-encodes them into whichever
+    /// dialect the client spoke. That keeps wire-format translation in one place.
+    variant stream-event {
+        /// Stream opened.
+        started,
+        /// Visible answer text.
+        output-delta(indexed-text),
+        /// Model reasoning; never merged into the visible answer.
+        reasoning-delta(indexed-text),
+        /// A tool-call fragment. The first event for an index carries the name and
+        /// id; later ones carry input fragments to concatenate.
+        tool-call-delta(tool-call-delta),
+        /// The tool call at this index is complete; its input will not grow.
+        tool-call-end(u32),
+        usage(usage),
+        /// Terminal event: "end_turn" | "max_tokens" | "stop_sequence" | "tool_use".
+        completed(string),
+        /// Terminal failure; the gateway maps this to an HTTP status.
+        failed(stream-failure),
+    }
+
+    record indexed-text {
+        text:  string,
+        index: u32,
+    }
+
+    record tool-call-delta {
+        tool-use-id: string,
+        /// Set on the opening fragment; empty on continuation fragments.
+        name:        string,
+        input-delta: string,
+        index:       u32,
+    }
+
+    record stream-failure {
+        /// HTTP status to surface to the client.
+        status:  u16,
+        message: string,
+    }
+
+    // ── Model discovery ───────────────────────────────────────────────────────
+
+    /// A model the provider currently offers.
+    ///
+    /// Providers add and retire models faster than a gateway ships, so a plugin
+    /// may discover these at runtime instead of hardcoding a list.
+    record model-info {
+        /// Id to send upstream.
+        id:               string,
+        display-name:     option<string>,
+        max-input-tokens:  option<u32>,
+        max-output-tokens: option<u32>,
+        /// e.g. ["text", "image"]
+        input-types:      list<string>,
+        supports-prompt-cache: bool,
+    }
+
     // ── Routing ───────────────────────────────────────────────────────────────
 
     /// A candidate connection the gateway may dispatch to.
@@ -95,7 +246,7 @@ interface types {
         provider:      string,
         model:         string,
         /// latest known health score [0.0, 1.0]
-        health:        float32,
+        health:        f32,
         /// tokens remaining in the quota window; none = unknown
         quota-remaining: option<u32>,
         /// estimated cost per 1k tokens in microdollars; none = unknown
@@ -139,7 +290,7 @@ interface types {
         ttl-secs:   option<u32>,
         /// "exact" | "semantic" | "provider"
         cache-type: string,
-        hit-score:  option<float32>,
+        hit-score:  option<f32>,
     }
 
     variant cache-result {
@@ -155,7 +306,7 @@ interface types {
         /// "caveman" | "rtk" | "truncate" | "summarize" | custom name
         algorithm:      string,
         /// percentage saved [0.0, 1.0]
-        ratio:          float32,
+        ratio:          f32,
         /// true if messages were structurally altered (for audit)
         lossy:          bool,
     }

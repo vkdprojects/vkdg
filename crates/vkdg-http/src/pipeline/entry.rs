@@ -113,6 +113,7 @@ pub(super) fn emit_decision_record(
             api_type: api_type_str,
             status,
             connection_id: ctx.connection_id.as_ref().map(|c| c.0.clone()),
+            key_id: Some(ctx.envelope.client_id.0.clone()),
             started_at_ms,
             duration_ms: Some(duration_ms),
             decision: None,

@@ -354,7 +354,18 @@ async fn serve(
     let credentials = Arc::new(build_credentials(account_store.as_ref(), &registry));
 
     let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
-    let request_log = vkdg_admin::handlers::requests::RequestLog::new();
+    // Next to accounts.db and keys.db, so history survives a restart or deploy.
+    let request_log_path = AccountStore::default_path().with_file_name("requests.db");
+    let request_log = match vkdg_admin::handlers::requests::RequestLog::open(
+        &request_log_path,
+        vkdg_admin::handlers::requests::DEFAULT_RETAIN,
+    ) {
+        Ok(log) => log,
+        Err(e) => {
+            tracing::warn!(error = %e, "request log unavailable on disk; keeping it in memory");
+            vkdg_admin::handlers::requests::RequestLog::new()
+        }
+    };
 
     let mut pipeline = if let Some(path) = &config_path {
         match load_and_validate(path, 1) {

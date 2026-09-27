@@ -4431,6 +4431,7 @@ dependencies = [
  "futures",
  "http",
  "parking_lot",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

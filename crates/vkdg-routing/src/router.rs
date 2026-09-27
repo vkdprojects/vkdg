@@ -181,14 +181,8 @@ impl Router {
         envelope: &RequestEnvelope,
     ) -> Option<&'r RouteConfig> {
         let model = &envelope.model_requested;
-        routes.iter().find(|r| {
-            r.match_models.iter().any(|pattern| {
-                if let Some(prefix) = pattern.strip_suffix('*') {
-                    model.starts_with(prefix)
-                } else {
-                    model == pattern
-                }
-            })
-        })
+        routes
+            .iter()
+            .find(|r| vkdg_core::glob::matches_any(&r.match_models, model))
     }
 }

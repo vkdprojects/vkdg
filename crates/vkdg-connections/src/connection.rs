@@ -171,13 +171,7 @@ impl Connection {
     }
 
     pub(crate) fn serves_model(&self, model: &str) -> bool {
-        self.config.models.iter().any(|pattern| {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                model.starts_with(prefix)
-            } else {
-                model == pattern
-            }
-        })
+        vkdg_core::glob::matches_any(&self.config.models, model)
     }
 
     /// Record a 429/5xx and move to `Cooldown` with exponential backoff.

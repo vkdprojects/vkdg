@@ -24,32 +24,11 @@ impl ComboResolver {
         // 2. Pattern match
         self.combos
             .iter()
-            .find(|c| c.match_patterns.iter().any(|p| glob_match(p, name)))
+            .find(|c| vkdg_core::glob::matches_any(&c.match_patterns, name))
     }
 
     pub fn all(&self) -> &[Combo] {
         &self.combos
-    }
-}
-
-/// Simple glob: '*' matches any sequence, '?' matches one char.
-fn glob_match(pattern: &str, input: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let s: Vec<char> = input.chars().collect();
-    glob_inner(&p, &s)
-}
-
-fn glob_inner(p: &[char], s: &[char]) -> bool {
-    match (p.first(), s.first()) {
-        (None, None) => true,
-        (None, _) => false,
-        (Some(&'*'), _) => {
-            // '*' matches zero characters (skip it) or one character in s
-            glob_inner(&p[1..], s) || (!s.is_empty() && glob_inner(p, &s[1..]))
-        }
-        (Some(&'?'), Some(_)) => glob_inner(&p[1..], &s[1..]),
-        (Some(pc), Some(sc)) if pc == sc => glob_inner(&p[1..], &s[1..]),
-        _ => false,
     }
 }
 

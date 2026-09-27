@@ -99,7 +99,8 @@ pub fn resolve_client_ip(
     headers: &http::HeaderMap,
     trusted_proxies: &[IpNet],
 ) -> Option<IpAddr> {
-    let peer = peer?;
+    // Report IPv4 clients of a dual-stack listener as IPv4, not ::ffff:a.b.c.d.
+    let peer = peer?.to_canonical();
     let trusted = |ip: IpAddr| trusted_proxies.iter().any(|n| n.contains(ip));
     if !trusted(peer) {
         return Some(peer);
@@ -109,7 +110,8 @@ pub fn resolve_client_ip(
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .filter_map(|h| h.trim().parse().ok())
+        .filter_map(|h| h.trim().parse::<IpAddr>().ok())
+        .map(|h| h.to_canonical())
         .collect();
     // Each proxy appends the address it received from, so everything left of
     // the rightmost non-proxy hop is client-controlled.

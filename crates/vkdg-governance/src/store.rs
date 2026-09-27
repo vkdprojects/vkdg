@@ -284,21 +284,43 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
         created_at: parse_time(Some(created)).unwrap_or_else(Utc::now),
         last_used_at: parse_time(row.get(7)?),
         revoked_at: parse_time(row.get(8)?),
-        expires_at: parse_time(row.get(9)?),
-        allowed_models: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_default(),
-        // A stored range that no longer parses would widen the key if dropped;
-        // replace the whole list with one that matches nothing instead.
-        allowed_ips: {
-            let raw: Vec<String> =
-                serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default();
-            let parsed: Option<Vec<_>> = raw.iter().map(|s| s.parse().ok()).collect();
-            parsed.unwrap_or_else(|| vec![NOTHING])
-        },
+        expires_at: policy_time(row, 9)?,
+        allowed_models: policy_json(row, 10)?,
+        allowed_ips: policy_json::<Vec<String>>(row, 11)?
+            .iter()
+            .map(|e| e.parse().map_err(|m: String| policy_err(11, m)))
+            .collect::<rusqlite::Result<_>>()?,
     })
 }
 
-/// A range no client address can be in: `::/128` is the unspecified address.
-const NOTHING: vkdg_core::net::IpNet = vkdg_core::net::IpNet::UNSPECIFIED_V6;
+// Policy columns restrict a key. A value that does not parse must never read
+// as "no restriction" (empty list, no expiry): it is a row error instead, which
+// the data plane turns into a rejected request.
+
+fn policy_err(col: usize, msg: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        col,
+        rusqlite::types::Type::Text,
+        format!("corrupt key policy column: {}", msg.into()).into(),
+    )
+}
+
+fn policy_time(row: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    row.get::<_, Option<String>>(col)?
+        .map(|s| {
+            DateTime::parse_from_rfc3339(&s)
+                .map(|t| t.with_timezone(&Utc))
+                .map_err(|e| policy_err(col, e.to_string()))
+        })
+        .transpose()
+}
+
+fn policy_json<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    col: usize,
+) -> rusqlite::Result<T> {
+    serde_json::from_str(&row.get::<_, String>(col)?).map_err(|e| policy_err(col, e.to_string()))
+}
 
 fn sql(op: &'static str) -> impl Fn(rusqlite::Error) -> KeyStoreError {
     move |source| KeyStoreError::Sqlite { op, source }
@@ -491,5 +513,32 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert!(keys[0].allowed_models.is_empty() && keys[0].allowed_ips.is_empty());
         VirtualKeyStore::open(&path).unwrap(); // idempotent
+    }
+
+    // A corrupt policy column must never widen a key: garbage in expires_at,
+    // allowed_models, or allowed_ips makes the key unusable, not unrestricted.
+    #[test]
+    fn corrupt_policy_columns_fail_closed() {
+        for (col, garbage) in [
+            ("expires_at", "not-a-time"),
+            ("allowed_models", "{broken"),
+            ("allowed_ips", "{broken"),
+            ("allowed_ips", "[\"192.168.\"]"),
+        ] {
+            let store = VirtualKeyStore::in_memory().unwrap();
+            let (key, raw) = store.create(NewKey::named("k")).unwrap();
+            store
+                .conn
+                .lock()
+                .execute(
+                    &format!("UPDATE keys SET {col} = ?1 WHERE id = ?2"),
+                    params![garbage, key.id.0],
+                )
+                .unwrap();
+            assert!(
+                !matches!(store.authenticate(&raw), Ok(Some(_))),
+                "{col}={garbage:?} must not authenticate"
+            );
+        }
     }
 }

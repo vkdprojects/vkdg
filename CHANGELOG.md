@@ -23,6 +23,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - `limits.ip_allowlist` / `limits.ip_blocklist` were parsed and never enforced. They now apply to every `/v1/*` request, follow hot reload, and are validated at load: an invalid entry names its position (`limits.ip_allowlist[1]`) and a reload with it keeps the current config. `VKDG_TRUSTED_PROXIES` is validated at startup the same way
+- IPv4 clients of a dual-stack listener (`::ffff:a.b.c.d`) are matched as IPv4 by IP lists, per-key lists and `VKDG_TRUSTED_PROXIES`; before, they slipped past blocklists and failed allowlists
+- A corrupt policy column in `keys.db` (`expires_at`, `allowed_models`, `allowed_ips`) makes the key unusable instead of unrestricted
+- **Behavior change:** route `match_models`, connection `models` and combo patterns share one matcher: `*` anywhere and `?` (one character) now work in routes and connections too, so a literal `?` in a model pattern now matches any single character. The combo matcher no longer backtracks exponentially on patterns like `*a*a*a*b`
 - Config hot reload reaches the data plane. Before, a valid edit to the config file bumped the admin revision but requests kept routing with the startup routes and connections. Routes and connection configs now swap on each valid reload; in-flight counters and health survive it, so capacity accounting never resets. One save triggers one reload (notify events are debounced)
 - A refresh token rejected by the upstream (401, `invalid_grant`, `InvalidGrantException`, `ExpiredTokenException`) now parks the account instead of being retried on every request. New typed error `VkdgError::CredentialRevoked` / `ProviderError::CredentialRevoked`; transient failures (5xx, throttling) still retry
 - Refresh failures log the upstream status and message (`401: Bad credentials`) instead of a bare `authorization_failed`

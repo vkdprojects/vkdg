@@ -17,17 +17,12 @@ pub struct IpNet {
 }
 
 impl IpNet {
-    /// `::/128`, the unspecified address: a range no client is ever in.
-    pub const UNSPECIFIED_V6: Self = Self {
-        addr: IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-        prefix: 128,
-    };
-
     /// True when `ip` is inside this range. IPv4 never matches an IPv6 range
-    /// and vice versa.
+    /// and vice versa, except that an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`,
+    /// what dual-stack listeners report for IPv4 clients) is matched as IPv4.
     pub fn contains(&self, ip: IpAddr) -> bool {
         let prefix = u32::from(self.prefix);
-        match (self.addr, ip) {
+        match (self.addr, ip.to_canonical()) {
             (IpAddr::V4(net), IpAddr::V4(ip)) => {
                 same_prefix(u32::from(net).into(), u32::from(ip).into(), prefix, 32)
             }
@@ -215,5 +210,16 @@ mod tests {
         policy.replace(allow(&["192.168.0.0/16"]));
         assert!(policy.allows(ip("192.168.0.1")));
         assert!(!policy.allows(ip("10.0.0.1")));
+    }
+
+    // Dual-stack listeners see IPv4 clients as ::ffff:a.b.c.d.
+    #[test]
+    fn ipv4_mapped_ipv6_matches_ipv4_rules() {
+        let r = IpRules {
+            allow: vec![],
+            block: nets(&["10.0.0.0/8"]),
+        };
+        assert!(!r.allows(ip("::ffff:10.0.0.1")));
+        assert!(allow(&["127.0.0.1"]).allows(ip("::ffff:127.0.0.1")));
     }
 }

@@ -6,6 +6,15 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- **Breaking:** `/v1/messages`, `/v1/chat/completions` and `/v1/images/generations` now require a client API key (`x-api-key` or `Authorization: Bearer`), on every bind address including loopback: a loopback listener behind a reverse proxy is still public. Requests without a valid key get 401 in the client's wire format. `VKDG_DATA_AUTH=off` opts out explicitly and logs a warning at startup
+- API keys are persisted in `keys.db` (next to `accounts.db`, `0600`, override with `VKDG_KEYS_DB`). Only a SHA-256 hash and a display prefix (`vkdg_1a2b3c4d`) are stored. A key revoked from another process stops working within 5 s
+- The admin API's plaintext in-memory key store is gone: `/admin/v1/keys` manages the same keys `/v1/*` checks
+
+### Added
+- `vkdg keys create|list|revoke`. `create` prints only the raw key on stdout, so `$(vkdg keys create ci)` works
+- `/admin/v1/keys` takes `scopes` (`data_inference`, `data_image`) instead of `role`, and returns `prefix`, `status`, `last_used_at`, `revoked_at`. The console Keys page shows them and keeps revoked keys listed
+
 ### Fixed
 - A refresh token rejected by the upstream (401, `invalid_grant`, `InvalidGrantException`, `ExpiredTokenException`) now parks the account instead of being retried on every request. New typed error `VkdgError::CredentialRevoked` / `ProviderError::CredentialRevoked`; transient failures (5xx, throttling) still retry
 - Refresh failures log the upstream status and message (`401: Bad credentials`) instead of a bare `authorization_failed`

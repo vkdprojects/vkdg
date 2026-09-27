@@ -189,7 +189,7 @@ pub async fn list_combos(State(state): State<AdminState>, headers: HeaderMap) ->
 mod tests {
     use super::*;
     use crate::handlers::requests::RequestLog;
-    use crate::session::{KeyStore, SessionStore};
+    use crate::session::SessionStore;
     use axum::extract::State;
     use http::HeaderMap;
     use std::sync::Arc;
@@ -207,7 +207,7 @@ mod tests {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combo_resolver: None,
             catalog: None,
@@ -244,7 +244,7 @@ mod tests {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combo_resolver: None,
             catalog: None,

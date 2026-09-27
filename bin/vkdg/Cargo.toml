@@ -46,6 +46,7 @@ vkdg-provider-nvidia-nim     = { workspace = true }
 vkdg-provider-sdk        = { workspace = true }
 vkdg-config      = { workspace = true }
 vkdg-admin       = { workspace = true }
+vkdg-governance  = { workspace = true }
 uuid             = { workspace = true }
 rust-embed  = { workspace = true }
 axum-embed  = { workspace = true }

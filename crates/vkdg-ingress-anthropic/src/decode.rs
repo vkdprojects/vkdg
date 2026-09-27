@@ -134,12 +134,17 @@ mod tests {
     }
 
     async fn call_handler(state: AppState, body: &'static str) -> Response {
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method(Method::POST)
             .uri("/v1/messages")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(body))
             .unwrap();
+        // What `vkdg_http::require_api_key` attaches for an authenticated caller.
+        req.extensions_mut().insert(vkdg_http::ClientIdentity {
+            key_id: "key-test".into(),
+            tenant_id: "default".into(),
+        });
         handle_messages(State(state), req).await
     }
 

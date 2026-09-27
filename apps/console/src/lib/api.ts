@@ -44,19 +44,24 @@ export interface ConnectionSummary {
   active_requests: number;
 }
 
+export type KeyScope = 'data_inference' | 'data_image';
+
 export interface ClientKey {
   id: string;
   name: string;
-  role: string;
+  tenant_id: string;
+  /** Safe-to-show start of the key, e.g. `vkdg_1a2b3c4d`. */
+  prefix: string;
+  scopes: KeyScope[];
   created_at: string;
-  last_used_at?: string;
-  scopes: string[];
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  status: 'active' | 'revoked';
 }
 
-export interface CreatedKey {
+/** Returned once by createKey; `key` is never shown again. */
+export interface CreatedKey extends ClientKey {
   key: string;
-  id: string;
-  name: string;
 }
 
 export interface RouteSummary {
@@ -116,8 +121,8 @@ export const api = {
     req<{ items: ConnectionSummary[]; total: number }>('GET', '/admin/v1/connections'),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
-  createKey: (name: string, role: string) =>
-    req<CreatedKey>('POST', '/admin/v1/keys', { name, role }),
+  createKey: (name: string, scopes: KeyScope[]) =>
+    req<CreatedKey>('POST', '/admin/v1/keys', { name, scopes }),
   revokeKey: (id: string) =>
     req<void>('DELETE', `/admin/v1/keys/${id}`),
   listRoutes: () =>

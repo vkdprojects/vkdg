@@ -1,0 +1,313 @@
+//! Data-plane client authentication.
+//!
+//! Every `/v1/*` route is wrapped once by [`require_api_key`]. It accepts the
+//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (OpenAI
+//! clients), checks the endpoint's scope, and puts the caller's identity in the
+//! request extensions as [`ClientIdentity`] for the ingress handlers.
+//!
+//! It fails closed: no store configured, no key, an unknown or revoked key, and
+//! a storage error all reject the request. The only way to serve without keys is
+//! [`DataAuth::disabled`], an explicit operator opt-out.
+
+use std::sync::Arc;
+
+use axum::{
+    extract::{Request, State},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Json,
+};
+use http::{HeaderMap, StatusCode};
+use serde_json::json;
+use vkdg_governance::{KeyScope, VirtualKeyStore};
+
+/// Who is calling, as established by [`require_api_key`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientIdentity {
+    /// Virtual key id; becomes the envelope's `client_id`.
+    pub key_id: String,
+    pub tenant_id: String,
+}
+
+impl ClientIdentity {
+    /// Identity used only when auth is explicitly disabled.
+    fn anonymous() -> Self {
+        Self {
+            key_id: "anonymous".into(),
+            tenant_id: "default".into(),
+        }
+    }
+}
+
+/// Data-plane auth policy, shared by every `/v1/*` route.
+#[derive(Clone)]
+pub struct DataAuth {
+    store: Option<Arc<VirtualKeyStore>>,
+}
+
+impl DataAuth {
+    /// Require a valid key from `store` on every request.
+    pub fn required(store: Arc<VirtualKeyStore>) -> Self {
+        Self { store: Some(store) }
+    }
+
+    /// Serve without client keys. Operator opt-out only; never a default.
+    pub fn disabled() -> Self {
+        Self { store: None }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.store.is_none()
+    }
+}
+
+/// Axum middleware: authenticate the client or reject the request.
+pub async fn require_api_key(
+    State(auth): State<DataAuth>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let Some(store) = &auth.store else {
+        req.extensions_mut().insert(ClientIdentity::anonymous());
+        return next.run(req).await;
+    };
+
+    let Some(token) = presented_token(req.headers()) else {
+        return reject(
+            &path,
+            StatusCode::UNAUTHORIZED,
+            "missing API key: send `x-api-key: <key>` or `Authorization: Bearer <key>`. \
+             Create one with `vkdg keys create <name>` or in the console under Keys",
+        );
+    };
+
+    let key = match store.authenticate(token) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return reject(
+                &path,
+                StatusCode::UNAUTHORIZED,
+                "invalid or revoked API key",
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "key store lookup failed; rejecting request");
+            return reject(
+                &path,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "API key store unavailable",
+            );
+        }
+    };
+
+    let scope = scope_for(&path);
+    if !key.allows(scope) {
+        return reject(
+            &path,
+            StatusCode::FORBIDDEN,
+            "this API key is not allowed to call this endpoint",
+        );
+    }
+
+    req.extensions_mut().insert(ClientIdentity {
+        key_id: key.id.0,
+        tenant_id: key.tenant_id,
+    });
+    next.run(req).await
+}
+
+/// The key a client presented. `x-api-key` wins: Anthropic SDKs send it and some
+/// also send an unrelated `Authorization` header.
+fn presented_token(headers: &HeaderMap) -> Option<&str> {
+    if let Some(v) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let auth = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = auth.trim().split_once(' ')?;
+    let token = token.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
+}
+
+fn scope_for(path: &str) -> KeyScope {
+    if path.starts_with("/v1/images") {
+        KeyScope::DataImage
+    } else {
+        KeyScope::DataInference
+    }
+}
+
+/// An error body in the wire format the client speaks, so SDKs surface the
+/// message instead of a parse error.
+fn reject(path: &str, status: StatusCode, message: &str) -> Response {
+    let kind = match status {
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::SERVICE_UNAVAILABLE => "api_error",
+        _ => "authentication_error",
+    };
+    let body = if path.starts_with("/v1/messages") {
+        json!({ "type": "error", "error": { "type": kind, "message": message } })
+    } else {
+        let code = match status {
+            StatusCode::UNAUTHORIZED => "invalid_api_key",
+            StatusCode::FORBIDDEN => "insufficient_scope",
+            _ => "unavailable",
+        };
+        json!({ "error": { "message": message, "type": kind, "code": code } })
+    };
+    (status, Json(body)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{routing::post, Extension, Router};
+    use tower::ServiceExt;
+
+    async fn echo_identity(Extension(id): Extension<ClientIdentity>) -> String {
+        format!("{}|{}", id.key_id, id.tenant_id)
+    }
+
+    fn app(auth: DataAuth) -> Router {
+        Router::new()
+            .route("/v1/messages", post(echo_identity))
+            .route("/v1/chat/completions", post(echo_identity))
+            .route("/v1/images/generations", post(echo_identity))
+            .route_layer(axum::middleware::from_fn_with_state(auth, require_api_key))
+    }
+
+    async fn call(app: Router, path: &str, headers: &[(&str, &str)]) -> (StatusCode, String) {
+        let mut req = http::Request::post(path);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = app
+            .oneshot(req.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    fn store() -> Arc<VirtualKeyStore> {
+        Arc::new(VirtualKeyStore::in_memory().unwrap())
+    }
+
+    // The incident: /v1/* answered without any key and spent the live account.
+    #[tokio::test]
+    async fn keyless_request_is_rejected_on_every_endpoint() {
+        let app = app(DataAuth::required(store()));
+        for path in [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/v1/images/generations",
+        ] {
+            let (status, body) = call(app.clone(), path, &[]).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {body}");
+            assert!(body.contains("vkdg keys create"), "{path}: {body}");
+            // Each client SDK must parse the error in its own wire format.
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+            if path == "/v1/messages" {
+                assert_eq!(v["type"], "error", "{body}");
+                assert_eq!(v["error"]["type"], "authentication_error", "{body}");
+            } else {
+                assert_eq!(v["error"]["code"], "invalid_api_key", "{body}");
+                assert!(v.get("type").is_none(), "{body}");
+            }
+        }
+    }
+
+    // Plausible wrong impl: an empty store (fresh install) means "auth off".
+    #[tokio::test]
+    async fn empty_store_still_fails_closed() {
+        let (status, _) = call(
+            app(DataAuth::required(store())),
+            "/v1/messages",
+            &[("x-api-key", "vkdg_guess")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn both_header_styles_authenticate_and_carry_identity() {
+        let store = store();
+        let (key, raw) = store
+            .create("ci", "acme", KeyScope::DEFAULT.to_vec())
+            .unwrap();
+        let app = app(DataAuth::required(store));
+        let expected = format!("{}|acme", key.id.0);
+
+        let (s, body) = call(app.clone(), "/v1/messages", &[("x-api-key", &raw)]).await;
+        assert_eq!((s, body.as_str()), (StatusCode::OK, expected.as_str()));
+
+        let bearer = format!("Bearer {raw}");
+        let (s, body) = call(
+            app.clone(),
+            "/v1/chat/completions",
+            &[("authorization", &bearer)],
+        )
+        .await;
+        assert_eq!((s, body.as_str()), (StatusCode::OK, expected.as_str()));
+
+        // Basic auth or a bare token in Authorization is not a bearer key.
+        let (s, _) = call(app, "/v1/chat/completions", &[("authorization", &raw)]).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn revoked_key_is_rejected() {
+        let store = store();
+        let (key, raw) = store
+            .create("ci", "default", KeyScope::DEFAULT.to_vec())
+            .unwrap();
+        store.revoke(&key.id).unwrap();
+        let (s, body) = call(
+            app(DataAuth::required(store)),
+            "/v1/messages",
+            &[("x-api-key", &raw)],
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        assert!(
+            body.contains("\"type\":\"error\""),
+            "Anthropic error shape: {body}"
+        );
+    }
+
+    // Plausible wrong impl: scopes are stored but never checked.
+    #[tokio::test]
+    async fn key_without_image_scope_cannot_generate_images() {
+        let store = store();
+        let (_key, raw) = store
+            .create("chat-only", "default", vec![KeyScope::DataInference])
+            .unwrap();
+        let app = app(DataAuth::required(store));
+        let bearer = format!("Bearer {raw}");
+        let (s, body) = call(
+            app.clone(),
+            "/v1/images/generations",
+            &[("authorization", &bearer)],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            body.contains("insufficient_scope"),
+            "OpenAI error shape: {body}"
+        );
+        let (s, _) = call(app, "/v1/chat/completions", &[("authorization", &bearer)]).await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn explicit_opt_out_serves_anonymously() {
+        let (s, body) = call(app(DataAuth::disabled()), "/v1/messages", &[]).await;
+        assert_eq!((s, body.as_str()), (StatusCode::OK, "anonymous|default"));
+    }
+}

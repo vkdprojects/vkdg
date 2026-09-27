@@ -1,157 +1,111 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// Opaque virtual key identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VirtualKeyId(pub String);
 
-/// Scopes a virtual key is allowed to use.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// What a virtual key may call on the data plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyScope {
-    /// Full inference access.
+    /// Conversation endpoints: `/v1/messages`, `/v1/chat/completions`.
     DataInference,
-    /// Image generation only.
+    /// Image generation: `/v1/images/generations`.
     DataImage,
-    /// Read-only admin access.
-    AdminRead,
-    /// Full admin access.
-    AdminWrite,
 }
 
-fn default_atomic_u64() -> AtomicU64 {
-    AtomicU64::new(0)
+impl KeyScope {
+    /// Scopes a new key gets when the caller does not choose.
+    pub const DEFAULT: &'static [KeyScope] = &[KeyScope::DataInference, KeyScope::DataImage];
 }
 
-fn default_atomic_bool() -> AtomicBool {
-    AtomicBool::new(false)
-}
+/// Prefix of every raw token, so leaked keys are recognizable by secret scanners.
+pub const TOKEN_PREFIX: &str = "vkdg_";
 
-/// A virtual key entry.
+/// Characters of the raw token kept for display (`vkdg_` plus 8 random chars).
+const DISPLAY_PREFIX_LEN: usize = TOKEN_PREFIX.len() + 8;
+
+/// A client API key for the data plane.
 ///
-/// The raw token is never stored — only its SHA-256 hash.
-/// The raw token is shown once at creation time.
-///
-/// `spent_microdollars` and `revoked` are runtime-only atomic fields;
-/// they are skipped during serialization (Phase E will use a separate
-/// persistence record).
-#[derive(Debug, Serialize, Deserialize)]
+/// The raw token is shown once at creation and never stored: only its SHA-256
+/// hash and a short display prefix are kept.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: VirtualKeyId,
     pub name: String,
     pub tenant_id: String,
-    /// SHA-256 hex of the raw bearer token.
+    /// SHA-256 hex of the raw token.
     pub token_hash: String,
+    /// First characters of the raw token, safe to show (`vkdg_1a2b3c4d`).
+    pub prefix: String,
     pub scopes: Vec<KeyScope>,
-    /// Monthly budget in microdollars. None = unlimited.
-    pub budget_microdollars: Option<u64>,
-    /// Microdollars spent this budget window.
-    /// Atomically incremented; reset each `budget_reset_at`.
-    #[serde(skip, default = "default_atomic_u64")]
-    pub spent_microdollars: AtomicU64,
-    pub budget_reset_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    /// Whether the key has been revoked.
-    #[serde(skip, default = "default_atomic_bool")]
-    pub revoked: AtomicBool,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for VirtualKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The hash is not the secret, but there is no reason to print it either.
+        f.debug_struct("VirtualKey")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("prefix", &self.prefix)
+            .field("scopes", &self.scopes)
+            .field("revoked", &self.revoked_at.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl VirtualKey {
-    /// Create a new key. Returns `(VirtualKey, raw_token)`.
-    ///
-    /// `raw_token` is shown once; the key stores only `token_hash`.
-    pub fn new(
-        name: String,
-        tenant_id: String,
-        scopes: Vec<KeyScope>,
-        budget_microdollars: Option<u64>,
-    ) -> (Self, String) {
-        use sha2::{Digest, Sha256};
-
-        let raw = Uuid::new_v4().to_string();
-        let hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    /// Mint a new key. Returns `(VirtualKey, raw_token)`; the raw token is shown once.
+    pub fn new(name: String, tenant_id: String, scopes: Vec<KeyScope>) -> (Self, String) {
+        let raw = format!("{TOKEN_PREFIX}{}", Uuid::new_v4().simple());
         let key = Self {
             id: VirtualKeyId(Uuid::new_v4().to_string()),
             name,
             tenant_id,
-            token_hash: hash,
+            token_hash: hash_token(&raw),
+            prefix: raw[..DISPLAY_PREFIX_LEN].to_owned(),
             scopes,
-            budget_microdollars,
-            spent_microdollars: AtomicU64::new(0),
-            budget_reset_at: Some(Utc::now() + chrono::Duration::days(30)),
             created_at: Utc::now(),
-            revoked: AtomicBool::new(false),
+            last_used_at: None,
+            revoked_at: None,
         };
         (key, raw)
     }
 
-    /// Check if this key's token matches the given raw token.
-    pub fn matches_token(&self, raw: &str) -> bool {
-        use sha2::{Digest, Sha256};
-        let hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
-        hash == self.token_hash
-    }
-
-    /// Remaining budget in microdollars. `None` if unlimited.
-    pub fn remaining_budget(&self) -> Option<u64> {
-        let limit = self.budget_microdollars?;
-        let spent = self.spent_microdollars.load(Ordering::Relaxed);
-        Some(limit.saturating_sub(spent))
-    }
-
-    /// Atomically record spend. Returns `Err(remaining)` if budget would be exceeded.
-    pub fn record_spend(&self, microdollars: u64) -> Result<(), u64> {
-        if let Some(limit) = self.budget_microdollars {
-            // Optimistic add: undo if over-limit.
-            let prev = self
-                .spent_microdollars
-                .fetch_add(microdollars, Ordering::Relaxed);
-            if prev + microdollars > limit {
-                self.spent_microdollars
-                    .fetch_sub(microdollars, Ordering::Relaxed);
-                return Err(limit.saturating_sub(prev));
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether this key is currently revoked.
     pub fn is_revoked(&self) -> bool {
-        self.revoked.load(Ordering::Acquire)
+        self.revoked_at.is_some()
     }
+
+    pub fn allows(&self, scope: KeyScope) -> bool {
+        self.scopes.contains(&scope)
+    }
+}
+
+/// SHA-256 hex of a raw token: the only form a token is stored or looked up in.
+pub fn hash_token(raw: &str) -> String {
+    format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Plausible wrong impl: `record_spend` does not prevent over-spend.
+    // Plausible wrong impl: the raw token is kept on the record and ends up in
+    // the database or a log line.
     #[test]
-    fn record_spend_rejects_over_budget() {
-        let (key, _) = VirtualKey::new("test".into(), "t".into(), vec![], Some(1000));
-        key.record_spend(800).unwrap();
-        let result = key.record_spend(300); // 800 + 300 = 1100 > 1000
-        assert!(result.is_err(), "over-budget spend must be rejected");
-    }
-
-    /// Plausible wrong impl: `matches_token` returns true for wrong token.
-    #[test]
-    fn matches_token_rejects_wrong_token() {
-        let (key, raw) = VirtualKey::new("test".into(), "t".into(), vec![], None);
-        assert!(key.matches_token(&raw));
-        assert!(!key.matches_token("wrong-token"));
-    }
-
-    /// Plausible wrong impl: `remaining_budget` returns 0 for unlimited key.
-    #[test]
-    fn unlimited_key_has_none_budget() {
-        let (key, _) = VirtualKey::new("test".into(), "t".into(), vec![], None);
-        assert!(
-            key.remaining_budget().is_none(),
-            "unlimited key must return None budget"
-        );
+    fn new_key_keeps_only_hash_and_display_prefix() {
+        let (key, raw) = VirtualKey::new("ci".into(), "t".into(), KeyScope::DEFAULT.to_vec());
+        assert!(raw.starts_with(TOKEN_PREFIX));
+        assert_eq!(key.token_hash, hash_token(&raw));
+        assert!(raw.starts_with(&key.prefix) && key.prefix.len() < raw.len());
+        let dbg = format!("{key:?}");
+        assert!(!dbg.contains(&raw[DISPLAY_PREFIX_LEN..]), "{dbg}");
+        assert!(!dbg.contains(&key.token_hash), "{dbg}");
     }
 }

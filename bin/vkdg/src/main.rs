@@ -142,6 +142,29 @@ enum Command {
         #[command(subcommand)]
         sub: AccountsSub,
     },
+    /// Manage client API keys for the data plane (`/v1/*`).
+    Keys {
+        #[command(subcommand)]
+        sub: KeysSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysSub {
+    /// Create a key. The raw key is printed once and never stored.
+    Create {
+        name: String,
+        /// Tenant the key belongs to.
+        #[arg(long, default_value = "default")]
+        tenant: String,
+        /// Restrict to chat endpoints (no image generation).
+        #[arg(long)]
+        inference_only: bool,
+    },
+    /// List keys (prefix only; raw keys are never shown again).
+    List,
+    /// Revoke a key by id. Takes effect on running gateways within seconds.
+    Revoke { id: String },
 }
 
 #[derive(Subcommand)]
@@ -269,6 +292,7 @@ async fn main() -> Result<()> {
             list_methods,
         } => cmd_login(&provider, method.as_deref(), &opts, code, list_methods).await?,
         Command::Accounts { sub } => cmd_accounts(sub)?,
+        Command::Keys { sub } => cmd_keys(sub)?,
     }
     Ok(())
 }
@@ -365,6 +389,8 @@ async fn serve(
     // Build router here (not via vkdg_http::build_router) so we can add all
     // routes before calling .with_state() once. This avoids the Router<S> type
     // mismatch that comes from calling .route() on an already-resolved Router<()>.
+    let key_store = Arc::new(open_key_store()?);
+    let data_auth = data_auth_from_env(Arc::clone(&key_store));
     let router: Router = Router::new()
         .route(
             "/v1/messages",
@@ -378,6 +404,11 @@ async fn serve(
             "/v1/images/generations",
             post(vkdg_ingress_openai::handle_image_generations),
         )
+        // Applies to the /v1 routes above only; /health and /info stay public.
+        .route_layer(axum::middleware::from_fn_with_state(
+            data_auth,
+            vkdg_http::require_api_key,
+        ))
         .route("/health", get(health))
         .route("/vkdg/v1/info", get(info))
         .route("/mcp", get(vkdg_http::mcp_discovery))
@@ -404,7 +435,7 @@ async fn serve(
         sessions: vkdg_admin::session::SessionStore::new(bootstrap_token),
         config_rx,
         started_at: std::sync::Arc::new(std::time::Instant::now()),
-        key_store: vkdg_admin::session::KeyStore::new(),
+        key_store: Arc::clone(&key_store),
         request_log: Arc::clone(&request_log),
         combo_resolver: None,
         catalog: admin_catalog,
@@ -767,6 +798,101 @@ fn cmd_accounts(sub: AccountsSub) -> Result<()> {
                 println!("Removed {id}");
             } else {
                 anyhow::bail!("account '{id}' not found");
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Data-plane API keys ───────────────────────────────────────────────────────
+
+/// `$VKDG_KEYS_DB`, else `keys.db` next to the account store, so one mounted
+/// volume holds both.
+fn key_store_path() -> std::path::PathBuf {
+    std::env::var_os("VKDG_KEYS_DB").map_or_else(
+        || AccountStore::default_path().with_file_name("keys.db"),
+        Into::into,
+    )
+}
+
+fn open_key_store() -> Result<vkdg_governance::VirtualKeyStore> {
+    let path = key_store_path();
+    vkdg_governance::VirtualKeyStore::open(&path)
+        .map_err(|e| anyhow::anyhow!("cannot open API key store {}: {e}", path.display()))
+}
+
+/// Keys are required on every bind address. A loopback listener behind a
+/// reverse proxy is still public, which is exactly how an open relay happens.
+/// `VKDG_DATA_AUTH=off` is the only way out, and it is loud.
+fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> vkdg_http::DataAuth {
+    match std::env::var("VKDG_DATA_AUTH").as_deref() {
+        Ok("off") => {
+            tracing::warn!(
+                "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
+                 Anyone who can reach this port spends your provider accounts."
+            );
+            vkdg_http::DataAuth::disabled()
+        }
+        _ => {
+            let active = store
+                .list()
+                .map(|keys| keys.iter().filter(|k| !k.is_revoked()).count())
+                .unwrap_or(0);
+            if active == 0 {
+                tracing::warn!(
+                    path = %key_store_path().display(),
+                    "no API keys yet: /v1/* rejects every request until you run `vkdg keys create <name>`"
+                );
+            }
+            vkdg_http::DataAuth::required(store)
+        }
+    }
+}
+
+fn cmd_keys(sub: KeysSub) -> Result<()> {
+    use vkdg_governance::{KeyScope, VirtualKeyId};
+    let store = open_key_store()?;
+    match sub {
+        KeysSub::Create {
+            name,
+            tenant,
+            inference_only,
+        } => {
+            let scopes = if inference_only {
+                vec![KeyScope::DataInference]
+            } else {
+                KeyScope::DEFAULT.to_vec()
+            };
+            let (key, raw) = store.create(&name, &tenant, scopes)?;
+            // stdout carries only the secret so `$(vkdg keys create ci)` works;
+            // the context goes to stderr.
+            eprintln!(
+                "Created key {} ({}). It will not be shown again.",
+                key.id.0, key.name
+            );
+            println!("{raw}");
+        }
+        KeysSub::List => {
+            let keys = store.list()?;
+            if keys.is_empty() {
+                println!("No keys. Run `vkdg keys create <name>`.");
+            }
+            for k in keys {
+                let state = if k.is_revoked() { "revoked" } else { "active" };
+                let used = k
+                    .last_used_at
+                    .map_or_else(|| "never".to_owned(), |t| t.to_rfc3339());
+                println!(
+                    "{}\t{}\t{}…\t{state}\tlast used {used}",
+                    k.id.0, k.name, k.prefix
+                );
+            }
+        }
+        KeysSub::Revoke { id } => {
+            if store.revoke(&VirtualKeyId(id.clone()))? {
+                println!("Revoked {id}");
+            } else {
+                anyhow::bail!("key '{id}' not found");
             }
         }
     }

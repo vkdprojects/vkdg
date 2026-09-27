@@ -8,7 +8,6 @@
   "nav_keys": "Chaves",
   "nav_settings": "Configurações",
   "nav_sign_out": "Sair",
-
   "connection_add": "Adicionar conexão",
   "connection_test": "Testar",
   "connection_empty": "Nenhuma conexão configurada.",
@@ -21,7 +20,6 @@
   "connection_status": "Status",
   "connection_models": "Modelos",
   "connection_active_requests": "Requisições ativas",
-
   "combo_add": "Adicionar combo",
   "combo_create": "Criar combo",
   "combo_empty": "Nenhum combo configurado.",
@@ -35,23 +33,17 @@
   "combo_strategy_least_latency": "Menor latência",
   "combo_strategy_random": "Aleatório",
   "combo_strategy_weighted": "Ponderado",
-
   "key_add": "Adicionar chave",
   "key_create": "Criar chave",
   "key_revoke": "Revogar",
-  "key_role": "Papel",
   "key_empty": "Nenhuma chave ainda.",
   "key_name": "Nome",
   "key_created": "Criado em",
   "key_last_used": "Último uso",
   "key_never": "Nunca",
   "key_created_notice": "Chave criada. Copie agora — ela não será exibida novamente.",
-  "key_role_viewer": "visualizador",
-  "key_role_operator": "operador",
-  "key_role_admin": "admin",
   "key_claude_code_heading": "Configurando o Claude Code",
   "key_claude_code_instructions": "Defina ANTHROPIC_BASE_URL=http://localhost:8080 e ANTHROPIC_API_KEY=<sua-chave> na configuração do Claude Code.",
-
   "request_empty": "Nenhuma requisição registrada ainda.",
   "request_search": "Buscar requisição",
   "request_id_label": "ID da requisição",
@@ -68,7 +60,6 @@
   "request_status_cancelled": "Cancelado",
   "request_status_failed": "Falhou",
   "request_status_pending": "Pendente",
-
   "route_empty": "Nenhuma rota configurada.",
   "route_id": "ID",
   "route_strategy": "Estratégia",
@@ -80,7 +71,6 @@
   "route_eligible_connections": "Conexões elegíveis",
   "route_excluded_connections": "Excluídas",
   "route_none": "Nenhuma",
-
   "system_version": "Versão",
   "system_uptime": "Tempo ativo",
   "system_active_requests": "Requisições ativas",
@@ -88,23 +78,19 @@
   "system_status": "Status",
   "system_config_revision": "Revisão de config",
   "system_heading": "Sistema",
-
   "onboarding_welcome": "Bem-vindo ao VKDG Console",
   "onboarding_step_1": "Adicione sua primeira conexão de provedor",
   "onboarding_step_2": "Crie um combo para definir a estratégia de roteamento",
   "onboarding_step_3": "Gere uma chave de API para seu cliente",
   "onboarding_cta": "Começar",
-
   "playground_heading": "Playground",
   "playground_model_label": "Modelo",
   "playground_message_label": "Mensagem",
   "playground_send": "Enviar",
   "playground_response": "Resposta",
   "playground_empty": "Envie uma mensagem para testar seu gateway.",
-
   "settings_heading": "Configurações",
   "settings_coming_soon": "Configurações em breve.",
-
   "common_save": "Salvar",
   "common_cancel": "Cancelar",
   "common_create": "Criar",
@@ -119,15 +105,25 @@
   "common_pending": "pendente",
   "common_none": "—",
   "common_any": "*",
-
   "login_heading": "VKDG Console",
   "login_token_label": "Token de inicialização",
   "login_submit": "Entrar",
   "login_error_invalid": "Token inválido.",
-
   "setup_welcome": "Configurar o VKDG Console",
   "setup_step_connections": "Configurar conexões",
   "setup_step_combos": "Criar combos de roteamento",
   "setup_step_keys": "Emitir chaves de API",
-  "setup_step_done": "Tudo pronto"
+  "setup_step_done": "Tudo pronto",
+  "key_scopes": "Acesso",
+  "key_scope_inference": "Chat",
+  "key_scope_inference_desc": "/v1/messages e /v1/chat/completions",
+  "key_scope_image": "Imagens",
+  "key_scope_image_desc": "/v1/images/generations",
+  "key_scope_required": "Escolha pelo menos um acesso",
+  "key_prefix": "Chave",
+  "key_status": "Status",
+  "key_status_active": "Ativa",
+  "key_status_revoked": "Revogada",
+  "key_revoke_confirm": "Revogar esta chave? Clientes que a usam recebem 401 em segundos.",
+  "key_empty_desc": "Toda chamada /v1 exige uma chave. Crie uma para conectar um cliente."
 }

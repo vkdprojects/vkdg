@@ -1,5 +1,5 @@
 use crate::handlers::requests::RequestLog;
-use crate::session::{KeyStore, SessionStore};
+use crate::session::SessionStore;
 use axum::{
     routing::{delete, get, post},
     Router,
@@ -15,7 +15,8 @@ pub struct AdminState {
     pub sessions: Arc<SessionStore>,
     pub config_rx: ConfigRx,
     pub started_at: Arc<Instant>,
-    pub key_store: Arc<KeyStore>,
+    /// Data-plane API keys. The same store instance `/v1/*` authenticates against.
+    pub key_store: Arc<vkdg_governance::VirtualKeyStore>,
     pub request_log: Arc<RequestLog>,
     pub combo_resolver: Option<Arc<ComboResolver>>,
     pub catalog: Option<Arc<ConnectionCatalog>>,

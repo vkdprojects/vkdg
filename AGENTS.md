@@ -49,11 +49,16 @@ cargo fmt --all --check
 # Apply formatting
 cargo fmt --all
 
-# Run locally (no credentials = 501 on inference endpoints)
+# Run locally. /v1/* needs a client key first: without one = 401,
+# with a key but no provider configured = 501.
+cargo run -p vkdg -- keys create dev   # prints the client key once
 cargo run -p vkdg -- serve
 
-# Run with a real Anthropic key
+# Run with a real Anthropic key (upstream credential, not the client key)
 ANTHROPIC_API_KEY=sk-ant-... cargo run -p vkdg -- serve
+
+# Local dev only: serve /v1/* without client keys (logs a warning)
+VKDG_DATA_AUTH=off cargo run -p vkdg -- serve
 
 # Run with a config file
 cargo run -p vkdg -- serve --config vkdg.toml
@@ -211,3 +216,4 @@ These must hold in every change:
 5. Cache bypass is enforced in core for multi-turn conversations and requests with tool calls — plugins cannot override this.
 6. A 429 on one connection does not affect other connections on the same provider.
 7. Config reload only activates after full validation — invalid reload keeps the current snapshot.
+8. `/v1/*` fails closed: no key, an unknown or revoked key, or a key-store error rejects the request on every bind address. Only `VKDG_DATA_AUTH=off` disables it, never a default.

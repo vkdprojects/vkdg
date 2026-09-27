@@ -65,11 +65,18 @@ vkdg serve
   ╚══════════════════════════════════════════════════════╝
 ```
 
-Open `http://localhost:9090`, paste the token, done. Point Claude Code at `http://localhost:8080`.
+Open `http://localhost:9090` and paste the token. Then create a client key: every `/v1/*` request needs one, on every bind address.
+
+```bash
+vkdg keys create my-laptop   # prints the key once; or use Keys in the console
+```
+
+Point your client at `http://localhost:8080` with that key. Two different secrets share a name here: the gateway's own `ANTHROPIC_API_KEY` (above) is the **upstream** credential it spends; the client's `ANTHROPIC_API_KEY` is the **vkdg key** you just created. Never give clients the upstream key.
 
 ```bash
 # Claude Code
 claude config set ANTHROPIC_BASE_URL http://localhost:8080
+claude config set ANTHROPIC_API_KEY vkdg_...
 
 # OpenAI SDK / Codex
 OPENAI_BASE_URL=http://localhost:8080 codex "..."

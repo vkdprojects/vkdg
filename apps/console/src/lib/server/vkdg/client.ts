@@ -97,15 +97,20 @@ export async function getConnection(
   return res.json() as Promise<ConnectionSummary>;
 }
 
+export type KeyScope = 'data_inference' | 'data_image';
 export interface ClientKey {
   id: string;
   name: string;
-  role: string;
+  tenant_id: string;
+  prefix: string;
+  scopes: KeyScope[];
   created_at: string;
   last_used_at: string | null;
-  scopes: string[];
+  revoked_at: string | null;
+  status: 'active' | 'revoked';
 }
-export interface CreatedKey { key: string; id: string; name: string }
+/** Only the create response carries the raw `key`. */
+export interface CreatedKey extends ClientKey { key: string }
 export interface RouteSummary { id: string; match_models: string[]; strategy: string; targets: string[] }
 export interface RoutePreview {
   model: string;
@@ -131,11 +136,11 @@ export async function listKeys(cookie: string): Promise<ClientKey[]> {
   return d.items;
 }
 
-export async function createKey(cookie: string, name: string, role: string): Promise<CreatedKey> {
+export async function createKey(cookie: string, name: string, scopes: KeyScope[]): Promise<CreatedKey> {
   const res = await fetch(`${BASE}/admin/v1/keys`, {
     method: 'POST',
     headers: adminHeaders(cookie),
-    body: JSON.stringify({ name, role }),
+    body: JSON.stringify({ name, scopes }),
   });
   if (!res.ok) throw new Error(`create key failed: ${res.status}`);
   return res.json() as Promise<CreatedKey>;

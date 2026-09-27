@@ -117,7 +117,7 @@ mod tests {
             sessions: crate::session::SessionStore::new(token.into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: crate::session::KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: crate::handlers::requests::RequestLog::new(),
             combo_resolver: None,
             catalog: None,

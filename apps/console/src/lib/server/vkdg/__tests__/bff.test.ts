@@ -145,27 +145,39 @@ describe('listKeys', () => {
   // Plausible wrong impl: items wrapper not unwrapped
   it('returns key list', async () => {
     const items: ClientKey[] = [
-      { id: 'key-1', name: 'ci-key', role: 'viewer', created_at: '2026-01-01T00:00:00Z', last_used_at: null, scopes: [] },
+      {
+        id: 'key-1', name: 'ci-key', tenant_id: 'default', prefix: 'vkdg_1a2b3c4d',
+        scopes: ['data_inference'], created_at: '2026-01-01T00:00:00Z',
+        last_used_at: null, revoked_at: '2026-01-02T00:00:00Z', status: 'revoked',
+      },
     ];
     server.use(http.get(`${BASE}/admin/v1/keys`, () =>
-      HttpResponse.json({ items })
+      HttpResponse.json({ items, total: 1 })
     ));
     const result = await listKeys('session=tok');
-    expect(result[0].name).toBe('ci-key');
-    expect(result[0].role).toBe('viewer');
+    expect(result[0].prefix).toBe('vkdg_1a2b3c4d');
+    expect(result[0].status).toBe('revoked');
+    expect(result[0]).not.toHaveProperty('key');
   });
 });
 
 describe('createKey', () => {
   // Plausible wrong impl: raw token not returned from CreatedKey response
   it('returns raw key value on 201', async () => {
-    const created: CreatedKey = { key: 'sk-raw-token-abc123', id: 'key-uuid', name: 'test-key' };
-    server.use(http.post(`${BASE}/admin/v1/keys`, () =>
-      HttpResponse.json(created, { status: 201 })
-    ));
-    const result = await createKey('session=tok', 'test-key', 'viewer');
-    expect(result.key).toBe('sk-raw-token-abc123');
-    expect(result.key.length).toBeGreaterThan(0);
+    const created: CreatedKey = {
+      key: 'vkdg_1a2b3c4dfull', id: 'key-uuid', name: 'test-key', tenant_id: 'default',
+      prefix: 'vkdg_1a2b3c4d', scopes: ['data_inference'], created_at: '2026-01-01T00:00:00Z',
+      last_used_at: null, revoked_at: null, status: 'active',
+    };
+    let sent: unknown;
+    server.use(http.post(`${BASE}/admin/v1/keys`, async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json(created, { status: 201 });
+    }));
+    const result = await createKey('session=tok', 'test-key', ['data_inference']);
+    expect(result.key).toBe('vkdg_1a2b3c4dfull');
+    // The admin API takes scopes; a stale `role` field would be silently ignored.
+    expect(sent).toEqual({ name: 'test-key', scopes: ['data_inference'] });
   });
 });
 

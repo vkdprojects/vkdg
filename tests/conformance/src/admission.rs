@@ -81,6 +81,11 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
             "/v1/messages",
             post(vkdg_ingress_anthropic::handle_messages),
         )
+        // Admission is under test, not auth: mount the real layer, opted out.
+        .route_layer(axum::middleware::from_fn_with_state(
+            vkdg_http::DataAuth::disabled(),
+            vkdg_http::require_api_key,
+        ))
         .with_state(state)
 }
 

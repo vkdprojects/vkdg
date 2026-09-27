@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { ClientKey, CreatedKey } from '$lib/api.js';
+  import type { ClientKey, CreatedKey, KeyScope } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { CopyButton, EmptyState, Button, Spinner } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
@@ -13,7 +13,7 @@
   let createdKey = $state<CreatedKey | null>(null);
 
   let keyName = $state('');
-  let keyRole = $state('viewer');
+  let scopes = $state<KeyScope[]>(['data_inference', 'data_image']);
 
   function formatDate(iso: string): string {
     return new Intl.DateTimeFormat(undefined, {
@@ -39,11 +39,12 @@
   async function createKey(e: Event) {
     e.preventDefault();
     if (!keyName.trim()) { formError = 'Name is required'; return; }
+    if (scopes.length === 0) { formError = m.key_scope_required(); return; }
     submitting = true;
     formError = '';
     createdKey = null;
     try {
-      const result = await api.createKey(keyName.trim(), keyRole);
+      const result = await api.createKey(keyName.trim(), scopes);
       createdKey = result;
       keyName = '';
       const res = await api.listKeys();
@@ -56,9 +57,11 @@
   }
 
   async function revokeKey(id: string) {
+    if (!confirm(m.key_revoke_confirm())) return;
     try {
       await api.revokeKey(id);
-      keys = keys.filter(k => k.id !== id);
+      // Revoked keys stay listed so the operator can see what was cut off.
+      keys = (await api.listKeys()).items;
     } catch (e) {
       toast.error((e as Error).message);
     }
@@ -79,26 +82,19 @@
       </div>
 
       <fieldset class="role-group">
-        <legend>{m.key_role()}</legend>
+        <legend>{m.key_scopes()}</legend>
         <label class="role-option">
-          <input type="radio" name="role" value="viewer" bind:group={keyRole} />
+          <input type="checkbox" value="data_inference" bind:group={scopes} />
           <span class="role-info">
-            <span class="role-label">{m.key_role_viewer()}</span>
-            <span class="role-desc">{m.key_role_viewer_desc()}</span>
+            <span class="role-label">{m.key_scope_inference()}</span>
+            <span class="role-desc">{m.key_scope_inference_desc()}</span>
           </span>
         </label>
         <label class="role-option">
-          <input type="radio" name="role" value="operator" bind:group={keyRole} />
+          <input type="checkbox" value="data_image" bind:group={scopes} />
           <span class="role-info">
-            <span class="role-label">{m.key_role_operator()}</span>
-            <span class="role-desc">{m.key_role_operator_desc()}</span>
-          </span>
-        </label>
-        <label class="role-option">
-          <input type="radio" name="role" value="admin" bind:group={keyRole} />
-          <span class="role-info">
-            <span class="role-label">{m.key_role_admin()}</span>
-            <span class="role-desc">{m.key_role_admin_desc()}</span>
+            <span class="role-label">{m.key_scope_image()}</span>
+            <span class="role-desc">{m.key_scope_image_desc()}</span>
           </span>
         </label>
       </fieldset>
@@ -134,13 +130,15 @@
     {#if loading}
       <div class="loading"><Spinner size="sm" /> Loading…</div>
     {:else if keys.length === 0}
-      <EmptyState title={m.key_empty()} description="Create a key to authenticate API clients." />
+      <EmptyState title={m.key_empty()} description={m.key_empty_desc()} />
     {:else}
       <table>
         <thead>
           <tr>
             <th scope="col">{m.key_name()}</th>
-            <th scope="col">{m.key_role()}</th>
+            <th scope="col">{m.key_prefix()}</th>
+            <th scope="col">{m.key_scopes()}</th>
+            <th scope="col">{m.key_status()}</th>
             <th scope="col">{m.key_created()}</th>
             <th scope="col">{m.key_last_used()}</th>
             <th scope="col"></th>
@@ -150,11 +148,24 @@
           {#each keys as k (k.id)}
             <tr>
               <td class="key-name-cell">{k.name}</td>
-              <td><span class="role-badge role-{k.role}">{k.role}</span></td>
+              <td><code>{k.prefix}…</code></td>
+              <td>
+                {#each k.scopes as sc}
+                  <span class="role-badge role-viewer">{sc === 'data_image' ? m.key_scope_image() : m.key_scope_inference()}</span>
+                {/each}
+              </td>
+              <td>
+                <!-- Text, not color alone, carries the state. -->
+                <span class="role-badge {k.status === 'revoked' ? 'role-admin' : 'role-operator'}">
+                  {k.status === 'revoked' ? m.key_status_revoked() : m.key_status_active()}
+                </span>
+              </td>
               <td class="date-cell">{formatDate(k.created_at)}</td>
               <td class="date-cell">{k.last_used_at ? formatDate(k.last_used_at) : m.key_never()}</td>
               <td class="action-cell">
-                <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)}>{m.key_revoke()}</Button>
+                {#if k.status === 'active'}
+                  <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
+                {/if}
               </td>
             </tr>
           {/each}
@@ -253,7 +264,7 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .role-option input[type='radio'] {
+  .role-option input[type='checkbox'] {
     margin-top: 2px;
     accent-color: var(--accent);
     flex-shrink: 0;

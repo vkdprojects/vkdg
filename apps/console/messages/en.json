@@ -8,7 +8,6 @@
   "nav_keys": "Keys",
   "nav_settings": "Settings",
   "nav_sign_out": "Sign out",
-
   "connection_add": "Add connection",
   "connection_test": "Test",
   "connection_empty": "No connections configured.",
@@ -21,7 +20,6 @@
   "connection_status": "Status",
   "connection_models": "Models",
   "connection_active_requests": "Active requests",
-
   "combo_add": "Add combo",
   "combo_create": "Create combo",
   "combo_empty": "No combos configured.",
@@ -53,23 +51,15 @@
   "key_add": "Add key",
   "key_create": "Create key",
   "key_revoke": "Revoke",
-  "key_role": "Role",
   "key_empty": "No keys yet.",
   "key_name": "Name",
   "key_created": "Created",
   "key_last_used": "Last used",
   "key_never": "Never",
   "key_created_notice": "Key created. Copy it now — it will not be shown again.",
-  "key_role_viewer": "Viewer",
-  "key_role_viewer_desc": "Read-only access to completions",
-  "key_role_operator": "Operator",
-  "key_role_operator_desc": "Full API access, no admin",
-  "key_role_admin": "Admin",
-  "key_role_admin_desc": "Full access including key management",
   "key_store_warning": "Store this key safely — it won't be shown again",
   "key_claude_code_heading": "Configuring Claude Code",
   "key_claude_code_instructions": "Set ANTHROPIC_BASE_URL=http://localhost:8080 and ANTHROPIC_API_KEY=<your-key> in your Claude Code config.",
-
   "request_empty": "No requests recorded yet.",
   "request_search": "Look up request",
   "request_id_label": "Request ID",
@@ -86,7 +76,6 @@
   "request_status_cancelled": "Cancelled",
   "request_status_failed": "Failed",
   "request_status_pending": "Pending",
-
   "route_empty": "No routes configured.",
   "route_id": "ID",
   "route_strategy": "Strategy",
@@ -98,7 +87,6 @@
   "route_eligible_connections": "Eligible connections",
   "route_excluded_connections": "Excluded",
   "route_none": "None",
-
   "system_version": "Version",
   "system_uptime": "Uptime",
   "system_active_requests": "Active requests",
@@ -106,23 +94,19 @@
   "system_status": "Status",
   "system_config_revision": "Config revision",
   "system_heading": "System",
-
   "onboarding_welcome": "Welcome to VKDG Console",
   "onboarding_step_1": "Add your first provider connection",
   "onboarding_step_2": "Create a combo to define routing strategy",
   "onboarding_step_3": "Generate an API key for your client",
   "onboarding_cta": "Get started",
-
   "playground_heading": "Playground",
   "playground_model_label": "Model",
   "playground_message_label": "Message",
   "playground_send": "Send",
   "playground_response": "Response",
   "playground_empty": "Send a message to test your gateway.",
-
   "settings_heading": "Settings",
   "settings_coming_soon": "Settings coming soon.",
-
   "common_save": "Save",
   "common_cancel": "Cancel",
   "common_create": "Create",
@@ -137,15 +121,25 @@
   "common_pending": "pending",
   "common_none": "—",
   "common_any": "*",
-
   "login_heading": "VKDG Console",
   "login_token_label": "Bootstrap token",
   "login_submit": "Sign in",
   "login_error_invalid": "Invalid token.",
-
   "setup_welcome": "Set up VKDG Console",
   "setup_step_connections": "Configure connections",
   "setup_step_combos": "Create routing combos",
   "setup_step_keys": "Issue API keys",
-  "setup_step_done": "You're ready to go"
+  "setup_step_done": "You're ready to go",
+  "key_scopes": "Access",
+  "key_scope_inference": "Chat",
+  "key_scope_inference_desc": "/v1/messages and /v1/chat/completions",
+  "key_scope_image": "Images",
+  "key_scope_image_desc": "/v1/images/generations",
+  "key_scope_required": "Pick at least one access scope",
+  "key_prefix": "Key",
+  "key_status": "Status",
+  "key_status_active": "Active",
+  "key_status_revoked": "Revoked",
+  "key_revoke_confirm": "Revoke this key? Clients using it get 401 within seconds.",
+  "key_empty_desc": "Every /v1 request needs a key. Create one to connect a client."
 }

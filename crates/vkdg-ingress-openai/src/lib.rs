@@ -111,10 +111,16 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
+    // bug, so refuse rather than serve an unidentified caller.
+    let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
+        tracing::error!("data-plane route mounted without require_api_key");
+        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+    };
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
-        client_id: ClientId("anonymous".into()),
-        tenant_id: TenantId("default".into()),
+        client_id: ClientId(identity.key_id.clone()),
+        tenant_id: TenantId(identity.tenant_id.clone()),
         session_key: None,
         api_type: ApiType::OpenAiChatCompletions,
         model_requested: model,
@@ -170,10 +176,16 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
+    // bug, so refuse rather than serve an unidentified caller.
+    let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
+        tracing::error!("data-plane route mounted without require_api_key");
+        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+    };
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
-        client_id: ClientId("anonymous".into()),
-        tenant_id: TenantId("default".into()),
+        client_id: ClientId(identity.key_id.clone()),
+        tenant_id: TenantId(identity.tenant_id.clone()),
         session_key: None,
         api_type: ApiType::OpenAiImages,
         model_requested: model,

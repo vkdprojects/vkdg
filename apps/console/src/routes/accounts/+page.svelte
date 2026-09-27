@@ -12,6 +12,7 @@
   let loading = $state(true);
   let connectOpen = $state(false);
   let connectProvider = $state('kiro');
+  let connectAccountId = $state<string | undefined>(undefined);
   let pendingDelete = $state<Account | null>(null);
   let deleting = $state(false);
 
@@ -37,8 +38,10 @@
 
   onMount(refresh);
 
-  function connect(provider = 'kiro') {
+  /** New account, or with `accountId` a reconnect of that account. */
+  function connect(provider = 'kiro', accountId?: string) {
     connectProvider = provider;
+    connectAccountId = accountId;
     connectOpen = true;
   }
 
@@ -105,7 +108,7 @@
               <Button
                 variant={a.status === 'needs_login' ? 'primary' : 'outline'}
                 size="sm"
-                onclick={() => connect(a.provider)}
+                onclick={() => connect(a.provider, a.id)}
                 ariaLabel={`${m.acct_reauth()} ${a.label}`}
               >{m.acct_reauth()}</Button>
               <Button
@@ -122,7 +125,7 @@
   {/if}
 </div>
 
-<ConnectAccountModal bind:open={connectOpen} provider={connectProvider} onconnected={onConnected} />
+<ConnectAccountModal bind:open={connectOpen} provider={connectProvider} accountId={connectAccountId} onconnected={onConnected} />
 
 <AlertDialog.Root open={pendingDelete !== null} onOpenChange={(v) => { if (!v) pendingDelete = null; }}>
   <AlertDialog.Portal>

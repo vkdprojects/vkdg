@@ -36,6 +36,8 @@ struct PendingLogin {
     flow: OAuthFlow,
     state: LoginState,
     expires_at: DateTime<Utc>,
+    /// Existing account a reconnect will overwrite.
+    replaces: Option<String>,
 }
 
 /// Everything the login/account endpoints need.
@@ -70,13 +72,47 @@ impl LoginService {
         id
     }
 
-    fn save(&self, provider: &str, result: LoginResult) -> Result<Account, Box<Response>> {
+    /// Drop the live cached credential, so a reconnected (or replaced) account
+    /// is served from the store, not from a revoked cache entry.
+    async fn evict(&self, account_id: &str) {
+        if let Some(creds) = &self.credentials {
+            creds.forget_account(account_id).await;
+        }
+    }
+
+    fn save(
+        &self,
+        provider: &str,
+        result: LoginResult,
+        replaces: Option<&str>,
+    ) -> Result<Account, Box<Response>> {
         let label = if result.label.is_empty() {
             provider
         } else {
             result.label.as_str()
         };
-        let account = Account::from_token_pair(provider, label, result.tokens);
+        let mut account = Account::from_token_pair(provider, label, result.tokens);
+        // Reconnect: same id, so connections referencing it recover. The old row
+        // must belong to this provider; anything else is a new account.
+        if let Some(id) = replaces {
+            match self.store.get(id) {
+                Ok(Some(old)) if old.provider == provider => account.id = old.id,
+                Ok(_) => {
+                    return Err(Box::new(err(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_input",
+                        format!("account {id} is not a {provider} account"),
+                    )))
+                }
+                Err(e) => {
+                    return Err(Box::new(err(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "store_error",
+                        e.to_string(),
+                    )))
+                }
+            }
+        }
         self.store.upsert(&account).map_err(|e| {
             err(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -127,6 +163,10 @@ pub struct StartBody {
     pub method: Option<String>,
     #[serde(default)]
     pub params: LoginParams,
+    /// Reconnect: replace the tokens of this existing account and keep its id,
+    /// so connections that reference it (`auth: { type: account }`) recover.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -270,6 +310,7 @@ pub async fn start_login(
                     flow: method.flow,
                     state: auth.state,
                     expires_at: Utc::now() + chrono::Duration::seconds(ttl),
+                    replaces: body.account_id.clone(),
                 });
                 Json(serde_json::json!({
                     "login_id": login_id,
@@ -293,6 +334,7 @@ pub async fn start_login(
                         flow: method.flow,
                         state: auth.state,
                         expires_at: Utc::now() + chrono::Duration::seconds(MAX_PENDING_SECS),
+                        replaces: body.account_id.clone(),
                     });
                     Json(serde_json::json!({
                         "login_id": login_id,
@@ -323,12 +365,15 @@ pub async fn poll_login(
         Err(r) => return *r,
     };
     let oauth = oauth(adapter.as_ref());
-    let (method, flow, login_state) = {
+    let (method, flow, login_state, replaces) = {
         let pending = svc.pending.lock();
         match pending.get(&body.login_id) {
-            Some(p) if p.provider == provider && p.expires_at > Utc::now() => {
-                (p.method.clone(), p.flow, p.state.clone())
-            }
+            Some(p) if p.provider == provider && p.expires_at > Utc::now() => (
+                p.method.clone(),
+                p.flow,
+                p.state.clone(),
+                p.replaces.clone(),
+            ),
             _ => {
                 return err(
                     StatusCode::NOT_FOUND,
@@ -363,8 +408,11 @@ pub async fn poll_login(
         }
         Ok(DevicePoll::Done(result)) => {
             svc.pending.lock().remove(&body.login_id);
-            match svc.save(&provider, result) {
-                Ok(account) => done(&account),
+            match svc.save(&provider, result, replaces.as_deref()) {
+                Ok(account) => {
+                    svc.evict(&account.id).await;
+                    done(&account)
+                }
                 Err(r) => *r,
             }
         }
@@ -399,8 +447,11 @@ pub async fn import_token(
         Err(e) => return provider_err(&e),
     };
     match oauth.import_token(&method.id, &params).await {
-        Ok(result) => match svc.save(&provider, result) {
-            Ok(account) => (StatusCode::CREATED, done(&account)).into_response(),
+        Ok(result) => match svc.save(&provider, result, body.account_id.as_deref()) {
+            Ok(account) => {
+                svc.evict(&account.id).await;
+                (StatusCode::CREATED, done(&account)).into_response()
+            }
             Err(r) => *r,
         },
         Err(e) => provider_err(&e),
@@ -642,6 +693,7 @@ mod tests {
             params: region
                 .map(|r| HashMap::from([("region".to_string(), r.to_string())]))
                 .unwrap_or_default(),
+            account_id: None,
         })
     }
 
@@ -769,5 +821,59 @@ mod tests {
             .collect();
         assert_eq!(ids, ["fake"]);
         assert!(v["items"][0]["display_name"].is_string());
+    }
+
+    // Found in review: Reconnect minted a new account id, so connections that
+    // reference the revoked account stayed broken after a successful login.
+    #[tokio::test]
+    async fn reconnect_replaces_tokens_and_keeps_the_account_id() {
+        let (state, store) = make_state();
+        let h = authed(&state);
+        let mut revoked = Account::from_token_pair(
+            "fake",
+            "dev@example.com",
+            TokenPair {
+                access_token: "old".into(),
+                refresh_token: Some("old-refresh".into()),
+                expires_in_secs: Some(0),
+                extra: HashMap::new(),
+            },
+        );
+        revoked.revoked = Some("401: Bad credentials".into());
+        store.upsert(&revoked).unwrap();
+
+        let mut body = start_body(Some("eu-west-1"));
+        body.0.account_id = Some(revoked.id.clone());
+        let (_, start, _) = body_json(
+            start_login(State(state.clone()), h.clone(), Path("fake".into()), body).await,
+        )
+        .await;
+        let login_id = start["login_id"].as_str().unwrap().to_owned();
+        let mut done = serde_json::Value::Null;
+        for _ in 0..3 {
+            let (_, v, _) = body_json(
+                poll_login(
+                    State(state.clone()),
+                    h.clone(),
+                    Path("fake".into()),
+                    Json(PollBody {
+                        login_id: login_id.clone(),
+                        code: None,
+                    }),
+                )
+                .await,
+            )
+            .await;
+            if v["status"] == "done" {
+                done = v;
+                break;
+            }
+        }
+        assert_eq!(done["account"]["id"], revoked.id.as_str(), "{done}");
+        assert_eq!(done["account"]["status"], "active", "{done}");
+        let accounts = store.list().unwrap();
+        assert_eq!(accounts.len(), 1, "no second account minted");
+        assert!(accounts[0].revoked.is_none());
+        assert_eq!(accounts[0].access_token, "secret-access");
     }
 }

@@ -85,12 +85,48 @@ impl OAuthProvider for FakeOAuth {
     }
 
     fn login_methods(&self) -> Vec<LoginMethod> {
-        vec![LoginMethod {
-            id: "device".into(),
-            label: "Fake device code".into(),
-            flow: OAuthFlow::DeviceCode,
-            fields: vec![],
-        }]
+        vec![
+            LoginMethod {
+                id: "device".into(),
+                label: "Fake device code".into(),
+                flow: OAuthFlow::DeviceCode,
+                fields: vec![],
+            },
+            // Imports an already-expired account, so the next request refreshes
+            // it at once: a refresh token containing `revoked` then drives the
+            // account to `needs_login`.
+            LoginMethod {
+                id: "import".into(),
+                label: "Fake import (expired)".into(),
+                flow: OAuthFlow::ImportToken,
+                fields: vec![vkdg_provider_sdk::oauth::LoginField {
+                    id: "refresh_token".into(),
+                    label: "Refresh token".into(),
+                    required: true,
+                    secret: true,
+                    default: None,
+                }],
+            },
+        ]
+    }
+
+    fn import_token<'a>(
+        &'a self,
+        _method: &'a str,
+        params: &'a LoginParams,
+    ) -> BoxFuture<'a, Result<LoginResult, ProviderError>> {
+        Box::pin(async move {
+            let refresh = params.get("refresh_token").cloned().unwrap_or_default();
+            Ok(LoginResult {
+                tokens: TokenPair {
+                    access_token: "fake-expired-access".into(),
+                    refresh_token: Some(refresh.clone()),
+                    expires_in_secs: Some(0),
+                    extra: HashMap::new(),
+                },
+                label: format!("imported-{refresh}@example.test"),
+            })
+        })
     }
 
     fn start_device_login<'a>(

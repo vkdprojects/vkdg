@@ -1,4 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { DATA_DIR, DATA_URL } from './env';
 
 // Connecting accounts through the console, against the test-only `fake-oauth`
 // provider (enabled by VKDG_E2E_FAKE_OAUTH=1 in playwright.config.ts). It runs
@@ -59,4 +62,71 @@ test('the provider list comes from the gateway, not a hardcoded table', async ({
   await page.getByRole('dialog').getByLabel('Provider').click();
   await expect(page.getByRole('option', { name: 'Fake OAuth (e2e)' })).toBeVisible();
   await expect(page.getByRole('option', { name: /Kiro/ })).toBeVisible();
+});
+
+test('a revoked account shows Needs login and Reconnect restores it in place', async ({ page }) => {
+  // An imported fake account whose access token is already expired and whose
+  // refresh token the fake provider rejects as revoked.
+  const imported = await page.request.post('/admin/v1/oauth/fake-oauth/import', {
+    data: { method: 'import', params: { refresh_token: 'revoked-e2e' } },
+  });
+  expect(imported.status()).toBe(201);
+  const account = (await imported.json()).account;
+
+  // Route a model to it through a config reload, as an operator would.
+  const configPath = resolve(DATA_DIR, 'config.yaml');
+  const original = readFileSync(configPath, 'utf8');
+  writeFileSync(
+    configPath,
+    original.replace(
+      'routes:\n',
+      `  - id: fake-acct
+    provider: fake-oauth
+    auth: { type: account, account: "${account.id}" }
+    models: ["fake-model"]
+routes:
+  - id: r-fake
+    match_models: ["fake-model"]
+    strategy: round_robin
+    targets: [fake-acct]
+`,
+    ),
+  );
+  try {
+    const key = (await (await page.request.post('/admin/v1/keys', { data: { name: 'revoke-probe' } })).json()).key;
+    const auth = { authorization: `Bearer ${key}` };
+    await expect
+      .poll(async () => JSON.stringify(await (await page.request.get(`${DATA_URL}/v1/models`, { headers: auth })).json()))
+      .toContain('fake-model');
+
+    // The request needs a refresh; the refresh is rejected as revoked.
+    const call = await page.request.post(`${DATA_URL}/v1/chat/completions`, {
+      headers: auth,
+      data: { model: 'fake-model', messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(call.status()).toBe(401);
+
+    await page.goto('/accounts');
+    const row = page.getByRole('row').filter({ hasText: account.label });
+    await expect(row).toContainText('Needs login');
+    await expect(row).toContainText('revoked');
+
+    await row.getByRole('button', { name: /Reconnect/ }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByLabel('Provider')).toHaveText('Fake OAuth (e2e)');
+    await expect(dialog.getByLabel('AWS region')).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Start login' }).click();
+    await expect(dialog).toBeHidden();
+
+    // Same account id, now active: the connection referencing it recovers.
+    // The label follows the new login's identity, so assert by id.
+    await expect(page.getByText('Needs login')).toHaveCount(0);
+    const after = await (await page.request.get('/admin/v1/accounts')).json();
+    const same = after.items.filter((a: { id: string }) => a.id === account.id);
+    expect(same).toHaveLength(1);
+    expect(same[0].status).toBe('active');
+    await expect(page.getByRole('row').filter({ hasText: same[0].label })).toContainText('Active');
+  } finally {
+    writeFileSync(configPath, original);
+  }
 });

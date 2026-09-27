@@ -39,6 +39,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `/admin/v1/keys` takes `scopes` (`data_inference`, `data_image`) instead of `role`, and returns `prefix`, `status`, `last_used_at`, `revoked_at`. The console Keys page shows them and keeps revoked keys listed
 
 ### Fixed
+- Reconnect on an account (`account_id` on `/oauth/{provider}/start` and `/import`) replaces its tokens and clears `needs_login` in place, keeping the id, and evicts the cached credential. It used to create a second account, so connections referencing the revoked one stayed broken
 - `limits.ip_allowlist` / `limits.ip_blocklist` were parsed and never enforced. They now apply to every `/v1/*` request, follow hot reload, and are validated at load: an invalid entry names its position (`limits.ip_allowlist[1]`) and a reload with it keeps the current config. `VKDG_TRUSTED_PROXIES` is validated at startup the same way
 - Streams re-encoded for the client (Kiro and any decoded provider) now send the full final usage (`input_tokens`, cache fields, `output_tokens`) in `message_delta`. Before, only `output_tokens` reached the wire, so clients and per-key budgets saw 0 input tokens for every Kiro request
 - IPv4 clients of a dual-stack listener (`::ffff:a.b.c.d`) are matched as IPv4 by IP lists, per-key lists and `VKDG_TRUSTED_PROXIES`; before, they slipped past blocklists and failed allowlists

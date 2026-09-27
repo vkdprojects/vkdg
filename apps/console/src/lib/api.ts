@@ -238,12 +238,13 @@ export const api = {
     req<{ items: { id: string; display_name: string }[] }>('GET', '/admin/v1/providers/oauth'),
   loginMethods: (provider: string) =>
     req<{ provider: string; items: LoginMethod[] }>('GET', `/admin/v1/providers/${encodeURIComponent(provider)}/login-methods`),
-  startLogin: (provider: string, method: string, params: Record<string, string> = {}) =>
-    req<LoginStart>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/start`, { method, params }),
+  /** `accountId` reconnects that account in place (same id) instead of adding one. */
+  startLogin: (provider: string, method: string, params: Record<string, string> = {}, accountId?: string) =>
+    req<LoginStart>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/start`, { method, params, account_id: accountId }),
   pollLogin: (provider: string, login_id: string, code?: string) =>
     req<LoginPoll>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/poll`, { login_id, code }),
-  importToken: (provider: string, method: string, params: Record<string, string>) =>
-    req<{ status: 'done'; account: Account }>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params }),
+  importToken: (provider: string, method: string, params: Record<string, string>, accountId?: string) =>
+    req<{ status: 'done'; account: Account }>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params, account_id: accountId }),
   listRoutes: () =>
     req<{ items: RouteSummary[] }>('GET', '/admin/v1/routes'),
   previewRoute: (model: string) =>

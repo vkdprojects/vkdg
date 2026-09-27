@@ -10,9 +10,11 @@
     open: boolean;
     /** Preselected provider (reauth). */
     provider?: string;
+    /** Reconnect this account in place, keeping its id. */
+    accountId?: string;
     onconnected: (account: Account) => void;
   }
-  let { open = $bindable(), provider = 'kiro', onconnected }: Props = $props();
+  let { open = $bindable(), provider = 'kiro', accountId, onconnected }: Props = $props();
 
   // Loaded from the gateway: what is registered here, OAuth plugins included.
   let providers = $state<{ value: string; label: string }[]>([]);
@@ -125,11 +127,11 @@
     busy = true;
     try {
       if (method.flow === 'import_token') {
-        const res = await api.importToken(selected, method.id, filledParams());
+        const res = await api.importToken(selected, method.id, filledParams(), accountId);
         if (g === gen) finish(res.account);
         return;
       }
-      const res = await api.startLogin(selected, method.id, filledParams());
+      const res = await api.startLogin(selected, method.id, filledParams(), accountId);
       if (g !== gen) return;
       flow = res;
       if (res.flow === 'device_code') {

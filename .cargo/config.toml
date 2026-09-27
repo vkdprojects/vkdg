@@ -1,0 +1,40 @@
+# Cargo configuration — applied to all workspace members.
+# Platform-specific linker overrides speed up dev builds significantly.
+#
+# Quick start for Windows contributors:
+#   1. Add Windows Defender exclusions → see docs/contributing/WINDOWS.md
+#   2. This file is already in the repo — no extra setup needed.
+
+# ── Windows ───────────────────────────────────────────────────────────────────
+[target.x86_64-pc-windows-msvc]
+# rust-lld ships with rustup since Rust 1.80. No install needed.
+# Measured: 2-4× faster linking than link.exe for incremental builds.
+# Note: if you hit STATUS_ACCESS_VIOLATION, remove this linker override
+# and open an issue — it's rare but documented on some setups.
+linker = "rust-lld.exe"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+
+# ── Linux ─────────────────────────────────────────────────────────────────────
+[target.x86_64-unknown-linux-gnu]
+# mold: install via `sudo apt install mold` or `brew install mold`
+# Falls back to system linker if mold is not installed.
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+# ld64 is fast enough on Apple Silicon. No override needed.
+
+# ── Dev profile ───────────────────────────────────────────────────────────────
+[profile.dev]
+# line-tables-only: backtraces still work, .pdb/.dwo files are much smaller.
+# On Windows, this alone meaningfully reduces link time.
+debug = 1
+incremental = true
+
+# ── CI profile (used when CARGO_INCREMENTAL=0 in CI) ─────────────────────────
+# CARGO_PROFILE_DEV_DEBUG=0 in CI env reduces target/ size → better cache hits.
+# Set this in CI, not here. See .github/workflows/ci.yml.

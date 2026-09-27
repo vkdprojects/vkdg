@@ -64,6 +64,8 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        // Stored login is dead; the client request is fine.
+        VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::BudgetExceeded { .. } => (StatusCode::PAYMENT_REQUIRED, "budget_exceeded"),
     };

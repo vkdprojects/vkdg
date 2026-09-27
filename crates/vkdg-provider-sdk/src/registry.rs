@@ -5,7 +5,7 @@ use futures::future::BoxFuture;
 use vkdg_connections::{TokenPair, TokenRefresher};
 use vkdg_core::VkdgError;
 
-use crate::ProviderAdapter;
+use crate::{ProviderAdapter, ProviderError};
 
 /// Holds all registered provider adapters.
 ///
@@ -68,9 +68,16 @@ impl TokenRefresher for ProviderRegistry {
             oauth
                 .refresh_token(refresh_token, extra)
                 .await
-                .map_err(|e| VkdgError::PluginError {
-                    plugin_id: provider.to_owned(),
-                    message: e.to_string(),
+                .map_err(|e| match e {
+                    // Keep revocation typed so the credential manager can stop
+                    // retrying instead of hitting the refresh endpoint every request.
+                    ProviderError::CredentialRevoked { status, message } => {
+                        VkdgError::CredentialRevoked { status, message }
+                    }
+                    other => VkdgError::PluginError {
+                        plugin_id: provider.to_owned(),
+                        message: other.to_string(),
+                    },
                 })
         })
     }

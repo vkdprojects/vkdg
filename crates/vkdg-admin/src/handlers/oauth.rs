@@ -97,6 +97,11 @@ pub struct AccountSummary {
     label: String,
     expires_at: Option<String>,
     has_refresh_token: bool,
+    /// `active`, or `needs_login` once the upstream rejected the refresh token.
+    status: &'static str,
+    /// Upstream reason for the revocation (e.g. `401: ... Bad credentials`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revoked_reason: Option<String>,
 }
 
 impl From<&Account> for AccountSummary {
@@ -107,6 +112,12 @@ impl From<&Account> for AccountSummary {
             label: a.label.clone(),
             expires_at: a.expires_at.map(|t| t.to_rfc3339()),
             has_refresh_token: a.refresh_token.is_some(),
+            status: if a.revoked.is_some() {
+                "needs_login"
+            } else {
+                "active"
+            },
+            revoked_reason: a.revoked.clone(),
         }
     }
 }

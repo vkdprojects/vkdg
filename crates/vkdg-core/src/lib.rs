@@ -147,6 +147,12 @@ pub enum VkdgError {
     #[error("config invalid: {field}: {message}")]
     ConfigInvalid { field: String, message: String },
 
+    /// The upstream rejected the stored refresh token outright (revoked, rotated
+    /// by another client, or expired). Retrying cannot help; the account needs a
+    /// fresh login. Carries the upstream status and message so logs say why.
+    #[error("credential revoked ({status}): {message}")]
+    CredentialRevoked { status: u16, message: String },
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -166,6 +172,9 @@ impl VkdgError {
             VkdgError::UpstreamError { code, .. } => *code,
             VkdgError::PluginError { .. } => 500,
             VkdgError::ConfigInvalid { .. } => 400,
+            // The client's request is fine; the gateway's stored login is dead.
+            // 401 tells the operator to re-authenticate the account.
+            VkdgError::CredentialRevoked { .. } => 401,
             VkdgError::Internal(_) => 500,
         }
     }

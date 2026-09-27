@@ -121,8 +121,8 @@ impl CredentialManager {
             })?;
 
         if let Some(acct) = self.account_cache.read().await.get(account_id) {
-            if !acct.expires_within(REFRESH_AHEAD) {
-                return Ok(acct.credential());
+            if let Some(served) = serve_without_refresh(acct) {
+                return served;
             }
         }
 
@@ -137,8 +137,8 @@ impl CredentialManager {
 
         // Re-check: a concurrent waiter may have refreshed while we queued.
         if let Some(acct) = self.account_cache.read().await.get(account_id) {
-            if !acct.expires_within(REFRESH_AHEAD) {
-                return Ok(acct.credential());
+            if let Some(served) = serve_without_refresh(acct) {
+                return served;
             }
         }
 
@@ -151,6 +151,15 @@ impl CredentialManager {
                 message: "account not found; run `vkdg login <provider>` or `vkdg accounts list`"
                     .into(),
             })?;
+
+        if let Some(served) = serve_without_refresh(&acct) {
+            let out = served;
+            self.account_cache
+                .write()
+                .await
+                .insert(account_id.to_owned(), acct);
+            return out;
+        }
 
         if acct.expires_within(REFRESH_AHEAD) {
             let refreshed = match acct.refresh_token.as_deref() {
@@ -166,6 +175,25 @@ impl CredentialManager {
                 Ok(pair) => {
                     acct.apply_refresh(pair);
                     backend.store.upsert(&acct)?;
+                    tracing::info!(account = %acct.id, "account token refreshed");
+                }
+                // The refresh token itself was rejected: no retry can help. Park the
+                // account so later requests stop calling the refresh endpoint, and
+                // keep the upstream reason for the operator.
+                Err(VkdgError::CredentialRevoked { status, message }) => {
+                    tracing::warn!(
+                        account = %acct.id, status, reason = %message,
+                        "refresh token revoked; account needs a new login"
+                    );
+                    acct.revoked = Some(format!("{status}: {message}"));
+                    backend.store.upsert(&acct)?;
+                    let served = serve_without_refresh(&acct)
+                        .expect("a revoked account always resolves without refresh");
+                    self.account_cache
+                        .write()
+                        .await
+                        .insert(account_id.to_owned(), acct);
+                    return served;
                 }
                 // Refresh-ahead failed but the current token is still valid: serve it
                 // and retry on the next request.
@@ -303,6 +331,31 @@ impl CredentialManager {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| VkdgError::Internal("OAuth2 response missing access_token".into()))
+    }
+}
+
+/// Resolve an account without calling the refresh endpoint, when that is the
+/// right answer: its token is still fresh, or its refresh token was revoked.
+///
+/// A revoked account keeps serving its access token until it expires, then fails
+/// with the stored reason. It is never refreshed again: only a new login can
+/// replace a rejected refresh token.
+fn serve_without_refresh(acct: &Account) -> Option<Result<Credential>> {
+    match &acct.revoked {
+        Some(reason) => Some(if acct.expires_within(chrono::Duration::zero()) {
+            let (status, message) = reason
+                .split_once(": ")
+                .and_then(|(code, msg)| code.parse::<u16>().ok().map(|c| (c, msg.to_owned())))
+                .unwrap_or((401, reason.clone()));
+            Err(VkdgError::CredentialRevoked {
+                status,
+                message: format!("account {}: {message}; run `vkdg login` again", acct.id),
+            })
+        } else {
+            Ok(acct.credential())
+        }),
+        None if !acct.expires_within(REFRESH_AHEAD) => Some(Ok(acct.credential())),
+        None => None,
     }
 }
 
@@ -446,6 +499,8 @@ mod tests {
     struct FakeRefresher {
         calls: AtomicUsize,
         fail: bool,
+        /// Answer like an upstream that rejected the refresh token itself.
+        revoke: bool,
     }
 
     impl TokenRefresher for FakeRefresher {
@@ -459,6 +514,12 @@ mod tests {
                 let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
                 // Yield so concurrent callers really overlap.
                 tokio::task::yield_now().await;
+                if self.revoke {
+                    return Err(VkdgError::CredentialRevoked {
+                        status: 401,
+                        message: "Bad credentials".into(),
+                    });
+                }
                 if self.fail {
                     return Err(VkdgError::Unauthenticated);
                 }
@@ -487,6 +548,7 @@ mod tests {
             refresh_token: Some("refresh-0".into()),
             expires_at: Some(Utc::now() + expires_in),
             extra,
+            revoked: None,
         }
     }
 
@@ -503,11 +565,20 @@ mod tests {
         acct: &Account,
         fail: bool,
     ) -> (CredentialManager, Arc<AccountStore>, Arc<FakeRefresher>) {
+        setup_with(acct, fail, false)
+    }
+
+    fn setup_with(
+        acct: &Account,
+        fail: bool,
+        revoke: bool,
+    ) -> (CredentialManager, Arc<AccountStore>, Arc<FakeRefresher>) {
         let store = Arc::new(AccountStore::in_memory().unwrap());
         store.upsert(acct).unwrap();
         let refresher = Arc::new(FakeRefresher {
             calls: AtomicUsize::new(0),
             fail,
+            revoke,
         });
         let mgr = CredentialManager::new().with_accounts(Arc::clone(&store), refresher.clone());
         (mgr, store, refresher)
@@ -590,5 +661,74 @@ mod tests {
             mgr.get_token(&account_conn()).await,
             Err(VkdgError::ConfigInvalid { .. })
         ));
+    }
+
+    // ── Revoked refresh tokens ───────────────────────────────────────────────
+    //
+    // Found against a live Kiro account: a refresh token rejected with 401 "Bad
+    // credentials" was retried on every request while the access token lived, and
+    // the log said only "authorization_failed".
+
+    // Plausible wrong impl: a revoked refresh token is retried on every request,
+    // hammering the auth endpoint for a credential that can never recover.
+    #[tokio::test]
+    async fn revoked_refresh_is_not_retried_on_every_request() {
+        let (mgr, _store, refresher) =
+            setup_with(&account(chrono::Duration::minutes(2)), false, true);
+        for _ in 0..5 {
+            let cred = mgr.get_token(&account_conn()).await.unwrap();
+            assert_eq!(cred.token, "access-0", "still-valid token keeps serving");
+        }
+        assert_eq!(
+            refresher.calls.load(Ordering::SeqCst),
+            1,
+            "a revoked refresh token must be tried once, not on every request"
+        );
+    }
+
+    // Plausible wrong impl: revocation lives only in memory, so a restart forgets
+    // it and the operator is never told the account needs a new login.
+    #[tokio::test]
+    async fn revocation_is_persisted_with_the_upstream_reason() {
+        let (mgr, store, _r) = setup_with(&account(chrono::Duration::minutes(2)), false, true);
+        mgr.get_token(&account_conn()).await.unwrap();
+        let persisted = store.get("acct-1").unwrap().unwrap();
+        let reason = persisted
+            .revoked
+            .expect("a revoked account must be marked in the store");
+        assert!(
+            reason.contains("Bad credentials") && reason.contains("401"),
+            "the stored reason must carry the upstream status and message: {reason}"
+        );
+    }
+
+    // Plausible wrong impl: once the access token also expires, the caller gets a
+    // generic 401 that hides why, instead of the typed revocation.
+    #[tokio::test]
+    async fn expired_revoked_account_reports_revocation_not_a_generic_error() {
+        let (mgr, _store, refresher) =
+            setup_with(&account(chrono::Duration::seconds(-1)), false, true);
+        match mgr.get_token(&account_conn()).await {
+            Err(VkdgError::CredentialRevoked { status, message }) => {
+                assert_eq!(status, 401);
+                assert!(message.contains("Bad credentials"), "{message}");
+            }
+            other => panic!("expected CredentialRevoked, got {other:?}"),
+        }
+        // A second call answers from the stored state without another refresh.
+        assert!(mgr.get_token(&account_conn()).await.is_err());
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 1);
+    }
+
+    // Plausible wrong impl: a transient failure (network, 5xx) is treated as a
+    // revocation and the account is wrongly parked.
+    #[tokio::test]
+    async fn transient_refresh_failure_does_not_mark_revoked() {
+        let (mgr, store, _r) = setup_with(&account(chrono::Duration::minutes(2)), true, false);
+        mgr.get_token(&account_conn()).await.unwrap();
+        assert!(
+            store.get("acct-1").unwrap().unwrap().revoked.is_none(),
+            "only a revocation parks the account; transient errors retry later"
+        );
     }
 }

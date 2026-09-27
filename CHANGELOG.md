@@ -4,6 +4,13 @@ All notable changes to VKDG are documented here.
 Format: [keepachangelog.com](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A refresh token rejected by the upstream (401, `invalid_grant`, `InvalidGrantException`, `ExpiredTokenException`) now parks the account instead of being retried on every request. New typed error `VkdgError::CredentialRevoked` / `ProviderError::CredentialRevoked`; transient failures (5xx, throttling) still retry
+- Refresh failures log the upstream status and message (`401: Bad credentials`) instead of a bare `authorization_failed`
+- `/admin/v1/accounts` reports `status: active | needs_login` and `revoked_reason`; the state is stored in `accounts.db` (column added automatically on existing stores)
+
 ## [0.1.0-rc1]: 2026-09-26
 
 ### Added

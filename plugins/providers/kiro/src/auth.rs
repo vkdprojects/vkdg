@@ -51,6 +51,12 @@ const SOCIAL_DEVICE_POLL_URL: &str =
 const SOCIAL_REFRESH_URL: &str = "https://prod.us-east-1.auth.desktop.kiro.dev/refreshToken";
 const SOCIAL_CLIENT_ID: &str = "kiro-cli";
 
+/// Token lifetime assumed when the social login does not report one.
+///
+/// Its refresh endpoint returns `expiresIn: 3600`, so an hour matches what the
+/// service actually issues.
+const SOCIAL_ASSUMED_TTL_SECS: u64 = 3600;
+
 /// Profile discovery must never hang a login.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -99,6 +105,11 @@ fn region_or_default(map: &HashMap<String, String>, key: &str) -> String {
 }
 
 async fn json_post(url: &str, body: &Value) -> Result<(bool, Value), ProviderError> {
+    let (status, value) = json_post_status(url, body).await?;
+    Ok(((200..300).contains(&status), value))
+}
+
+async fn json_post_status(url: &str, body: &Value) -> Result<(u16, Value), ProviderError> {
     let resp = client()
         .post(url)
         .header("accept", "application/json")
@@ -106,10 +117,40 @@ async fn json_post(url: &str, body: &Value) -> Result<(bool, Value), ProviderErr
         .send()
         .await
         .map_err(http_err)?;
-    let ok = resp.status().is_success();
+    let status = resp.status().as_u16();
     // Error bodies are JSON too (AWS uses `__type`), so parse either way.
     let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-    Ok((ok, value))
+    Ok((status, value))
+}
+
+/// Error codes meaning the refresh token itself is dead, not a passing failure.
+const REVOKED_CODES: &[&str] = &[
+    "invalid_grant",
+    "InvalidGrantException",
+    "ExpiredTokenException",
+];
+
+/// Classify a failed refresh response.
+///
+/// A 401 or a revoked-token error code becomes [`ProviderError::CredentialRevoked`]
+/// so the gateway stops retrying and asks for a new login. Anything else (5xx,
+/// throttling, malformed body) stays a retryable `TokenRefresh`. Either way the
+/// upstream's own message is kept, so logs read `401: Bad credentials` rather
+/// than a bare code.
+fn refresh_failure(what: &str, status: u16, value: &Value) -> ProviderError {
+    let code = error_code(value);
+    let detail = ["message", "Message", "error_description"]
+        .iter()
+        .find_map(|k| str_field(value, k))
+        .map_or_else(|| code.clone(), |m| format!("{code}: {m}"));
+    if status == 401 || REVOKED_CODES.contains(&code.as_str()) {
+        ProviderError::CredentialRevoked {
+            status,
+            message: format!("{what}: {detail}"),
+        }
+    } else {
+        ProviderError::TokenRefresh(format!("{what} failed ({status}): {detail}"))
+    }
 }
 
 fn str_field(value: &Value, key: &str) -> Option<String> {
@@ -183,8 +224,8 @@ async fn register_client(
 }
 
 /// One AWS SSO OIDC token call (device-code exchange or refresh).
-async fn oidc_token(region: &str, body: &Value) -> Result<(bool, Value), ProviderError> {
-    json_post(&format!("{}/token", oidc_host(region)), body).await
+async fn oidc_token(region: &str, body: &Value) -> Result<(u16, Value), ProviderError> {
+    json_post_status(&format!("{}/token", oidc_host(region)), body).await
 }
 
 /// Best-effort `ListAvailableProfiles` across the regions that can host a profile.
@@ -325,21 +366,22 @@ async fn refresh_oidc(
         ],
     );
 
-    let (ok, value) = oidc_token(&region, &body(client_id, client_secret)).await?;
-    let value = if ok {
+    let (status, value) = oidc_token(&region, &body(client_id, client_secret)).await?;
+    let value = if (200..300).contains(&status) {
         value
     } else {
         // Re-register once, then retry with the fresh client.
-        let fresh = register_client(&region, true).await.map_err(|_| {
-            ProviderError::TokenRefresh(format!("kiro refresh failed: {}", error_code(&value)))
-        })?;
-        let (retry_ok, retry) =
+        let fresh = register_client(&region, true)
+            .await
+            .map_err(|_| refresh_failure("kiro refresh", status, &value))?;
+        let (retry_status, retry) =
             oidc_token(&region, &body(&fresh.client_id, &fresh.client_secret)).await?;
-        if !retry_ok {
-            return Err(ProviderError::TokenRefresh(format!(
-                "kiro refresh failed after client re-registration: {}",
-                error_code(&retry)
-            )));
+        if !(200..300).contains(&retry_status) {
+            return Err(refresh_failure(
+                "kiro refresh after client re-registration",
+                retry_status,
+                &retry,
+            ));
         }
         carried.insert("client_id".to_owned(), fresh.client_id);
         carried.insert("client_secret".to_owned(), fresh.client_secret);
@@ -364,16 +406,13 @@ async fn refresh_social(
     refresh_token: &str,
     extra: &HashMap<String, String>,
 ) -> Result<TokenPair, ProviderError> {
-    let (ok, value) = json_post(
+    let (status, value) = json_post_status(
         SOCIAL_REFRESH_URL,
         &json!({ "refreshToken": refresh_token }),
     )
     .await?;
-    if !ok {
-        return Err(ProviderError::TokenRefresh(format!(
-            "kiro social refresh failed: {}",
-            error_code(&value)
-        )));
+    if !(200..300).contains(&status) {
+        return Err(refresh_failure("kiro social refresh", status, &value));
     }
     Ok(TokenPair {
         access_token: str_field(&value, "accessToken")
@@ -415,13 +454,10 @@ async fn refresh_external_idp(
         .send()
         .await
         .map_err(http_err)?;
-    let ok = resp.status().is_success();
+    let status = resp.status().as_u16();
     let value = resp.json::<Value>().await.unwrap_or(Value::Null);
-    if !ok {
-        return Err(ProviderError::TokenRefresh(format!(
-            "kiro external_idp refresh failed: {}",
-            error_code(&value)
-        )));
+    if !(200..300).contains(&status) {
+        return Err(refresh_failure("kiro external_idp refresh", status, &value));
     }
 
     Ok(TokenPair {
@@ -616,7 +652,7 @@ impl OAuthProvider for KiroAdapter {
             }
 
             let region = region_or_default(state, "region");
-            let (ok, value) = oidc_token(
+            let (status, value) = oidc_token(
                 &region,
                 &json!({
                     "clientId": get(state, "client_id").unwrap_or_default(),
@@ -627,7 +663,7 @@ impl OAuthProvider for KiroAdapter {
             )
             .await?;
 
-            if ok && value.get("accessToken").is_some() {
+            if (200..300).contains(&status) && value.get("accessToken").is_some() {
                 let auth_method = get(state, "auth_method").unwrap_or(AUTH_BUILDER_ID);
                 return oidc_login_result(
                     &value,
@@ -860,7 +896,13 @@ async fn poll_social_device_login(state: &LoginState) -> Result<DevicePoll, Prov
         tokens: TokenPair {
             access_token,
             refresh_token: str_field(&value, "refreshToken"),
-            expires_in_secs: value.get("expiresIn").and_then(Value::as_u64),
+            // The social login omits `expiresIn`, though its refresh endpoint
+            // reports 3600. Assume the same hour rather than leaving the expiry
+            // unknown, so the gateway refreshes ahead instead of on every request.
+            expires_in_secs: value
+                .get("expiresIn")
+                .and_then(Value::as_u64)
+                .or(Some(SOCIAL_ASSUMED_TTL_SECS)),
             extra,
         },
         label: provider,
@@ -917,6 +959,56 @@ mod tests {
             "authorization_pending"
         );
         assert_eq!(error_code(&Value::Null), "authorization_failed");
+    }
+
+    // Found live: GitHub social refresh answered 401 "Bad credentials" and the
+    // gateway logged only `authorization_failed`, then retried every request.
+    #[test]
+    fn refresh_401_is_revoked_and_keeps_upstream_message() {
+        let body = json!({ "message": "Bad credentials" });
+        match refresh_failure("kiro social refresh", 401, &body) {
+            ProviderError::CredentialRevoked { status, message } => {
+                assert_eq!(status, 401);
+                assert!(message.contains("Bad credentials"), "{message}");
+            }
+            other => panic!("expected CredentialRevoked, got {other:?}"),
+        }
+    }
+
+    // AWS OIDC answers 400 with a code, not 401, for a dead refresh token.
+    #[test]
+    fn revoked_grant_codes_are_revoked_regardless_of_status() {
+        for body in [
+            json!({ "error": "invalid_grant" }),
+            json!({ "__type": "com.amazonaws.ssooidc#InvalidGrantException" }),
+            json!({ "__type": "ExpiredTokenException", "message": "expired" }),
+        ] {
+            assert!(
+                matches!(
+                    refresh_failure("kiro refresh", 400, &body),
+                    ProviderError::CredentialRevoked { status: 400, .. }
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    // Plausible wrong impl: every failure parks the account, so one AWS outage
+    // forces every user to log in again.
+    #[test]
+    fn server_errors_and_throttling_stay_retryable() {
+        for (status, body) in [
+            (500, json!({ "message": "internal" })),
+            (429, json!({ "__type": "ThrottlingException" })),
+            (503, Value::Null),
+        ] {
+            match refresh_failure("kiro refresh", status, &body) {
+                ProviderError::TokenRefresh(msg) => {
+                    assert!(msg.contains(&status.to_string()), "{msg}")
+                }
+                other => panic!("{status}: expected TokenRefresh, got {other:?}"),
+            }
+        }
     }
 
     // Refutes: dropping the client registration (or profile) on refresh, which

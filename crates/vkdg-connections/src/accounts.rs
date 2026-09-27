@@ -88,6 +88,12 @@ pub struct Account {
     pub refresh_token: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
     pub extra: HashMap<String, String>,
+    /// Why the upstream rejected this account's refresh token, if it did.
+    ///
+    /// Set when a refresh fails with a revocation (not a transient error). The
+    /// gateway then stops calling the refresh endpoint on every request and
+    /// reports the account as needing a new login.
+    pub revoked: Option<String>,
 }
 
 impl Account {
@@ -102,6 +108,7 @@ impl Account {
             refresh_token: pair.refresh_token,
             expires_at: expires_at_from(pair.expires_in_secs),
             extra: pair.extra,
+            revoked: None,
         }
     }
 
@@ -115,10 +122,17 @@ impl Account {
         self.extra.extend(pair.extra);
     }
 
-    /// True when the access token expires within `margin` (unknown expiry = never).
+    /// True when the access token expires within `margin`, or when its expiry is
+    /// unknown.
+    ///
+    /// Unknown expiry means "refresh now", not "never expires". Treating it as
+    /// never disabled refresh entirely for any provider that omits `expires_in`:
+    /// Kiro's social login does, so its accounts died silently about an hour after
+    /// login while a perfectly good refresh token sat unused.
     pub fn expires_within(&self, margin: chrono::Duration) -> bool {
+        // `is_none_or` postdates the project MSRV.
         self.expires_at
-            .is_some_and(|exp| Utc::now() + margin >= exp)
+            .map_or(true, |exp| Utc::now() + margin >= exp)
     }
 
     pub fn credential(&self) -> Credential {
@@ -208,10 +222,22 @@ impl AccountStore {
                  refresh_token TEXT,
                  expires_at    TEXT,
                  extra         TEXT NOT NULL,
-                 updated_at    TEXT NOT NULL
+                 updated_at    TEXT NOT NULL,
+                 revoked       TEXT
              );",
         )
         .map_err(|e| store_err("init", &e))?;
+        // Stores created before `revoked` existed lack the column. `CREATE TABLE
+        // IF NOT EXISTS` does not add it, so add it here; the check keeps this
+        // idempotent across restarts.
+        let has_revoked = conn
+            .prepare("SELECT 1 FROM pragma_table_info('accounts') WHERE name = 'revoked'")
+            .and_then(|mut st| st.exists([]))
+            .map_err(|e| store_err("migrate", &e))?;
+        if !has_revoked {
+            conn.execute("ALTER TABLE accounts ADD COLUMN revoked TEXT", [])
+                .map_err(|e| store_err("migrate", &e))?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -224,8 +250,8 @@ impl AccountStore {
         self.lock()
             .execute(
                 "INSERT OR REPLACE INTO accounts
-                     (id, provider, label, access_token, refresh_token, expires_at, extra, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (id, provider, label, access_token, refresh_token, expires_at, extra, updated_at, revoked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     account.id,
                     account.provider,
@@ -235,6 +261,7 @@ impl AccountStore {
                     account.expires_at.map(|t| t.to_rfc3339()),
                     extra,
                     Utc::now().to_rfc3339(),
+                    account.revoked,
                 ],
             )
             .map_err(|e| store_err("upsert", &e))?;
@@ -280,7 +307,7 @@ impl AccountStore {
 }
 
 const SELECT_ACCOUNT: &str =
-    "SELECT id, provider, label, access_token, refresh_token, expires_at, extra FROM accounts";
+    "SELECT id, provider, label, access_token, refresh_token, expires_at, extra, revoked FROM accounts";
 
 fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     let expires_at: Option<String> = row.get(5)?;
@@ -295,6 +322,7 @@ fn row_to_account(row: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
             .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
             .map(|t| t.with_timezone(&Utc)),
         extra: serde_json::from_str(&extra).unwrap_or_default(),
+        revoked: row.get(7)?,
     })
 }
 
@@ -409,7 +437,31 @@ mod tests {
             refresh_token: Some("refresh-secret-value".into()),
             expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
             extra,
+            revoked: None,
         }
+    }
+
+    /// Refutes: reading an unknown expiry as "never expires".
+    ///
+    /// Kiro's social login omits `expires_in`, so `expires_at` was null and
+    /// `expires_within` answered false for every margin. Refresh sits behind that
+    /// check, so it never ran: accounts died about an hour after login with a
+    /// perfectly good refresh token unused on disk. Found against a live account.
+    #[test]
+    fn unknown_expiry_means_refresh_now_not_never() {
+        let mut acct = sample();
+        acct.expires_at = None;
+        assert!(
+            acct.expires_within(chrono::Duration::zero()),
+            "an account with no known expiry must be treated as due for refresh"
+        );
+        assert!(acct.expires_within(chrono::Duration::minutes(5)));
+
+        // A known expiry still behaves normally on both sides of the margin.
+        acct.expires_at = Some(Utc::now() + chrono::Duration::hours(1));
+        assert!(!acct.expires_within(chrono::Duration::minutes(5)));
+        acct.expires_at = Some(Utc::now() + chrono::Duration::minutes(2));
+        assert!(acct.expires_within(chrono::Duration::minutes(5)));
     }
 
     // Plausible wrong impl: derived Debug leaks tokens or extra secrets into logs.

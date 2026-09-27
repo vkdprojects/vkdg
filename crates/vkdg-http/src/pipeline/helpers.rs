@@ -67,6 +67,9 @@ pub(super) fn error_response(err: VkdgError) -> Response {
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        // The gateway's stored login for this connection is dead; the client's
+        // request is fine. Anthropic's `authentication_error` is the closest fit.
+        VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::BudgetExceeded { .. } => (StatusCode::PAYMENT_REQUIRED, "budget_exceeded_error"),
     };

@@ -62,7 +62,8 @@ http = "1.3"
 http-body = "1.0"
 http-body-util = "0.1"
 bytes = "1.10"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+crc32fast = "1.5"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "blocking"] }
 console   = "0.15"
 indicatif = "0.17"
 
@@ -156,6 +157,9 @@ vkdg-provider-nvidia-nim     = { path = "plugins/providers/nvidia-nim" }
 notify           = { version = "6.1", features = ["macos_fsevent"] }
 rusqlite         = { version = "0.31", features = ["bundled"] }
 wasmtime        = { version = "27", features = ["component-model"] }
+wasmtime-wasi   = "27"
+wit-parser      = "0.227"
+wat             = "1"
 tempfile         = "3.10"
 criterion = { version = "0.5", features = ["async_tokio"] }
 regex            = "1.11"

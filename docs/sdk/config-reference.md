@@ -111,6 +111,27 @@ auth:
 | `client_secret_env` | string | Environment variable holding the client secret |
 | `scopes` | list of strings | Requested OAuth2 scopes |
 
+### account
+
+A saved provider account created by `vkdg login <provider>` (device code, PKCE or token import). The provider plugin refreshes the token 5 minutes before it expires, and the refreshed tokens are written back to the account store.
+
+```yaml
+connections:
+  - id: kiro-main
+    provider: kiro
+    auth:
+      type: account
+      account: kiro-1a2b3c4d
+    models: ["claude-sonnet-4"]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `"account"` | Selects this variant |
+| `account` | string | Account id printed by `vkdg login` / `vkdg accounts list` |
+
+`provider` must be a plugin id that implements OAuth (not `custom:<url>`). A blank `account` is rejected at config load. Accounts live in `$VKDG_ACCOUNTS_DB`, falling back to `~/.config/vkdg/accounts.db`. The file is created with mode `0600` inside a `0700` directory. Tokens never appear in logs, `Debug` output, `DecisionRecord`, or admin responses.
+
 ---
 
 ## routes

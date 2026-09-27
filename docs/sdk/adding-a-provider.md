@@ -254,15 +254,18 @@ Open a PR. That's it.
 
 ### For providers with OAuth or custom protocol
 
-Implement `ProviderAdapter` (and optionally `OAuthProvider`) from `vkdg-provider-sdk`:
+Implement `ProviderAdapter` from `vkdg-provider-sdk`. For OAuth, also implement `OAuthProvider` and return `Some(self)` from `ProviderAdapter::oauth()`. The core then handles login, persistence, refresh, the CLI and the admin API, so it needs no provider-specific code.
 
 ```rust
-use vkdg_provider_sdk::{OAuthConfig, OAuthFlow, OAuthProvider, ProviderAdapter,
-                         PreparedRequest, ProviderError, TokenPair};
-use vkdg_connections::ConnectionConfig;
-use vkdg_operations::Operation;
 use std::collections::HashMap;
 use futures::future::BoxFuture;
+use vkdg_connections::ConnectionConfig;
+use vkdg_operations::Operation;
+use vkdg_provider_sdk::{
+    Credential, DeviceAuthorization, DevicePoll, LoginField, LoginMethod, LoginParams,
+    LoginResult, LoginState, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest,
+    ProviderAdapter, ProviderError, TokenPair,
+};
 
 pub struct MyProvider;
 
@@ -270,45 +273,76 @@ impl ProviderAdapter for MyProvider {
     fn id(&self) -> &str { "my-provider" }
     fn display_name(&self) -> &str { "My Provider" }
 
+    // Opt in to login + refresh.
+    fn oauth(&self) -> Option<&dyn OAuthProvider> { Some(self) }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
-        // Build your upstream request
-        // See plugins/providers/anthropic/src/lib.rs for a complete example
-        todo!()
+        // credential.token = access token (or API key).
+        // credential.extra = per-account data you returned at login/refresh
+        //                    (region, profile ARN, device id, …). Empty for API keys.
+        todo!("see plugins/providers/anthropic/src/lib.rs")
     }
 }
 
 impl OAuthProvider for MyProvider {
-    fn oauth_config(&self) -> OAuthConfig {
-        OAuthConfig {
-            flow: OAuthFlow::AuthorizationCodePkce,
-            authorize_url: Some("https://my-provider.example/oauth/authorize".into()),
-            token_url: "https://my-provider.example/oauth/token".into(),
-            client_id: std::env::var("MY_PROVIDER_CLIENT_ID").unwrap_or_default(),
-            scopes: vec!["inference".into()],
-            redirect_uri: None,
-            extra_auth_params: HashMap::new(),
-        }
+    fn oauth_config(&self) -> OAuthConfig { todo!() }
+
+    // Advertise methods; CLI and console render them generically.
+    fn login_methods(&self) -> Vec<LoginMethod> {
+        vec![LoginMethod {
+            id: "device".into(),
+            label: "Device code".into(),
+            flow: OAuthFlow::DeviceCode,
+            fields: vec![LoginField {
+                id: "region".into(), label: "Region".into(),
+                required: true, secret: false, default: Some("us-east-1".into()),
+            }],
+        }]
     }
 
-    fn refresh_token<'a>(
-        &'a self,
-        refresh_token: &'a str,
-        _extra: &'a HashMap<String, String>,
-    ) -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
-        Box::pin(async move {
-            // POST to token_url with grant_type=refresh_token
-            todo!()
-        })
+    fn start_device_login<'a>(&'a self, _method: &'a str, params: &'a LoginParams)
+        -> BoxFuture<'a, Result<DeviceAuthorization, ProviderError>> {
+        // Call the device authorization endpoint. Put device_code etc. in `state`:
+        // it stays server-side and comes back on every poll.
+        todo!()
+    }
+
+    fn poll_device_login<'a>(&'a self, _method: &'a str, state: &'a LoginState)
+        -> BoxFuture<'a, Result<DevicePoll, ProviderError>> {
+        // Map authorization_pending → Pending, slow_down → SlowDown,
+        // success → Done(LoginResult { tokens, label }), denial/expiry → Failed(msg).
+        todo!()
+    }
+
+    fn refresh_token<'a>(&'a self, refresh_token: &'a str, extra: &'a HashMap<String, String>)
+        -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
+        // Keys you return in TokenPair::extra overwrite stored ones; others are kept.
+        // refresh_token: None keeps the stored refresh token.
+        todo!()
     }
 }
 ```
 
-See `plugins/providers/claude-code/` and `plugins/providers/kiro/` for complete OAuth examples.
+| Hook | Flow | Default |
+|---|---|---|
+| `login_methods()` | all | empty (refresh only) |
+| `start_device_login` / `poll_device_login` | `DeviceCode` (RFC 8628) | `UnsupportedOperation` |
+| `start_pkce_login` / `finish_pkce_login` | `AuthorizationCodePkce` | `UnsupportedOperation` |
+| `import_token` | `ImportToken` (pasted refresh token / credential blob) | `UnsupportedOperation` |
+| `refresh_token` | all | required |
+
+What the core does with it:
+
+- `vkdg login <provider> [--method <id>] [--opt key=value …]` runs the method, saves an account to the account store, and prints the `auth: { type: account, account: <id> }` snippet. `vkdg login <provider> --list-methods` shows the methods and fields. `vkdg accounts list|remove <id>` manages saved accounts.
+- Admin API (loopback, session required): `GET /admin/v1/providers/{id}/login-methods`, `POST /admin/v1/oauth/{provider}/start` (`{method?, params}`), `POST /admin/v1/oauth/{provider}/poll` (`{login_id, code?}`; `code` is for PKCE), `POST /admin/v1/oauth/{provider}/import`, `GET /admin/v1/accounts`, `DELETE /admin/v1/accounts/{id}`. Responses never include tokens or plugin login state.
+- At request time, `CredentialManager` loads the account and calls `refresh_token` through the registry once the token is within 5 minutes of expiry, with one refresh per account at a time. It persists the result and then passes `Credential { token, extra }` to `prepare()`.
+
+See `plugins/providers/claude-code/` and `plugins/providers/kimi-coding/` for OAuth examples.
 
 ---
 

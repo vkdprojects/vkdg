@@ -8,6 +8,32 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+**Provider accounts and OAuth login (generic, plugin-driven)**
+- `ProviderAdapter::oauth()` hook; `OAuthProvider` gains `login_methods`, device-code (`start_device_login`/`poll_device_login`), PKCE (`start_pkce_login`/`finish_pkce_login`) and `import_token`, all opt-in
+- `AccountStore` (SQLite, `0600`) and `auth: { type: account, account: <id> }`; `CredentialManager` refreshes 5 min ahead via the plugin, one refresh per account, and persists the result
+- **Breaking (SDK):** `ProviderAdapter::prepare` takes `&Credential { token, extra }` instead of `token: &str`
+- CLI: `vkdg login <provider> [--method] [--opt k=v] [--list-methods]`, `vkdg accounts list|remove`
+- Admin API: `GET /admin/v1/providers/{id}/login-methods`, `POST /admin/v1/oauth/{provider}/{start,poll,import}`, `GET/DELETE /admin/v1/accounts`
+
+**Plugin ABI made real (2026-09-27)**
+- **Fixed:** `wit/` never parsed — `stream` is a WIT keyword, `float32` was renamed `f32`, and the world is `cache-backend`. No plugin could have been built against the published contract; a test now parses the package in CI
+- `wit/provider.wit` grows from 5 to 15 functions so a community plugin can match the first-party Kiro adapter: interactive login, per-account credential data, plugin-chosen URL, raw-bytes stream decode, `finish-stream`, runtime model discovery. Verified by compiling Kiro as a `wit-bindgen` guest against the WIT alone
+- WASM components now execute rather than only validate: per-call fuel, memory ceiling from the manifest, a fresh `Store` per call, and no host imports beyond WASI resolved against a context that grants nothing
+- All 5 roles run as `.wasm`, each with the failure policy its job demands — provider fails the request, compressor is skipped, router falls back to gateway order, cache degrades to a miss, auth denies
+- `RegistryManifest` and `RegistryIndex`: checksum mandatory for remote wasm, kebab-case names, exactly one install source; `PluginStore` verifies and compiles before writing
+- `vkdg plugin install|list|remove|search` and `/admin/v1/plugins` now work, plus a console plugins screen
+
+**Streaming (2026-09-27)**
+- **Fixed:** `ConversationStreamDecoder::finish()` was never called, so a provider that sends no stop event produced a stream with no terminal events
+- **Fixed:** the hand-rolled dialect encoders emitted an invalid Anthropic stream (`message_start` as `data: {}`, every block at index 0) and silently dropped tool calls. `StreamEncoder` in `vkdg-operations` is now the single encoding path
+- `ConversationEvent` gains `ReasoningDelta`, `ToolCallEnd` and cache token counts
+
+**Kiro (2026-09-27)**
+- **Fixed:** the EventStream parser had been fitted to a synthetic fixture — `total_len` excluded the prelude, string headers ignored their `u16` length, and neither CRC was checked. A real Amazon Q stream would desync
+- **Fixed:** `reasoningContentEvent` reads `text`, not `content`; `contextUsageEvent` is snake_case, so reading camelCase silently zeroed usage
+- Endpoint follows the credential: OAuth accounts use `runtime.{region}.kiro.dev`, `ksk_` API keys use `q.{region}.amazonaws.com` and must omit `profileArn` (AWS answers 403). Kiro's own docs mark `q.*` legacy and slated for deprecation
+- Five login methods (builder-id, idc, social, import, api-key) with three refresh paths; prompt caching via `cachePoint`; `x-amzn-codewhisperer-optout` on every request
+
 **Session 2026-09-26 (plugin-first architecture and OmniRoute parity)**
 
 Plugin system:

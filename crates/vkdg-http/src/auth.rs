@@ -702,7 +702,11 @@ mod tests {
         assert_eq!((u.input_tokens, u.output_tokens, u.requests), (11, 4, 1));
     }
 
-    fn pending(log: &Arc<vkdg_admin::handlers::requests::RequestLog>, id: &str) -> PendingLog {
+    fn pending(
+        log: &Arc<vkdg_admin::handlers::requests::RequestLog>,
+        id: &str,
+        price: Option<vkdg_core::pricing::ModelPrice>,
+    ) -> PendingLog {
         PendingLog {
             log: Arc::clone(log),
             record: vkdg_admin::handlers::requests::RequestRecord {
@@ -719,18 +723,30 @@ mod tests {
                 output_tokens: None,
                 cost_microdollars: None,
             },
-            price: Some(vkdg_core::pricing::ModelPrice::new(
-                "m", 3_000_000, 15_000_000,
-            )),
+            price,
         }
     }
 
     /// A router whose handler streams an Anthropic usage pair and attaches the
     /// history row the way the pipeline does.
     fn logged_app(auth: DataAuth, log: &Arc<vkdg_admin::handlers::requests::RequestLog>) -> Router {
+        priced_app(
+            auth,
+            log,
+            Some(vkdg_core::pricing::ModelPrice::new(
+                "m", 3_000_000, 15_000_000,
+            )),
+        )
+    }
+
+    fn priced_app(
+        auth: DataAuth,
+        log: &Arc<vkdg_admin::handlers::requests::RequestLog>,
+        price: Option<vkdg_core::pricing::ModelPrice>,
+    ) -> Router {
         let log = Arc::clone(log);
         let handler = move || {
-            let log = Arc::clone(&log);
+            let (log, price) = (Arc::clone(&log), price.clone());
             async move {
                 let chunks = [
                     "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n",
@@ -740,7 +756,7 @@ mod tests {
                     chunks.map(|c| Ok::<_, std::io::Error>(bytes::Bytes::from(c))),
                 );
                 let mut r = axum::response::Response::new(axum::body::Body::from_stream(stream));
-                r.extensions_mut().insert(pending(&log, "req-1"));
+                r.extensions_mut().insert(pending(&log, "req-1", price));
                 r
             }
         };
@@ -795,6 +811,22 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let r = settled(&log, "req-1").await.expect("row written");
         assert_eq!((r.status.as_str(), r.output_tokens), ("completed", Some(4)));
+    }
+
+    // A provider with no list price (Kiro, Claude Code) must read as unknown,
+    // never as a $0 request.
+    #[tokio::test]
+    async fn unpriced_row_has_tokens_but_no_cost() {
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let (s, _) = call(
+            priced_app(DataAuth::disabled(), &log, None),
+            "/v1/messages",
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let r = settled(&log, "req-1").await.expect("row written");
+        assert_eq!((r.input_tokens, r.cost_microdollars), (Some(11), None));
     }
 
     #[tokio::test]

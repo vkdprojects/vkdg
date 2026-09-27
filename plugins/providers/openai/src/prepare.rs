@@ -24,11 +24,15 @@ const PRICES: &[ModelPrice] = &[
     ModelPrice::new("gpt-5*", 1_250_000, 10_000_000),
     ModelPrice::new("gpt-4-1-nano*", 100_000, 400_000),
     ModelPrice::new("gpt-4-1-mini*", 400_000, 1_600_000),
-    ModelPrice::new("gpt-4-1*", 2_000_000, 8_000_000),
+    // Legacy GPT-4 Turbo previews (`gpt-4-1106-preview`) share the prefix.
+    ModelPrice::new("gpt-4-1106*", 10_000_000, 30_000_000),
+    ModelPrice::new("gpt-4-1", 2_000_000, 8_000_000),
+    ModelPrice::new("gpt-4-1-*", 2_000_000, 8_000_000),
     ModelPrice::new("gpt-4o-mini*", 150_000, 600_000),
     ModelPrice::new("gpt-4o*", 2_500_000, 10_000_000),
     ModelPrice::new("o4-mini*", 1_100_000, 4_400_000),
     ModelPrice::new("o3-mini*", 1_100_000, 4_400_000),
+    ModelPrice::new("o3-pro*", 20_000_000, 80_000_000),
     ModelPrice::new("o3*", 2_000_000, 8_000_000),
 ];
 
@@ -342,6 +346,23 @@ mod tests {
         ContentBlock, ConversationRequest, ImageGenerateRequest, Message, MessageContent,
         Operation, Role, Tool,
     };
+
+    // Shared prefixes: `gpt-4-1*` caught the old `gpt-4-1106-preview`, `o3*` caught `o3-pro`.
+    #[test]
+    fn list_prices_do_not_bleed_across_shared_prefixes() {
+        let p = |m: &str| {
+            vkdg_core::pricing::price_for(PRICES, m)
+                .map(|p| (p.input_per_mtok / 1_000, p.output_per_mtok / 1_000))
+        };
+        assert_eq!(p("gpt-4.1"), Some((2_000, 8_000)));
+        assert_eq!(p("gpt-4.1-2025-04-14"), Some((2_000, 8_000)));
+        assert_eq!(p("gpt-4.1-mini"), Some((400, 1_600)));
+        assert_eq!(p("gpt-4-1106-preview"), Some((10_000, 30_000)));
+        assert_eq!(p("gpt-4o-mini"), Some((150, 600)));
+        assert_eq!(p("o3-pro"), Some((20_000, 80_000)));
+        assert_eq!(p("o3"), Some((2_000, 8_000)));
+        assert_eq!(p("llama-3.1-70b"), None);
+    }
 
     fn openai_config() -> ConnectionConfig {
         ConnectionConfig {

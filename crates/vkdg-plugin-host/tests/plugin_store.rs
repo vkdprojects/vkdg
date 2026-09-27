@@ -118,7 +118,7 @@ fn install_then_list_then_remove_round_trips() {
     assert_eq!(host.id.0, "good-plugin");
     assert_eq!(host.version, "1.0.0");
 
-    let listed = store.list().expect("list");
+    let listed = store.list().expect("list").installed;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].manifest.name, "good-plugin");
     assert_eq!(listed[0].manifest.models, ["custom-*"]);
@@ -127,7 +127,7 @@ fn install_then_list_then_remove_round_trips() {
     assert!(store.get("absent").expect("get").is_none());
 
     store.remove("good-plugin").expect("remove");
-    assert!(store.list().expect("list").is_empty());
+    assert!(store.list().expect("list").installed.is_empty());
     assert!(
         store.remove("good-plugin").is_err(),
         "removing twice must be an error, not a silent no-op"
@@ -147,7 +147,7 @@ fn incomplete_install_is_not_listed() {
     fs::write(dir.join("plugin.wasm"), component()).expect("write");
 
     assert!(
-        store.list().expect("list").is_empty(),
+        store.list().expect("list").installed.is_empty(),
         "a directory without a manifest is an incomplete install"
     );
     fs::remove_dir_all(&root).ok();
@@ -211,7 +211,7 @@ install:
         installed.wasm_path().is_none(),
         "a config-only plugin must not write a component"
     );
-    assert_eq!(store.list().expect("list").len(), 1);
+    assert_eq!(store.list().expect("list").installed.len(), 1);
     fs::remove_dir_all(&root).ok();
 }
 
@@ -269,4 +269,33 @@ fn one_bad_manifest_does_not_stop_the_others_from_loading() {
         .find(|(n, _)| n == "mangled")
         .expect("bad dir reported by name");
     assert!(bad.1.is_err());
+}
+
+/// Refutes: one bad manifest makes the whole listing fail, so the console and
+/// `vkdg plugin list` show nothing at all.
+#[test]
+fn listing_shows_good_plugins_and_names_broken_ones() {
+    let root = temp_root("listing");
+    let store = PluginStore::new(&root);
+    let bytes = component();
+    store
+        .install(&wasm_manifest("good", &sha256_of(&bytes)), Some(&bytes))
+        .expect("install");
+    fs::create_dir_all(root.join("mangled")).unwrap();
+    fs::write(
+        root.join("mangled").join("manifest.yaml"),
+        b"name: [unclosed",
+    )
+    .unwrap();
+
+    let listing = store.list().expect("listing never fails on one bad plugin");
+    assert_eq!(listing.installed.len(), 1);
+    assert_eq!(listing.installed[0].manifest.name, "good");
+    assert_eq!(listing.broken.len(), 1);
+    assert_eq!(listing.broken[0].dir, "mangled");
+    assert!(
+        listing.broken[0].error.contains("manifest"),
+        "{}",
+        listing.broken[0].error
+    );
 }

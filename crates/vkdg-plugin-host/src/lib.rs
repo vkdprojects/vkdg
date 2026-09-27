@@ -6,7 +6,7 @@
 //! well-formed and reserve the call surface.
 
 pub mod store;
-pub use store::{InstalledPlugin, PluginStore, StoreError};
+pub use store::{BrokenPlugin, InstalledPlugin, PluginListing, PluginStore, StoreError};
 
 pub mod registry_index;
 pub use registry_index::{IndexEntry, IndexError, RegistryIndex, DEFAULT_REGISTRY};

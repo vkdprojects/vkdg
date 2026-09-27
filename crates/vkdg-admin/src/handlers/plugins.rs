@@ -37,9 +37,17 @@ pub struct PluginSummary {
 }
 
 #[derive(Serialize)]
+pub struct BrokenSummary {
+    dir: String,
+    error: String,
+}
+
+#[derive(Serialize)]
 pub struct PluginList {
     items: Vec<PluginSummary>,
     total: usize,
+    /// Plugin directories that will not load, with the reason.
+    broken: Vec<BrokenSummary>,
     /// Where plugins live, so the console can tell the operator.
     directory: String,
 }
@@ -85,6 +93,7 @@ pub async fn list_plugins(State(state): State<AdminState>, headers: HeaderMap) -
         }
     };
     let items: Vec<PluginSummary> = installed
+        .installed
         .iter()
         .map(|p| PluginSummary {
             name: p.manifest.name.clone(),
@@ -97,9 +106,18 @@ pub async fn list_plugins(State(state): State<AdminState>, headers: HeaderMap) -
         })
         .collect();
     let total = items.len();
+    let broken = installed
+        .broken
+        .into_iter()
+        .map(|b| BrokenSummary {
+            dir: b.dir,
+            error: b.error,
+        })
+        .collect();
     Json(PluginList {
         items,
         total,
+        broken,
         directory: store.root().display().to_string(),
     })
     .into_response()

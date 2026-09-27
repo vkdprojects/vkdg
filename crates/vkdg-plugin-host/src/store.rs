@@ -44,6 +44,20 @@ pub enum StoreError {
     Unsupported(String),
 }
 
+/// Installed plugins, plus directories whose manifest could not be read.
+#[derive(Debug, Default)]
+pub struct PluginListing {
+    pub installed: Vec<InstalledPlugin>,
+    pub broken: Vec<BrokenPlugin>,
+}
+
+/// A plugin directory that will not load, and why.
+#[derive(Debug, Clone)]
+pub struct BrokenPlugin {
+    pub dir: String,
+    pub error: String,
+}
+
 /// A plugin directory name and whether its manifest parsed.
 type ScannedDir = (String, Result<InstalledPlugin, StoreError>);
 
@@ -157,8 +171,22 @@ impl PluginStore {
 
     /// Installed plugins, sorted by name. Directories without a manifest are
     /// incomplete installs and are skipped.
-    pub fn list(&self) -> Result<Vec<InstalledPlugin>, StoreError> {
-        self.scan()?.into_iter().map(|(_, p)| p).collect()
+    ///
+    /// A directory whose manifest does not parse is returned in `broken` with
+    /// its error, never hidden and never fatal to the listing: the operator has
+    /// to see which plugin will not load, and the others still have to show.
+    pub fn list(&self) -> Result<PluginListing, StoreError> {
+        let mut listing = PluginListing::default();
+        for (dir, parsed) in self.scan()? {
+            match parsed {
+                Ok(p) => listing.installed.push(p),
+                Err(e) => listing.broken.push(BrokenPlugin {
+                    dir,
+                    error: e.to_string(),
+                }),
+            }
+        }
+        Ok(listing)
     }
 
     /// Every plugin directory with its parse result, sorted by directory name.

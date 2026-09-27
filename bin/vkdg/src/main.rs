@@ -1489,14 +1489,17 @@ fn handle_plugin(sub: PluginSub) {
                     );
                     std::process::exit(1);
                 }
-                Ok(installed) if installed.is_empty() => {
+                Ok(listing) if listing.installed.is_empty() && listing.broken.is_empty() => {
                     println!("No plugins installed in {}.", store.root().display());
                     println!();
                     println!("  Install one with:  vkdg plugin install <name|url|path>");
                 }
-                Ok(installed) => {
+                Ok(listing) => {
                     println!("Installed plugins ({}):", store.root().display());
-                    for p in &installed {
+                    for b in &listing.broken {
+                        println!("  \x1b[31m✗\x1b[0m {}  will not load: {}", b.dir, b.error);
+                    }
+                    for p in &listing.installed {
                         let m = &p.manifest;
                         println!("  {:<24} {:<10} {:?}", m.name, m.version, m.kind);
                         if !m.models.is_empty() {
@@ -1524,7 +1527,7 @@ fn handle_plugin(sub: PluginSub) {
             // Updating means re-resolving each manifest against its source, which
             // needs the registry client; refuse clearly rather than no-op.
             let store = PluginStore::from_env();
-            let installed = store.list().unwrap_or_default();
+            let installed = store.list().map(|l| l.installed).unwrap_or_default();
             if installed.is_empty() {
                 println!("No plugins installed.");
             } else {

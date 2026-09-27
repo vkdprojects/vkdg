@@ -30,7 +30,7 @@ impl ConversationStreamDecoder for KiroStreamDecoder {
     fn feed(&mut self, chunk: Bytes) -> Vec<ConversationEvent> {
         // Get frames from parser
         let frames = self.parser.feed(chunk);
-        
+
         // Map frames to events
         let mut events = Vec::new();
         for frame in frames {
@@ -38,7 +38,7 @@ impl ConversationStreamDecoder for KiroStreamDecoder {
                 events.push(event);
             }
         }
-        
+
         events
     }
 }

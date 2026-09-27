@@ -1,18 +1,18 @@
 //! Decode Kiro EventStream frames to ConversationEvent.
 
+use crate::eventstream::Frame;
 use serde_json;
 use vkdg_operations::{ConversationEvent, StopReason};
-use crate::eventstream::Frame;
 
 /// Maps Kiro EventStream frames to ConversationEvent.
 pub fn frame_to_event(frame: &Frame) -> Option<ConversationEvent> {
     // Extract event-type: first from headers, fallback to payload JSON
     let event_type = extract_event_type(frame)?;
-    
+
     match event_type.as_str() {
-        "messageStart" | "message_start" => {
-            Some(ConversationEvent::Started { request_id: vkdg_core::RequestId::new() })
-        }
+        "messageStart" | "message_start" => Some(ConversationEvent::Started {
+            request_id: vkdg_core::RequestId::new(),
+        }),
         "contentBlockDelta" | "content_block_delta" => {
             // Extract text from delta.text nested path
             let delta = extract_delta_text(&frame.payload)?;
@@ -43,12 +43,15 @@ pub fn frame_to_event(frame: &Frame) -> Option<ConversationEvent> {
                 .unwrap_or(StopReason::EndTurn);
             Some(ConversationEvent::Completed { stop_reason })
         }
-        "initial-response" => {
-            Some(ConversationEvent::Started { request_id: vkdg_core::RequestId::new() })
-        }
+        "initial-response" => Some(ConversationEvent::Started {
+            request_id: vkdg_core::RequestId::new(),
+        }),
         "assistantResponseEvent" => {
             let content = extract_json_string(&frame.payload, "content")?;
-            Some(ConversationEvent::OutputDelta { delta: content, index: 0 })
+            Some(ConversationEvent::OutputDelta {
+                delta: content,
+                index: 0,
+            })
         }
         "contextUsageEvent" => {
             let usage_pct = extract_json_f64(&frame.payload, "contextUsagePercentage")?;
@@ -79,7 +82,7 @@ fn extract_event_type(frame: &Frame) -> Option<String> {
             }
         }
     }
-    
+
     // Fallback: extract from payload JSON
     let value: serde_json::Value = serde_json::from_slice(&frame.payload).ok()?;
     value.get("type")?.as_str().map(|s| s.to_string())
@@ -88,16 +91,19 @@ fn extract_event_type(frame: &Frame) -> Option<String> {
 /// Extract delta.text from content_block_delta payload
 fn extract_delta_text(payload: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    
+
     // Try nested path: delta.text
     if let Some(delta) = value.get("delta") {
         if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
             return Some(text.to_string());
         }
     }
-    
+
     // Fallback: direct text field
-    value.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+    value
+        .get("text")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
 }
 
 fn extract_json_string(payload: &[u8], key: &str) -> Option<String> {
@@ -107,7 +113,11 @@ fn extract_json_string(payload: &[u8], key: &str) -> Option<String> {
 
 fn extract_nested_string(payload: &[u8], parent: &str, child: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    value.get(parent).and_then(|p| p.get(child)).and_then(|v| v.as_str()).map(String::from)
+    value
+        .get(parent)
+        .and_then(|p| p.get(child))
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 fn extract_json_usize(payload: &[u8], key: &str) -> Option<usize> {
@@ -143,34 +153,45 @@ mod tests {
     #[test]
     fn test_e2e_fixture_parsing() {
         let fixture = include_bytes!("../tests/fixtures/generate_assistant_response.eventstream");
-        
+
         // Parse frames through EventStreamParser
         let mut parser = crate::eventstream::EventStreamParser::new();
         let frames = parser.feed(bytes::Bytes::from(fixture.to_vec()));
-        
+
         // Should parse all 6 frames
         assert_eq!(frames.len(), 6, "Expected 6 frames from fixture");
-        
+
         // Map frames to ConversationEvent using frame_to_event
-        let events: Vec<_> = frames.iter()
-            .filter_map(frame_to_event)
-            .collect();
-        
+        let events: Vec<_> = frames.iter().filter_map(frame_to_event).collect();
+
         // Should get at least the assistant responses and completion
-        let output_deltas: Vec<_> = events.iter()
+        let output_deltas: Vec<_> = events
+            .iter()
             .filter_map(|e| match e {
                 ConversationEvent::OutputDelta { delta, .. } => Some(delta.clone()),
                 _ => None,
             })
             .collect();
-        
+
         // Should have 2 OutputDelta events: "hello" and " from kiro"
-        assert_eq!(output_deltas.len(), 2, "Expected 2 OutputDelta events, got {:?}", output_deltas);
+        assert_eq!(
+            output_deltas.len(),
+            2,
+            "Expected 2 OutputDelta events, got {:?}",
+            output_deltas
+        );
         assert_eq!(output_deltas[0], "hello");
         assert_eq!(output_deltas[1], " from kiro");
-        
+
         // Should have at least 1 Completed event (messageDelta and/or metadataEvent)
-        let completed_count = events.iter().filter(|e| matches!(e, ConversationEvent::Completed { .. })).count();
-        assert!(completed_count >= 1, "Expected at least 1 Completed event, got {}", completed_count);
+        let completed_count = events
+            .iter()
+            .filter(|e| matches!(e, ConversationEvent::Completed { .. }))
+            .count();
+        assert!(
+            completed_count >= 1,
+            "Expected at least 1 Completed event, got {}",
+            completed_count
+        );
     }
 }

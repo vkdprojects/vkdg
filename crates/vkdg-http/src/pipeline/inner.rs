@@ -705,7 +705,13 @@ async fn run_prompt_chain(
         );
 
         // Execute the step.
-        let resp = fusion_one_target(pipeline, conn_id, operation.clone(), ctx.envelope.api_type.clone()).await?;
+        let resp = fusion_one_target(
+            pipeline,
+            conn_id,
+            operation.clone(),
+            ctx.envelope.api_type.clone(),
+        )
+        .await?;
 
         if step_idx + 1 < step_count {
             // Not the last step: consume the body and extract text for the next step.

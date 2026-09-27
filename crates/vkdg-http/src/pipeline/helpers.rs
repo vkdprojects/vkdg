@@ -146,7 +146,12 @@ pub(super) fn decode_stream_to_sse(
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
     // State: (upstream stream, decoder, buffered events, api_type for encode)
     // Use ApiType that implements Clone
-    let state = (body, decoder, VecDeque::<vkdg_operations::ConversationEvent>::new(), api_type.clone());
+    let state = (
+        body,
+        decoder,
+        VecDeque::<vkdg_operations::ConversationEvent>::new(),
+        api_type.clone(),
+    );
     Box::pin(futures::stream::unfold(
         state,
         |(mut upstream, mut decoder, mut pending, api_type)| async move {
@@ -154,7 +159,10 @@ pub(super) fn decode_stream_to_sse(
                 // Drain any events already decoded from the last chunk.
                 if let Some(event) = pending.pop_front() {
                     let encoded = encode_event_for_api_type(&event, api_type.clone());
-                    return Some((Ok(Bytes::from(encoded)), (upstream, decoder, pending, api_type)));
+                    return Some((
+                        Ok(Bytes::from(encoded)),
+                        (upstream, decoder, pending, api_type),
+                    ));
                 }
                 // Pull the next chunk from upstream.
                 match upstream.next().await {
@@ -172,7 +180,10 @@ pub(super) fn decode_stream_to_sse(
 }
 
 /// Encodes a single ConversationEvent to SSE format for the given API type.
-fn encode_event_for_api_type(event: &vkdg_operations::ConversationEvent, api_type: vkdg_core::ApiType) -> String {
+fn encode_event_for_api_type(
+    event: &vkdg_operations::ConversationEvent,
+    api_type: vkdg_core::ApiType,
+) -> String {
     match api_type {
         vkdg_core::ApiType::AnthropicMessages => encode_event_anthropic(event),
         vkdg_core::ApiType::OpenAiChatCompletions => encode_event_openai(event),
@@ -188,16 +199,17 @@ fn encode_event_for_api_type(event: &vkdg_operations::ConversationEvent, api_typ
 fn encode_event_anthropic(event: &vkdg_operations::ConversationEvent) -> String {
     use vkdg_operations::ConversationEvent::*;
     match event {
-        Started { .. } => {
-            "event: message_start\ndata: {}\n\n".to_string()
-        }
+        Started { .. } => "event: message_start\ndata: {}\n\n".to_string(),
         OutputDelta { delta, index: _ } => {
             let json = serde_json::json!({
                 "index": 0,
                 "type": "content_block_delta",
                 "delta": { "type": "text_delta", "text": delta }
             });
-            format!("event: content_block_delta\ndata: {}\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "event: content_block_delta\ndata: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
         Completed { stop_reason } => {
             let reason = match stop_reason {
@@ -219,16 +231,33 @@ fn encode_event_anthropic(event: &vkdg_operations::ConversationEvent) -> String 
         }
         Failed { error } => {
             let json = serde_json::json!({ "type": "error", "error": { "type": "server_error", "message": error.to_string() } });
-            format!("event: error\ndata: {}\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "event: error\ndata: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
-        Usage { input_tokens, output_tokens } => {
-            let input = match input_tokens { vkdg_operations::UsageCount::Reported(n) => *n, vkdg_operations::UsageCount::Estimated(n) => *n, vkdg_operations::UsageCount::Unknown => 0 };
-            let output = match output_tokens { vkdg_operations::UsageCount::Reported(n) => *n, vkdg_operations::UsageCount::Estimated(n) => *n, vkdg_operations::UsageCount::Unknown => 0 };
+        Usage {
+            input_tokens,
+            output_tokens,
+        } => {
+            let input = match input_tokens {
+                vkdg_operations::UsageCount::Reported(n) => *n,
+                vkdg_operations::UsageCount::Estimated(n) => *n,
+                vkdg_operations::UsageCount::Unknown => 0,
+            };
+            let output = match output_tokens {
+                vkdg_operations::UsageCount::Reported(n) => *n,
+                vkdg_operations::UsageCount::Estimated(n) => *n,
+                vkdg_operations::UsageCount::Unknown => 0,
+            };
             let json = serde_json::json!({
                 "type": "message_delta",
                 "usage": { "input_tokens": input, "output_tokens": output }
             });
-            format!("event: message_delta\ndata: {}\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "event: message_delta\ndata: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
         _ => String::new(),
     }
@@ -246,7 +275,10 @@ fn encode_event_openai(event: &vkdg_operations::ConversationEvent) -> String {
                 "model": "",
                 "choices": [{ "index": 0, "delta": { "content": delta }, "finish_reason": serde_json::Value::Null }]
             });
-            format!("data: {}\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
         Completed { stop_reason } => {
             let reason = match stop_reason {
@@ -263,11 +295,17 @@ fn encode_event_openai(event: &vkdg_operations::ConversationEvent) -> String {
                 "model": "",
                 "choices": [{ "index": 0, "delta": {}, "finish_reason": reason }]
             });
-            format!("data: {}\n\ndata: [DONE]\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
         Failed { error } => {
             let json = serde_json::json!({ "error": { "message": error.to_string(), "type": "server_error" } });
-            format!("data: {}\n\n", serde_json::to_string(&json).unwrap_or_default())
+            format!(
+                "data: {}\n\n",
+                serde_json::to_string(&json).unwrap_or_default()
+            )
         }
         _ => String::new(),
     }

@@ -4,11 +4,10 @@
 use http::HeaderMap;
 use serde::Serialize;
 use uuid::Uuid;
-use vkdg_operations::{MessageContent, Role, Message, Operation, ConversationRequest};
 use vkdg_connections::ConnectionConfig;
+use vkdg_operations::{ConversationRequest, Message, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    ConversationStreamDecoder, PreparedRequest,
-    ProviderAdapter, ProviderError,
+    ConversationStreamDecoder, PreparedRequest, ProviderAdapter, ProviderError,
 };
 
 pub mod decode;
@@ -40,7 +39,9 @@ impl ProviderAdapter for KiroAdapter {
         };
 
         // Get model from config (first model or default to auto)
-        let model_id = config.models.first()
+        let model_id = config
+            .models
+            .first()
             .map(|m| m.replace('-', "."))
             .unwrap_or_else(|| "auto".to_string());
 
@@ -51,26 +52,52 @@ impl ProviderAdapter for KiroAdapter {
         };
 
         let mut headers = HeaderMap::new();
-        headers.insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/x-amz-json-1.0"));
-        headers.insert("x-amz-target", http::HeaderValue::from_static(KIRO_API_TARGET));
         headers.insert(
-            http::header::AUTHORIZATION, 
+            http::header::CONTENT_TYPE,
+            http::HeaderValue::from_static("application/x-amz-json-1.0"),
+        );
+        headers.insert(
+            "x-amz-target",
+            http::HeaderValue::from_static(KIRO_API_TARGET),
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
             http::HeaderValue::from_str(&format!("Bearer {}", token))
-                .map_err(|_| ProviderError::Http("Invalid authorization token".to_string()))?
+                .map_err(|_| ProviderError::Http("Invalid authorization token".to_string()))?,
         );
         headers.insert("tokentype", http::HeaderValue::from_static("API_KEY"));
-        headers.insert(http::header::ACCEPT, http::HeaderValue::from_static("application/json"));
-        headers.insert("x-amzn-codewhisperer-optout", http::HeaderValue::from_static("true"));
-        headers.insert("amz-sdk-invocation-id", http::HeaderValue::from_str(&Uuid::new_v4().to_string())
-            .map_err(|_| ProviderError::Http("Invalid UUID".to_string()))?);
-        headers.insert("amz-sdk-request", http::HeaderValue::from_static("attempt=1; max=1"));
-        headers.insert("x-amzn-kiro-agent-mode", http::HeaderValue::from_static("vibe"));
-        headers.insert("x-amz-user-agent", http::HeaderValue::from_static("vkdg/0.1.0"));
+        headers.insert(
+            http::header::ACCEPT,
+            http::HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            "x-amzn-codewhisperer-optout",
+            http::HeaderValue::from_static("true"),
+        );
+        headers.insert(
+            "amz-sdk-invocation-id",
+            http::HeaderValue::from_str(&Uuid::new_v4().to_string())
+                .map_err(|_| ProviderError::Http("Invalid UUID".to_string()))?,
+        );
+        headers.insert(
+            "amz-sdk-request",
+            http::HeaderValue::from_static("attempt=1; max=1"),
+        );
+        headers.insert(
+            "x-amzn-kiro-agent-mode",
+            http::HeaderValue::from_static("vibe"),
+        );
+        headers.insert(
+            "x-amz-user-agent",
+            http::HeaderValue::from_static("vkdg/0.1.0"),
+        );
 
         Ok(PreparedRequest {
             url: KIRO_API_URL.to_string(),
             headers,
-            body: serde_json::to_vec(&body).map_err(|e| ProviderError::Serialization(e.to_string()))?.into(),
+            body: serde_json::to_vec(&body)
+                .map_err(|e| ProviderError::Serialization(e.to_string()))?
+                .into(),
             is_streaming: true,
         })
     }
@@ -107,9 +134,9 @@ struct KiroConversationState {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum KiroMessage {
-    User { 
+    User {
         #[serde(rename = "userInputMessage")]
-        user_input_message: KiroUserInput 
+        user_input_message: KiroUserInput,
     },
 }
 
@@ -124,13 +151,13 @@ struct KiroUserInput {
 #[derive(Serialize)]
 #[serde(untagged)]
 enum KiroHistoryItem {
-    User { 
+    User {
         #[serde(rename = "userInputMessage")]
-        user_input_message: KiroUserInputContent 
+        user_input_message: KiroUserInputContent,
     },
-    Assistant { 
+    Assistant {
         #[serde(rename = "assistantResponseMessage")]
-        assistant_response_message: KiroAssistantContent 
+        assistant_response_message: KiroAssistantContent,
     },
 }
 
@@ -150,10 +177,10 @@ fn build_conversation_state(conv: &ConversationRequest, model_id: &str) -> KiroC
 
     // Extract system prompt if present
     let system_prompt = conv.system.clone();
-    
+
     // Merge consecutive messages of the same role
     let merged = merge_consecutive_roles(&conv.messages);
-    
+
     // Prepend system prompt to first user message
     let messages_with_system = if let Some(sys) = system_prompt {
         prepend_system_to_first_user(&merged, &sys)
@@ -163,25 +190,21 @@ fn build_conversation_state(conv: &ConversationRequest, model_id: &str) -> KiroC
 
     // Split: all except last go to history, last becomes currentMessage
     let (history, current_msg) = if messages_with_system.len() > 1 {
-        let hist: Vec<KiroHistoryItem> = messages_with_system[..messages_with_system.len()-1]
+        let hist: Vec<KiroHistoryItem> = messages_with_system[..messages_with_system.len() - 1]
             .iter()
             .map(|msg| {
                 let content = extract_text_content(&msg.content);
                 match msg.role {
-                    vkdg_operations::Role::User => {
-                        KiroHistoryItem::User { 
-                            user_input_message: KiroUserInputContent { content } 
-                        }
-                    }
-                    vkdg_operations::Role::Assistant => {
-                        KiroHistoryItem::Assistant { 
-                            assistant_response_message: KiroAssistantContent { content } 
-                        }
-                    }
+                    vkdg_operations::Role::User => KiroHistoryItem::User {
+                        user_input_message: KiroUserInputContent { content },
+                    },
+                    vkdg_operations::Role::Assistant => KiroHistoryItem::Assistant {
+                        assistant_response_message: KiroAssistantContent { content },
+                    },
                     vkdg_operations::Role::System | vkdg_operations::Role::Tool => {
                         // System should have been prepended; Tool role treated as user context
-                        KiroHistoryItem::User { 
-                            user_input_message: KiroUserInputContent { content } 
+                        KiroHistoryItem::User {
+                            user_input_message: KiroUserInputContent { content },
                         }
                     }
                 }
@@ -222,11 +245,16 @@ fn merge_consecutive_roles(messages: &[vkdg_operations::Message]) -> Vec<vkdg_op
             if last.role == msg.role {
                 // Merge content
                 let new_content = match (&last.content, &msg.content) {
-                    (vkdg_operations::MessageContent::Text(a), vkdg_operations::MessageContent::Text(b)) => {
-                        vkdg_operations::MessageContent::Text(format!("{}\n{}", a, b))
-                    }
-                    (vkdg_operations::MessageContent::Text(a), vkdg_operations::MessageContent::Blocks(blocks)) => {
-                        let b = blocks.iter()
+                    (
+                        vkdg_operations::MessageContent::Text(a),
+                        vkdg_operations::MessageContent::Text(b),
+                    ) => vkdg_operations::MessageContent::Text(format!("{}\n{}", a, b)),
+                    (
+                        vkdg_operations::MessageContent::Text(a),
+                        vkdg_operations::MessageContent::Blocks(blocks),
+                    ) => {
+                        let b = blocks
+                            .iter()
                             .filter_map(|bl| match bl {
                                 vkdg_operations::ContentBlock::Text { text } => Some(text.clone()),
                                 _ => None,
@@ -235,8 +263,12 @@ fn merge_consecutive_roles(messages: &[vkdg_operations::Message]) -> Vec<vkdg_op
                             .join("\n");
                         vkdg_operations::MessageContent::Text(format!("{}\n{}", a, b))
                     }
-                    (vkdg_operations::MessageContent::Blocks(blocks), vkdg_operations::MessageContent::Text(b)) => {
-                        let a = blocks.iter()
+                    (
+                        vkdg_operations::MessageContent::Blocks(blocks),
+                        vkdg_operations::MessageContent::Text(b),
+                    ) => {
+                        let a = blocks
+                            .iter()
                             .filter_map(|bl| match bl {
                                 vkdg_operations::ContentBlock::Text { text } => Some(text.clone()),
                                 _ => None,
@@ -245,7 +277,10 @@ fn merge_consecutive_roles(messages: &[vkdg_operations::Message]) -> Vec<vkdg_op
                             .join("\n");
                         vkdg_operations::MessageContent::Text(format!("{}\n{}", a, b))
                     }
-                    (vkdg_operations::MessageContent::Blocks(a), vkdg_operations::MessageContent::Blocks(b)) => {
+                    (
+                        vkdg_operations::MessageContent::Blocks(a),
+                        vkdg_operations::MessageContent::Blocks(b),
+                    ) => {
                         let mut combined = a.clone();
                         combined.extend(b.clone());
                         vkdg_operations::MessageContent::Blocks(combined)
@@ -262,11 +297,18 @@ fn merge_consecutive_roles(messages: &[vkdg_operations::Message]) -> Vec<vkdg_op
 }
 
 /// Prepend system prompt to first user message
-fn prepend_system_to_first_user(messages: &[vkdg_operations::Message], system: &str) -> Vec<vkdg_operations::Message> {
+fn prepend_system_to_first_user(
+    messages: &[vkdg_operations::Message],
+    system: &str,
+) -> Vec<vkdg_operations::Message> {
     let mut result = messages.to_vec();
-    if let Some(first_user_idx) = result.iter().position(|m| m.role == vkdg_operations::Role::User) {
+    if let Some(first_user_idx) = result
+        .iter()
+        .position(|m| m.role == vkdg_operations::Role::User)
+    {
         let existing = extract_text_content(&result[first_user_idx].content);
-        result[first_user_idx].content = vkdg_operations::MessageContent::Text(format!("{}\n\n{}", system, existing));
+        result[first_user_idx].content =
+            vkdg_operations::MessageContent::Text(format!("{}\n\n{}", system, existing));
     }
     result
 }
@@ -274,14 +316,13 @@ fn prepend_system_to_first_user(messages: &[vkdg_operations::Message], system: &
 fn extract_text_content(content: &vkdg_operations::MessageContent) -> String {
     match content {
         vkdg_operations::MessageContent::Text(s) => s.clone(),
-        vkdg_operations::MessageContent::Blocks(blocks) => {
-            blocks.iter()
-                .filter_map(|b| match b {
-                    vkdg_operations::ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        vkdg_operations::MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                vkdg_operations::ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }

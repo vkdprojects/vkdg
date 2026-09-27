@@ -234,6 +234,9 @@ mod tests {
         let custom = parse_provider("custom:https://api.example.com/v1");
         assert_eq!(custom.adapter_id(), "openai");
         assert_eq!(custom.as_str(), "https://api.example.com/v1");
-        assert_eq!(parse_provider("https://api.example.com/v1").adapter_id(), "openai");
+        assert_eq!(
+            parse_provider("https://api.example.com/v1").adapter_id(),
+            "openai"
+        );
     }
 }

@@ -14,8 +14,12 @@ pub enum ProviderKind {
     OpenAI,
     Google,
     /// A provider plugin addressed by its registry id, e.g. `kiro`, `groq`.
-    Plugin { id: String },
-    Custom { base_url: String },
+    Plugin {
+        id: String,
+    },
+    Custom {
+        base_url: String,
+    },
 }
 
 impl ProviderKind {

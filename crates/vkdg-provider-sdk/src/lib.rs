@@ -16,4 +16,4 @@ pub mod request;
 
 pub use error::ProviderError;
 pub use registry::ProviderRegistry;
-pub use request::{PreparedRequest, ProviderAdapter, ConversationStreamDecoder};
+pub use request::{ConversationStreamDecoder, PreparedRequest, ProviderAdapter};

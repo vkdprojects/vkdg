@@ -14,14 +14,8 @@
   }
   let { open = $bindable(), provider = 'kiro', onconnected }: Props = $props();
 
-  const providers = [
-    { value: 'kiro', label: 'Kiro (Amazon Q)' },
-    { value: 'claude-code', label: 'Claude Code' },
-    { value: 'codex', label: 'OpenAI Codex' },
-    { value: 'github-copilot', label: 'GitHub Copilot' },
-    { value: 'kimi-coding', label: 'Kimi Coding' },
-    { value: 'antigravity', label: 'Antigravity' },
-  ];
+  // Loaded from the gateway: what is registered here, OAuth plugins included.
+  let providers = $state<{ value: string; label: string }[]>([]);
 
   type Step = 'pick' | 'device' | 'pkce' | 'error';
 
@@ -74,6 +68,17 @@
       stop();
     }
     return stop;
+  });
+
+  $effect(() => {
+    if (!open || providers.length) return;
+    api
+      .oauthProviders()
+      .then((res) => {
+        providers = res.items.map((p) => ({ value: p.id, label: p.display_name }));
+        if (!providers.some((p) => p.value === selected)) selected = providers[0]?.value ?? '';
+      })
+      .catch((e) => fail((e as Error).message));
   });
 
   $effect(() => {

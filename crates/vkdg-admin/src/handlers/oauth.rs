@@ -201,6 +201,31 @@ fn done(account: &Account) -> Response {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
+/// `GET /admin/v1/providers/oauth`: providers that support interactive login,
+/// so the console lists what this gateway actually has, plugins included.
+pub async fn list_oauth_providers(State(state): State<AdminState>, headers: HeaderMap) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    let Some(svc) = state.logins.clone() else {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "accounts_disabled",
+            "account store is not configured",
+        );
+    };
+    let mut ids: Vec<&str> = svc.registry.ids();
+    ids.sort_unstable();
+    let items: Vec<serde_json::Value> = ids
+        .into_iter()
+        .filter_map(|id| svc.registry.get(id))
+        .filter(|a| a.oauth().is_some())
+        .map(|a| serde_json::json!({ "id": a.id(), "display_name": a.display_name() }))
+        .collect();
+    Json(serde_json::json!({ "items": items })).into_response()
+}
+
 pub async fn list_login_methods(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -726,5 +751,23 @@ mod tests {
         let (_, methods, _) = body_json(resp).await;
         assert_eq!(methods["items"][0]["id"], "device");
         assert_eq!(methods["items"][0]["fields"][0]["id"], "region");
+    }
+
+    // The console hardcoded six providers, so OAuth plugins (and the e2e fake
+    // provider) could never be connected from the UI.
+    #[tokio::test]
+    async fn oauth_providers_lists_what_the_registry_has() {
+        let (state, _) = make_state();
+        let h = authed(&state);
+        let (status, v, text) = body_json(list_oauth_providers(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let ids: Vec<&str> = v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["fake"]);
+        assert!(v["items"][0]["display_name"].is_string());
     }
 }

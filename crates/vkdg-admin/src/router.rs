@@ -82,6 +82,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
             get(crate::handlers::routes::list_combos),
         )
         .route(
+            "/admin/v1/providers/oauth",
+            get(crate::handlers::oauth::list_oauth_providers),
+        )
+        .route(
             "/admin/v1/providers/{id}/login-methods",
             get(crate::handlers::oauth::list_login_methods),
         )

@@ -17,6 +17,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - **Breaking:** `vkdg serve --config <file>` exits with the validation error when the file is invalid. It used to log a warning and serve an env-derived gateway (different routes, possibly an `ANTHROPIC_API_KEY` passthrough) instead of the one the operator asked for
 
 ### Added
+- `GET /admin/v1/providers/oauth` lists the providers on this gateway that support interactive login, OAuth plugins included; the console's Connect-account dialog uses it instead of a hardcoded list
+- Test-only `fake-oauth` provider for end-to-end tests of the login flows, registered only with `VKDG_E2E_FAKE_OAUTH=1` in debug builds (ignored with an error in release builds). Its device code approves on the first poll; a refresh token containing `revoked` behaves like a revoked login
 - Console: Connections show live state as text (healthy, degraded, circuit open, cooling down), in-flight vs capacity and cooldown details, refreshed every 5 s while visible. Requests page refreshes every 3 s (pausable), filters by status and opens a detail drawer with the routing decision. Keys page can edit, regenerate (new secret shown once), disable and enable keys
 - Request history and `DecisionRecord` carry the real routing decision: the route that matched (`auto` when none did), attempts, and the candidates left out with why. They used to record no decision and the connection id as the route
 - Request history is persisted in `requests.db` next to `accounts.db` (newest 10 000 kept) and records the client key id. It used to live in memory, capped at 1 000, and vanished on every restart. Metadata only: no prompts, responses or credentials

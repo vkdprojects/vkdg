@@ -233,6 +233,9 @@ export const api = {
     req<{ items: Account[]; total: number }>('GET', '/admin/v1/accounts'),
   deleteAccount: (id: string) =>
     req<void>('DELETE', `/admin/v1/accounts/${encodeURIComponent(id)}`),
+  /** Providers on this gateway that support interactive login, plugins included. */
+  oauthProviders: () =>
+    req<{ items: { id: string; display_name: string }[] }>('GET', '/admin/v1/providers/oauth'),
   loginMethods: (provider: string) =>
     req<{ provider: string; items: LoginMethod[] }>('GET', `/admin/v1/providers/${encodeURIComponent(provider)}/login-methods`),
   startLogin: (provider: string, method: string, params: Record<string, string> = {}) =>

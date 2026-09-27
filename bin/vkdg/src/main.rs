@@ -1,5 +1,7 @@
 //! VKDG gateway binary entry point.
 
+mod e2e_fake_oauth;
+
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -696,6 +698,9 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
     r.register(Arc::new(sambanova_provider()));
     r.register(Arc::new(cerebras_provider()));
     r.register(Arc::new(nvidia_nim_provider()));
+    if e2e_fake_oauth::enabled() {
+        r.register(Arc::new(e2e_fake_oauth::FakeOAuth::default()));
+    }
     // Installed WASM providers register after the built-ins and may only take
     // a free id: an adapter receives the credentials of every connection that
     // names it, so a plugin must never replace `anthropic` or `kiro`.

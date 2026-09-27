@@ -18,6 +18,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Added
 - Console: Accounts page (provider, label, expiry, `needs_login` with the upstream reason, delete, reconnect) and a Connect-account dialog for device-code and PKCE logins (code with copy and countdown, polling at the provider's interval, paste-back for PKCE, retry on expiry). Keys page: expiry, allowed models and IPs, monthly token budget and requests per minute on create; status, restrictions and this month's usage against the budget in the list
+- `GET /admin/v1/connections` reports each connection's live state from the data plane (`healthy`, `degraded`, `circuit_open`, `cooldown` with `cooldown_until` and `failure_count`), in-flight requests and `max_concurrent`. It used to report `healthy` and 0 for everything
 - `GET /admin/v1/keys` returns `monthly_token_limit`, `requests_per_minute` and `usage_this_month`
 - Installed WASM provider plugins are loaded at startup and registered next to the built-ins. A plugin may only take a free provider id: one claiming `anthropic`, `kiro` or any other registered id is refused with a warning, because an adapter receives the credentials of every connection that names it. A plugin that fails to load is logged by name and skipped; the gateway still starts
 - The plugins directory defaults to `plugins/` next to `accounts.db` (the data volume), not `~/.config` or a path inside the container image

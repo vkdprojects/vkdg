@@ -10,6 +10,10 @@ async function connectFakeAccount(page: Page): Promise<string> {
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Provider').click();
   await page.getByRole('option', { name: 'Fake OAuth (e2e)' }).click();
+  // Never press Start on a real provider: a failed selection would begin a
+  // live AWS device login from CI.
+  await expect(dialog.getByLabel('Provider')).toHaveText('Fake OAuth (e2e)');
+  await expect(dialog.getByLabel('AWS region')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Start login' }).click();
 
   // The device code is shown, then polling completes the login.
@@ -35,7 +39,6 @@ test('two accounts on the same provider are connected and listed independently',
 });
 
 test('deleting one account leaves the other connected', async ({ page }) => {
-  page.on('dialog', (d) => d.accept());
   await page.goto('/accounts');
   const keep = await connectFakeAccount(page);
   const drop = await connectFakeAccount(page);
@@ -43,7 +46,8 @@ test('deleting one account leaves the other connected', async ({ page }) => {
   const dropRow = page.getByRole('row').filter({ hasText: drop });
   await dropRow.getByRole('button', { name: /Delete/ }).click();
   const confirm = page.getByRole('alertdialog');
-  if (await confirm.isVisible()) await confirm.getByRole('button', { name: /Delete/ }).click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: /Delete/ }).click();
 
   await expect(dropRow).toHaveCount(0);
   await expect(page.getByRole('row').filter({ hasText: keep })).toContainText('Active');

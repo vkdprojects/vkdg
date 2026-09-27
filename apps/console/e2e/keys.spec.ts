@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { DATA_URL } from '../playwright.config';
+import { DATA_URL } from './env';
 
 // API keys, end to end: every console action is checked on the data plane,
 // because a badge that says "Disabled" proves nothing if /v1 still answers.

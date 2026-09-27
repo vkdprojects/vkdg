@@ -1,7 +1,5 @@
 import { expect, test as setup } from '@playwright/test';
-import { BOOTSTRAP_TOKEN } from '../playwright.config';
-
-export const SESSION_FILE = 'e2e/.auth/session.json';
+import { BOOTSTRAP_TOKEN, SESSION_FILE } from './env';
 
 // The bootstrap token signs in exactly once per gateway, so the suite signs in
 // here and every other test reuses the saved session cookie.

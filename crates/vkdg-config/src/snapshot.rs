@@ -122,6 +122,23 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
                 client_secret_env: client_secret_env.clone(),
                 scopes: scopes.clone(),
             },
+            crate::schema::AuthDef::Account { account } => {
+                if account.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "connection '{}': auth.account must not be empty",
+                        def.id
+                    )));
+                }
+                if matches!(provider, ProviderKind::Custom { .. }) {
+                    return Err(ConfigError::Validation(format!(
+                        "connection '{}': account auth needs a provider plugin id, not a custom URL",
+                        def.id
+                    )));
+                }
+                AuthKind::Account {
+                    account_id: account.clone(),
+                }
+            }
         };
 
         out.push(ConnectionConfig {
@@ -238,5 +255,31 @@ mod tests {
             parse_provider("https://api.example.com/v1").adapter_id(),
             "openai"
         );
+    }
+
+    fn yaml_cfg(provider: &str, account: &str) -> GatewayConfig {
+        serde_yaml::from_str(&format!(
+            "listen: 0.0.0.0:8080\nconnections:\n  - id: c1\n    provider: \"{provider}\"\n    auth: {{ type: account, account: \"{account}\" }}\n    models: [\"m\"]\nroutes: []\nlimits: null\nobserve: null\n"
+        ))
+        .expect("yaml parses")
+    }
+
+    // Plausible wrong impl: `type: account` not accepted by serde, mapped to the wrong
+    // AuthKind, or blank/custom-URL accounts accepted (fail later at request time).
+    #[test]
+    fn account_auth_maps_to_account_kind_and_is_validated() {
+        let snap = ConfigSnapshot::build(1, yaml_cfg("kiro", "kiro-ab12cd34")).unwrap();
+        match &snap.connections[0].auth {
+            AuthKind::Account { account_id } => assert_eq!(account_id, "kiro-ab12cd34"),
+            other => panic!("expected Account, got {other:?}"),
+        }
+        assert!(matches!(
+            ConfigSnapshot::build(1, yaml_cfg("kiro", " ")),
+            Err(ConfigError::Validation(_))
+        ));
+        assert!(matches!(
+            ConfigSnapshot::build(1, yaml_cfg("custom:https://x", "a1")),
+            Err(ConfigError::Validation(_))
+        ));
     }
 }

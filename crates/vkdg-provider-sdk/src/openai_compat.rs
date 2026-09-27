@@ -6,7 +6,7 @@
 use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
-use vkdg_connections::{ConnectionConfig, ProviderKind};
+use vkdg_connections::{ConnectionConfig, Credential, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 
 use crate::{PreparedRequest, ProviderAdapter, ProviderError};
@@ -131,8 +131,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),

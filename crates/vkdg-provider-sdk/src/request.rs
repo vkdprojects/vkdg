@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use http::HeaderMap;
-use vkdg_connections::ConnectionConfig;
+use vkdg_connections::{ConnectionConfig, Credential};
 use vkdg_operations::{ConversationEvent, Operation};
 
-use crate::ProviderError;
+use crate::{OAuthProvider, ProviderError};
 
 /// The assembled upstream HTTP request. Produced by [`ProviderAdapter::prepare`].
 /// The pipeline core knows nothing about wire formats, auth headers, or URLs.
@@ -21,6 +21,12 @@ pub trait ConversationStreamDecoder: Send {
     /// Feed raw bytes from the upstream stream.
     /// Returns decoded events. Must handle partial frames (incremental parsing).
     fn feed(&mut self, chunk: bytes::Bytes) -> Vec<ConversationEvent>;
+
+    /// Called once when the upstream byte stream ends. Returns trailing events
+    /// for protocols without an explicit terminal frame (e.g. Kiro).
+    fn finish(&mut self) -> Vec<ConversationEvent> {
+        Vec::new()
+    }
 }
 
 /// Every provider adapter must implement this trait.
@@ -37,12 +43,21 @@ pub trait ProviderAdapter: Send + Sync {
     fn display_name(&self) -> &str;
 
     /// Assemble the upstream request for this operation.
+    ///
+    /// `credential.token` is the API key or access token; `credential.extra` holds
+    /// per-account plugin data persisted at login/refresh (empty for API keys).
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError>;
+
+    /// OAuth capability (login + refresh). Return `Some(self)` when the plugin
+    /// implements [`OAuthProvider`]; `None` means API-key only.
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        None
+    }
 
     /// Optional stream decoder for providers that need protocol translation.
     /// Return `None` for passthrough (default behavior).

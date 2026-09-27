@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
+use vkdg_connections::{TokenPair, TokenRefresher};
+use vkdg_core::VkdgError;
+
 use crate::ProviderAdapter;
 
 /// Holds all registered provider adapters.
@@ -41,5 +45,33 @@ impl ProviderRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.adapters.is_empty()
+    }
+}
+
+/// Dispatches account refresh to the owning plugin's [`OAuthProvider`](crate::OAuthProvider).
+impl TokenRefresher for ProviderRegistry {
+    fn refresh<'a>(
+        &'a self,
+        provider: &'a str,
+        refresh_token: &'a str,
+        extra: &'a HashMap<String, String>,
+    ) -> BoxFuture<'a, vkdg_core::Result<TokenPair>> {
+        Box::pin(async move {
+            let adapter = self.get(provider).ok_or_else(|| VkdgError::ConfigInvalid {
+                field: "account.provider".into(),
+                message: format!("no provider plugin registered for '{provider}'"),
+            })?;
+            let oauth = adapter.oauth().ok_or_else(|| VkdgError::ConfigInvalid {
+                field: "account.provider".into(),
+                message: format!("provider '{provider}' does not support OAuth refresh"),
+            })?;
+            oauth
+                .refresh_token(refresh_token, extra)
+                .await
+                .map_err(|e| VkdgError::PluginError {
+                    plugin_id: provider.to_owned(),
+                    message: e.to_string(),
+                })
+        })
     }
 }

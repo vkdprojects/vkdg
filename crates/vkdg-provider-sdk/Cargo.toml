@@ -12,6 +12,12 @@ futures          = { workspace = true }
 vkdg-connections = { workspace = true }
 vkdg-operations  = { workspace = true }
 serde_json        = { workspace = true }
+serde             = { workspace = true }
+vkdg-core         = { workspace = true }
+
+[dev-dependencies]
+tokio             = { workspace = true }
+parking_lot       = { workspace = true }
 
 [lib]
 doctest = false

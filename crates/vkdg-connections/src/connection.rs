@@ -65,6 +65,11 @@ pub enum AuthKind {
         client_secret_env: String,
         scopes: Vec<String>,
     },
+    /// A persisted provider account (OAuth login or imported token) in the
+    /// [`AccountStore`](crate::AccountStore). Refresh is delegated to the plugin.
+    Account {
+        account_id: String,
+    },
 }
 
 // ── Connection config ─────────────────────────────────────────────────────────

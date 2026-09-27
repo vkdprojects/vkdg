@@ -38,6 +38,12 @@ pub enum AuthDef {
         client_secret_env: String,
         scopes: Vec<String>,
     },
+    /// A persisted provider account created by `vkdg login <provider>`
+    /// (OAuth device code, PKCE, or token import). Refresh is done by the plugin.
+    Account {
+        /// Account id as printed by `vkdg login` / `vkdg accounts list`.
+        account: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

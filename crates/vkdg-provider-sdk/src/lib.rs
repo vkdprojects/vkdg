@@ -15,5 +15,11 @@ pub mod registry;
 pub mod request;
 
 pub use error::ProviderError;
+pub use oauth::{
+    find_login_method, resolve_login_params, run_device_login, DeviceAuthorization, DevicePoll,
+    LoginField, LoginMethod, LoginParams, LoginResult, LoginState, OAuthConfig, OAuthFlow,
+    OAuthProvider, PkceAuthorization, TokenPair,
+};
 pub use registry::ProviderRegistry;
 pub use request::{ConversationStreamDecoder, PreparedRequest, ProviderAdapter};
+pub use vkdg_connections::Credential;

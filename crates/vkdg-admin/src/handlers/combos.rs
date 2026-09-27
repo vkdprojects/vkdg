@@ -218,3 +218,139 @@ pub async fn delete_combo(
         Err(e) => combo_err(e, &id),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handlers::requests::RequestLog;
+    use crate::session::SessionStore;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::watch;
+    use vkdg_config::ConfigSnapshot;
+    use vkdg_connections::{AuthKind, ConnectionCatalog, ConnectionConfig, ProviderKind};
+
+    fn state(dir: &std::path::Path) -> AdminState {
+        let (_tx, rx) = watch::channel(Arc::new(ConfigSnapshot::default_empty()));
+        let catalog = Arc::new(ConnectionCatalog::new(vec![ConnectionConfig {
+            id: ConnectionId("c1".into()),
+            provider: ProviderKind::Custom {
+                base_url: "http://127.0.0.1:1".into(),
+            },
+            auth: AuthKind::ApiKey {
+                env_var: "UNUSED".into(),
+            },
+            models: vec!["m-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            capabilities: vkdg_core::CapabilitySet::default(),
+        }]));
+        let svc = vkdg_combos::ComboService::open(
+            vkdg_combos::ComboStore::new(dir.join("combos.json")),
+            Arc::new(vkdg_combos::ComboResolver::new(vec![])),
+            None,
+        )
+        .unwrap();
+        AdminState {
+            sessions: SessionStore::new("tok".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: RequestLog::new(),
+            combos: Some(Arc::new(svc)),
+            catalog: Some(catalog),
+            logins: None,
+        }
+    }
+
+    fn authed(state: &AdminState) -> HeaderMap {
+        let s = state.sessions.bootstrap_login().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&format!("vkdg_session={}", s.session_id)).unwrap(),
+        );
+        h
+    }
+
+    fn body(id: &str, targets: &[&str], model: Option<&str>) -> Json<ComboBody> {
+        Json(ComboBody {
+            id: id.into(),
+            match_patterns: vec![],
+            strategy: StrategyKind::RoundRobin,
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            model: model.map(Into::into),
+            max_cost_microdollars: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn writes_need_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path());
+        let r = create_combo(
+            State(s.clone()),
+            HeaderMap::new(),
+            body("a", &["c1"], Some("m-1")),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        let r = delete_combo(State(s.clone()), HeaderMap::new(), Path("a".into())).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert!(s.combos.unwrap().list().is_empty());
+    }
+
+    // A combo pointing at a connection that does not exist saves fine and then
+    // fails every request it catches; one without a model sends its own id upstream.
+    #[tokio::test]
+    async fn unknown_target_and_missing_model_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path());
+        let h = authed(&s);
+        let r = create_combo(
+            State(s.clone()),
+            h.clone(),
+            body("a", &["nope"], Some("m-1")),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        let r = create_combo(State(s.clone()), h.clone(), body("a", &["c1"], None)).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert!(s.combos.unwrap().list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_update_delete_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = state(dir.path());
+        let h = authed(&s);
+        let r = create_combo(State(s.clone()), h.clone(), body("a", &["c1"], Some("m-1"))).await;
+        assert_eq!(r.status(), StatusCode::CREATED);
+        let r = create_combo(State(s.clone()), h.clone(), body("a", &["c1"], Some("m-1"))).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let r = update_combo(
+            State(s.clone()),
+            h.clone(),
+            Path("a".into()),
+            body("", &["c1"], Some("m-2")),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let listed = s.combos.as_ref().unwrap().list();
+        assert_eq!(listed[0].model.as_deref(), Some("m-2"));
+
+        let r = delete_combo(State(s.clone()), h.clone(), Path("a".into())).await;
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = delete_combo(State(s.clone()), h.clone(), Path("a".into())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = update_combo(
+            State(s),
+            h,
+            Path("a".into()),
+            body("", &["c1"], Some("m-3")),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+}

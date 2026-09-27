@@ -6,11 +6,20 @@ import { DATA_URL } from './env';
 // at a closed port, so the call itself fails; the request history row shows
 // which route and connection the gateway picked.
 
-async function lastRowFor(page: Page, model: string) {
-  const res = await page.request.get('/admin/v1/requests?limit=20');
-  const items: { model: string; connection_id: string | null; decision?: { route_id: string | null } | null }[] =
-    (await res.json()).items;
-  return items.find((r) => r.model === model);
+type Row = { request_id: string; model: string; connection_id: string | null; decision?: { route_id: string | null } | null };
+
+async function history(page: Page): Promise<Row[]> {
+  return (await (await page.request.get('/admin/v1/requests?limit=50')).json()).items;
+}
+
+/** The row a call just added: newest row for `model` whose id was not there before. */
+async function newRow(page: Page, model: string, before: Set<string>): Promise<Row | undefined> {
+  return (await history(page)).find((r) => r.model === model && !before.has(r.request_id));
+}
+
+async function listedModels(page: Page, key: string): Promise<string[]> {
+  const res = await page.request.get(`${DATA_URL}/v1/models`, { headers: { authorization: `Bearer ${key}` } });
+  return (await res.json()).data.map((m: { id: string }) => m.id);
 }
 
 test('a combo made in the console routes the next request, and deleting it stops that', async ({ page }) => {
@@ -35,11 +44,12 @@ test('a combo made in the console routes the next request, and deleting it stops
   expect(saved.status()).toBe(201);
   await expect(page.getByRole('row').filter({ hasText: 'e2e-fast' })).toContainText('claude-sonnet-4-5');
 
+  expect(await listedModels(page, key)).toContain('e2e-fast');
+
+  let before = new Set((await history(page)).map((r) => r.request_id));
   await call();
-  await expect
-    .poll(async () => (await lastRowFor(page, 'e2e-fast'))?.decision?.route_id)
-    .toBe('combo:e2e-fast');
-  expect((await lastRowFor(page, 'e2e-fast'))?.connection_id).toBe('c1');
+  await expect.poll(async () => (await newRow(page, 'e2e-fast', before))?.decision?.route_id).toBe('combo:e2e-fast');
+  expect((await newRow(page, 'e2e-fast', before))?.connection_id).toBe('c1');
 
   // Survives a reload of the page: it came from the gateway, not local state.
   await page.reload();
@@ -51,14 +61,15 @@ test('a combo made in the console routes the next request, and deleting it stops
   ]);
   expect(deleted.status()).toBe(204);
   await expect(row).toHaveCount(0);
+  expect(await listedModels(page, key)).not.toContain('e2e-fast');
 
-  // With the combo gone no route claims the name, so nothing is routed for it.
-  const before = (await (await page.request.get('/admin/v1/requests?limit=50')).json()).items.length;
+  // With the combo gone no route claims the name: the call is refused, and any
+  // row it leaves was not routed through the combo.
+  before = new Set((await history(page)).map((r) => r.request_id));
   const res = await call();
   expect(res.status()).toBeGreaterThanOrEqual(400);
-  const after = await lastRowFor(page, 'e2e-fast');
+  const after = await newRow(page, 'e2e-fast', before);
   expect(after?.decision?.route_id ?? null).not.toBe('combo:e2e-fast');
-  expect(before).toBeGreaterThan(0);
 });
 
 test('a combo with no model or an unknown target is refused in the form', async ({ page }) => {

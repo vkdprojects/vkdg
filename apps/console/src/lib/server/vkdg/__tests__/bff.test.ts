@@ -9,6 +9,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import {
   getSystem, login, logout, getMe, listConnections, listKeys, createKey, revokeKey,
+  updateKey, regenerateKey, disableKey, enableKey,
   listRoutes, previewRoute, listRequests, getRequest,
   type SystemInfo, type SessionUser, type ConnectionSummary, type ClientKey,
   type CreatedKey, type RouteSummary,
@@ -120,14 +121,19 @@ describe('listConnections', () => {
   // Plausible wrong impl: items not extracted from {items, total} wrapper
   it('returns connection list', async () => {
     const items: ConnectionSummary[] = [
-      { id: 'anthropic-default', provider: 'anthropic', status: 'healthy', model_count: 3, active_requests: 0 },
+      {
+        id: 'anthropic-default', provider: 'anthropic', status: 'cooldown', model_count: 3,
+        active_requests: 2, max_concurrent: 50,
+        cooldown_until: '2026-09-27T12:00:30+00:00', failure_count: 3,
+      },
     ];
     server.use(http.get(`${BASE}/admin/v1/connections`, () =>
       HttpResponse.json({ items, total: 1 })
     ));
     const result = await listConnections('session=tok');
     expect(result[0].id).toBe('anthropic-default');
-    expect(result[0].status).toBe('healthy');
+    expect(result[0].status).toBe('cooldown');
+    expect(result[0].failure_count).toBe(3);
   });
 
   // Plausible wrong impl: backend loss returns [] instead of throwing
@@ -211,6 +217,62 @@ describe('revokeKey', () => {
   });
 });
 
+describe('updateKey', () => {
+  // Plausible wrong impl: `null` dropped by a "compact" step, so the limit is never cleared
+  it('sends null to clear a limit and leaves absent fields out', async () => {
+    let sent: unknown;
+    server.use(http.patch(`${BASE}/admin/v1/keys/key-uuid`, async ({ request }) => {
+      sent = await request.json();
+      return HttpResponse.json({ id: 'key-uuid', name: 'renamed', status: 'active' });
+    }));
+    const result = await updateKey('session=tok', 'key-uuid', { name: 'renamed', monthly_token_limit: null });
+    expect(sent).toEqual({ name: 'renamed', monthly_token_limit: null });
+    expect(result.name).toBe('renamed');
+  });
+
+  // Plausible wrong impl: backend 400 (bad CIDR) treated as success
+  it('throws on 400', async () => {
+    server.use(http.patch(`${BASE}/admin/v1/keys/key-uuid`, () =>
+      HttpResponse.json({ code: 'invalid_request', message: 'bad ip', request_id: 'x' }, { status: 400 })
+    ));
+    await expect(updateKey('session=tok', 'key-uuid', { allowed_ips: ['192.168.'] })).rejects.toThrow();
+  });
+});
+
+describe('regenerateKey', () => {
+  // Plausible wrong impl: flattened summary not merged, or raw key missing
+  it('returns the new raw key with the flattened summary', async () => {
+    server.use(http.post(`${BASE}/admin/v1/keys/key-uuid/regenerate`, () =>
+      HttpResponse.json({
+        key: 'vkdg_9f8e7d6cnew', id: 'key-uuid', name: 'ci', tenant_id: 'default',
+        prefix: 'vkdg_9f8e7d6c', scopes: ['data_inference'], created_at: '2026-01-01T00:00:00+00:00',
+        last_used_at: null, revoked_at: null, expires_at: null, allowed_models: [], allowed_ips: [],
+        monthly_token_limit: null, requests_per_minute: null, usage_this_month: null, status: 'active',
+      })
+    ));
+    const result = await regenerateKey('session=tok', 'key-uuid');
+    expect(result.key).toBe('vkdg_9f8e7d6cnew');
+    expect(result.id).toBe('key-uuid');
+  });
+});
+
+describe('disableKey / enableKey', () => {
+  // Plausible wrong impl: both hit the same path, or a 404 is swallowed
+  it('hits the matching action path and throws on 404', async () => {
+    const hits: string[] = [];
+    server.use(
+      http.post(`${BASE}/admin/v1/keys/key-uuid/disable`, () => { hits.push('disable'); return new HttpResponse(null, { status: 204 }); }),
+      http.post(`${BASE}/admin/v1/keys/key-uuid/enable`, () => { hits.push('enable'); return new HttpResponse(null, { status: 204 }); }),
+      http.post(`${BASE}/admin/v1/keys/gone/disable`, () =>
+        HttpResponse.json({ code: 'not_found', message: 'not found', request_id: 'x' }, { status: 404 })),
+    );
+    await disableKey('session=tok', 'key-uuid');
+    await enableKey('session=tok', 'key-uuid');
+    expect(hits).toEqual(['disable', 'enable']);
+    await expect(disableKey('session=tok', 'gone')).rejects.toThrow();
+  });
+});
+
 // ── /admin/v1/routes ─────────────────────────────────────────────────────────
 
 describe('listRoutes', () => {
@@ -259,21 +321,24 @@ describe('previewRoute', () => {
 describe('listRequests', () => {
   // Plausible wrong impl: items wrapper not unwrapped, or has_more ignored
   it('returns request list', async () => {
-    server.use(http.get(`${BASE}/admin/v1/requests`, () =>
-      HttpResponse.json({
+    let status: string | null = 'unset';
+    server.use(http.get(`${BASE}/admin/v1/requests`, ({ request }) => {
+      status = new URL(request.url).searchParams.get('status');
+      return HttpResponse.json({
         items: [
           {
             request_id: 'req-1', model: 'claude-3-5-haiku-20241022',
-            api_type: 'messages', status: 'success',
+            api_type: 'anthropic', status: 'failed',
             connection_id: 'anthropic-default',
-            started_at_ms: 1700000000000, duration_ms: 342,
+            started_at_ms: 1700000000000, duration_ms: 342, decision: null,
           },
         ],
         has_more: false,
         cursor: null,
-      })
-    ));
-    const result = await listRequests('session=tok');
+      });
+    }));
+    const result = await listRequests('session=tok', 50, 'failed');
+    expect(status).toBe('failed');
     expect(result[0].request_id).toBe('req-1');
     expect(result[0].duration_ms).toBe(342);
   });
@@ -291,13 +356,17 @@ describe('getRequest', () => {
   it('returns RequestSummary on 200', async () => {
     server.use(http.get(`${BASE}/admin/v1/requests/req-abc`, () =>
       HttpResponse.json({
-        request_id: 'req-abc', model: 'claude-opus-4-5', api_type: 'messages',
-        status: 'success', connection_id: 'anthropic-default',
+        request_id: 'req-abc', model: 'claude-opus-4-5', api_type: 'anthropic',
+        status: 'completed', connection_id: 'anthropic-default',
         started_at_ms: 1700000001000, duration_ms: 1200,
+        decision: {
+          route_id: 'default', attempt_count: 2,
+          candidates_excluded: [{ id: 'openai-default', reason: 'circuit open' }],
+        },
       })
     ));
     const result = await getRequest('session=tok', 'req-abc');
     expect(result.request_id).toBe('req-abc');
-    expect(result.model).toBe('claude-opus-4-5');
+    expect(result.decision?.candidates_excluded[0].reason).toBe('circuit open');
   });
 });

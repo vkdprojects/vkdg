@@ -1,108 +1,174 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { RequestSummary } from '$lib/api.js';
-  import { Badge, EmptyState, Spinner } from '$lib/components/index.js';
+  import type { RequestStatusFilter, RequestSummary } from '$lib/api.js';
+  import { Badge, Button, EmptyState, Select, Spinner } from '$lib/components/index.js';
+  import { m } from '$lib/paraglide/messages.js';
+  import { Dialog } from 'bits-ui';
+  import { PauseIcon, PlayIcon, XIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let requests = $state<RequestSummary[]>([]);
   let loading = $state(true);
+  let paused = $state(false);
+  let statusFilter = $state<RequestStatusFilter>('all');
+
   let searchId = $state('');
-  let searching = $state(false);
   let searchError = $state('');
+  let detailOpen = $state(false);
+  let detailLoading = $state(false);
+  let detailError = $state('');
   let detail = $state<RequestSummary | null>(null);
 
+  const filterOptions = $derived([
+    { value: 'all', label: m.request_filter_all() },
+    { value: 'completed', label: m.request_status_completed() },
+    { value: 'failed', label: m.request_status_failed() },
+  ]);
+
+  const statusLabels: Record<string, () => string> = {
+    completed: m.request_status_completed,
+    failed: m.request_status_failed,
+    partial: m.request_status_partial,
+    cancelled: m.request_status_cancelled,
+    pending: m.request_status_pending,
+  };
+
+  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
   function fmtDuration(ms: number | null | undefined): string {
-    if (ms === null || ms === undefined) return 'pending';
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(2)}s`;
+    if (ms == null) return m.common_pending();
+    return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
   }
 
-  onMount(async () => {
+  async function load() {
     try {
-      const res = await api.listRequests(50);
-      requests = res.items;
+      requests = (await api.listRequests(50, statusFilter)).items;
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
       loading = false;
     }
+  }
+
+  onMount(load);
+
+  // Poll every 3s while the tab is visible and not paused; re-runs when `paused` flips.
+  $effect(() => {
+    const isPaused = paused;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const sync = () => {
+      clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState === 'visible' && !isPaused) timer = setInterval(load, 3000);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', sync);
+    };
   });
 
-  async function search(e: Event) {
-    e.preventDefault();
-    if (!searchId.trim()) { searchError = 'Request ID is required'; return; }
-    searching = true;
-    searchError = '';
+  function onFilterChange(v: string) {
+    statusFilter = v as RequestStatusFilter;
+    loading = true;
+    load();
+  }
+
+  async function openDetail(id: string) {
+    detailOpen = true;
+    detailLoading = true;
+    detailError = '';
     detail = null;
     try {
-      detail = await api.getRequest(searchId.trim());
+      detail = await api.getRequest(id);
     } catch (err) {
-      searchError = (err as Error).message;
+      detailError = (err as Error).message;
     } finally {
-      searching = false;
+      detailLoading = false;
     }
+  }
+
+  function search(e: Event) {
+    e.preventDefault();
+    if (!searchId.trim()) { searchError = m.request_id_required(); return; }
+    searchError = '';
+    openDetail(searchId.trim());
   }
 </script>
 
 <div class="page">
-  <h1>Requests</h1>
+  <div class="page-header">
+    <h1 class="page-title">{m.nav_requests()}</h1>
+    <div class="header-actions">
+      <div class="filter">
+        <Select label={m.request_filter()} options={filterOptions} value={statusFilter} onchange={onFilterChange} />
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onclick={() => (paused = !paused)}
+        ariaLabel={paused ? m.request_resume_label() : m.request_pause_label()}
+      >
+        {#if paused}<PlayIcon size={14} aria-hidden="true" />{m.request_resume()}{:else}<PauseIcon size={14} aria-hidden="true" />{m.request_pause()}{/if}
+      </Button>
+    </div>
+  </div>
+
+  <p class="refresh-note" aria-live="polite">{paused ? m.request_paused() : m.request_live()}</p>
 
   <section aria-labelledby="search-heading">
-    <h2 id="search-heading">Look up request</h2>
+    <h2 id="search-heading">{m.request_search()}</h2>
     <form onsubmit={search} class="search-form">
       <label>
-        Request ID
+        {m.request_id_label()}
         <input type="text" bind:value={searchId} placeholder="req_..." />
       </label>
-      <button type="submit" disabled={searching}>Search</button>
+      <Button type="submit" size="md">{m.request_search_button()}</Button>
     </form>
-
     {#if searchError}
       <p class="error-msg" role="alert">{searchError}</p>
-    {/if}
-
-    {#if detail}
-      {@const d = detail}
-      <div class="detail-card">
-        <dl class="info-grid">
-          <dt>Request ID</dt><dd class="mono">{d.request_id}</dd>
-          <dt>Model</dt><dd>{d.model}</dd>
-          <dt>API type</dt><dd>{d.api_type}</dd>
-          <dt>Status</dt><dd><Badge status={d.status} /></dd>
-          <dt>Connection</dt><dd>{d.connection_id ?? '—'}</dd>
-          <dt>Started</dt><dd>{new Date(d.started_at_ms).toLocaleString()}</dd>
-          <dt>Duration</dt><dd>{fmtDuration(d.duration_ms)}</dd>
-        </dl>
-      </div>
     {/if}
   </section>
 
   <section aria-labelledby="recent-heading">
-    <h2 id="recent-heading">Recent requests ({requests.length})</h2>
+    <h2 id="recent-heading">{m.request_recent()} ({requests.length})</h2>
     {#if loading}
-      <div class="loading"><Spinner size="sm" /> Loading…</div>
+      <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
     {:else if requests.length === 0}
-      <EmptyState title="No requests recorded yet." description="Requests will appear here once your gateway receives traffic." />
+      <EmptyState title={m.request_empty()} description={m.request_empty_desc()} />
     {:else}
       <table>
         <thead>
           <tr>
-            <th scope="col">Request ID</th>
-            <th scope="col">Model</th>
-            <th scope="col">Status</th>
-            <th scope="col">Duration</th>
-            <th scope="col">Started</th>
+            <th scope="col">{m.request_time()}</th>
+            <th scope="col">{m.request_model()}</th>
+            <th scope="col">{m.request_api_type()}</th>
+            <th scope="col">{m.request_status()}</th>
+            <th scope="col">{m.request_connection()}</th>
+            <th scope="col">{m.request_duration()}</th>
           </tr>
         </thead>
         <tbody>
           {#each requests as r (r.request_id)}
-            <tr>
-              <td class="mono">{r.request_id}</td>
+            <tr class="clickable" onclick={() => openDetail(r.request_id)}>
+              <td>
+                <!-- The button makes the row reachable by keyboard; the row click is a mouse shortcut. -->
+                <button
+                  type="button"
+                  class="row-link"
+                  aria-label={m.request_open_detail({ id: r.request_id })}
+                  onclick={(e) => { e.stopPropagation(); openDetail(r.request_id); }}
+                >
+                  {timeFmt.format(new Date(r.started_at_ms))}
+                </button>
+              </td>
               <td>{r.model}</td>
-              <td><Badge status={r.status} /></td>
+              <td class="mono">{r.api_type}</td>
+              <td><Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} /></td>
+              <td class="mono">{r.connection_id ?? m.common_none()}</td>
               <td>{fmtDuration(r.duration_ms)}</td>
-              <td>{new Date(r.started_at_ms).toLocaleString()}</td>
             </tr>
           {/each}
         </tbody>
@@ -111,7 +177,97 @@
   </section>
 </div>
 
+<Dialog.Root bind:open={detailOpen}>
+  <Dialog.Portal>
+    <Dialog.Overlay class="drawer-overlay" />
+    <Dialog.Content class="drawer-content" aria-describedby={undefined}>
+      <div class="drawer-header">
+        <Dialog.Title class="drawer-title">{m.request_detail_title()}</Dialog.Title>
+        <Dialog.Close class="drawer-close" aria-label={m.common_close()}>
+          <XIcon size={16} aria-hidden="true" />
+        </Dialog.Close>
+      </div>
+
+      <div class="drawer-body" aria-live="polite">
+        {#if detailLoading}
+          <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
+        {:else if detailError}
+          <p class="error-msg" role="alert">{detailError}</p>
+        {:else if detail}
+          {@const d = detail}
+          <dl class="info-grid">
+            <dt>{m.request_id_label()}</dt><dd class="mono">{d.request_id}</dd>
+            <dt>{m.request_model()}</dt><dd>{d.model}</dd>
+            <dt>{m.request_api_type()}</dt><dd class="mono">{d.api_type}</dd>
+            <dt>{m.request_status()}</dt><dd><Badge status={d.status} label={statusLabels[d.status]?.() ?? d.status} /></dd>
+            <dt>{m.request_connection()}</dt><dd class="mono">{d.connection_id ?? m.common_none()}</dd>
+            <dt>{m.request_started()}</dt><dd>{new Date(d.started_at_ms).toLocaleString()}</dd>
+            <dt>{m.request_duration()}</dt><dd>{fmtDuration(d.duration_ms)}</dd>
+          </dl>
+
+          <h3 class="drawer-subtitle">{m.request_decision()}</h3>
+          {#if d.decision}
+            <dl class="info-grid">
+              <dt>{m.request_route()}</dt><dd class="mono">{d.decision.route_id ?? m.common_none()}</dd>
+              <dt>{m.request_attempts()}</dt><dd>{d.decision.attempt_count}</dd>
+            </dl>
+            <h4 class="drawer-subtitle small">{m.request_excluded()}</h4>
+            {#if d.decision.candidates_excluded.length === 0}
+              <p class="hint">{m.request_excluded_none()}</p>
+            {:else}
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">{m.request_connection()}</th>
+                    <th scope="col">{m.request_reason()}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each d.decision.candidates_excluded as ex (ex.id)}
+                    <tr><td class="mono">{ex.id}</td><td>{ex.reason}</td></tr>
+                  {/each}
+                </tbody>
+              </table>
+            {/if}
+          {:else}
+            <p class="hint">{m.request_no_decision()}</p>
+          {/if}
+        {/if}
+      </div>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
+
 <style>
+  .page-header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+  }
+
+  .page-header h1 {
+    margin: 0;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .filter {
+    min-width: 160px;
+  }
+
+  .refresh-note {
+    font-size: 0.75rem;
+    color: var(--text-3);
+    margin-bottom: 1.5rem;
+  }
+
   .loading {
     display: flex;
     align-items: center;
@@ -128,69 +284,92 @@
     flex-wrap: wrap;
   }
 
-  .search-form label {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-  }
-
   .search-form input {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
     min-width: 280px;
-    transition: border-color 0.15s;
   }
 
-  .search-form input:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  .search-form input::placeholder {
-    color: var(--text-3);
-  }
-
-  .search-form button {
-    padding: 0.4375rem 0.875rem;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
+  .clickable {
     cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    transition: background 0.1s;
+  }
+
+  .row-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    cursor: pointer;
     white-space: nowrap;
   }
 
-  .search-form button:hover:not(:disabled) {
-    background: var(--accent-hover);
+  .row-link:hover {
+    text-decoration: underline;
   }
 
-  .search-form button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
+  :global(.drawer-overlay) {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 50;
   }
 
-  .error-msg {
-    margin-top: 8px;
+  :global(.drawer-content) {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 51;
+    width: min(520px, 100vw);
+    background: var(--bg-surface);
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.25);
+    overflow-y: auto;
+  }
+
+  :global(.drawer-title) {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0;
+  }
+
+  :global(.drawer-close) {
+    display: flex;
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  :global(.drawer-close:hover) {
+    color: var(--text-1);
+    background: var(--bg-hover);
+  }
+
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .drawer-body {
+    padding: 20px;
+  }
+
+  .drawer-subtitle {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 1.5rem 0 0.75rem;
+  }
+
+  .drawer-subtitle.small {
     font-size: 0.8125rem;
-    color: var(--danger);
-  }
-
-  .detail-card {
-    margin-top: 0.75rem;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.875rem 1rem;
+    margin-top: 1rem;
   }
 
   .info-grid {
@@ -209,10 +388,11 @@
   dd {
     margin: 0;
     color: var(--text-2);
+    overflow-wrap: anywhere;
   }
 
-  .mono {
-    font-family: monospace;
+  .hint {
     font-size: 0.8125rem;
+    color: var(--text-3);
   }
 </style>

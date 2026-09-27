@@ -21,9 +21,14 @@ export interface SessionUser {
 export interface ConnectionSummary {
   id: string;
   provider: string;
-  status: 'healthy' | 'degraded' | 'circuit_open' | 'cooldown';
+  /** `unknown` when the data plane is not running. */
+  status: 'healthy' | 'degraded' | 'circuit_open' | 'cooldown' | 'unknown';
   model_count: number;
   active_requests: number;
+  max_concurrent: number;
+  /** RFC 3339; set while cooling down or while the circuit is open. */
+  cooldown_until?: string;
+  failure_count?: number;
 }
 
 export interface AdminError {
@@ -114,7 +119,7 @@ export interface ClientKey {
   requests_per_minute?: number | null;
   /** Tokens and requests this calendar month (UTC). */
   usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
-  status: 'active' | 'expired' | 'revoked';
+  status: 'active' | 'disabled' | 'expired' | 'revoked';
 }
 /** Optional create-time limits; absent = unrestricted. */
 export interface KeyLimits {
@@ -124,13 +129,28 @@ export interface KeyLimits {
   monthly_token_limit?: number;
   requests_per_minute?: number;
 }
-/** Only the create response carries the raw `key`. */
+/** PATCH body: absent = unchanged; `null` clears expiry or a limit. */
+export interface KeyPatch {
+  name?: string;
+  scopes?: KeyScope[];
+  expires_at?: string | null;
+  allowed_models?: string[];
+  allowed_ips?: string[];
+  monthly_token_limit?: number | null;
+  requests_per_minute?: number | null;
+}
+/** Only the create and regenerate responses carry the raw `key`. */
 export interface CreatedKey extends ClientKey { key: string }
 export interface RouteSummary { id: string; match_models: string[]; strategy: string; targets: string[] }
 export interface RoutePreview {
   model: string;
   eligible_connections: string[];
   excluded_connections: { id: string; reason: string }[];
+}
+export interface RequestDecision {
+  route_id: string | null;
+  attempt_count: number;
+  candidates_excluded: { id: string; reason: string }[];
 }
 export interface RequestSummary {
   request_id: string;
@@ -140,6 +160,7 @@ export interface RequestSummary {
   connection_id: string | null;
   started_at_ms: number;
   duration_ms: number | null;
+  decision?: RequestDecision | null;
 }
 export interface RequestList { items: RequestSummary[]; has_more: boolean; cursor: string | null }
 
@@ -173,6 +194,37 @@ export async function revokeKey(cookie: string, id: string): Promise<void> {
   });
 }
 
+export async function updateKey(cookie: string, id: string, patch: KeyPatch): Promise<ClientKey> {
+  const res = await fetch(`${BASE}/admin/v1/keys/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: adminHeaders(cookie),
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`update key failed: ${res.status}`);
+  return res.json() as Promise<ClientKey>;
+}
+
+export async function regenerateKey(cookie: string, id: string): Promise<CreatedKey> {
+  const res = await fetch(`${BASE}/admin/v1/keys/${encodeURIComponent(id)}/regenerate`, {
+    method: 'POST',
+    headers: adminHeaders(cookie),
+  });
+  if (!res.ok) throw new Error(`regenerate key failed: ${res.status}`);
+  return res.json() as Promise<CreatedKey>;
+}
+
+async function setKeyDisabled(cookie: string, id: string, disabled: boolean): Promise<void> {
+  const action = disabled ? 'disable' : 'enable';
+  const res = await fetch(`${BASE}/admin/v1/keys/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: adminHeaders(cookie),
+  });
+  if (!res.ok) throw new Error(`${action} key failed: ${res.status}`);
+}
+
+export const disableKey = (cookie: string, id: string) => setKeyDisabled(cookie, id, true);
+export const enableKey = (cookie: string, id: string) => setKeyDisabled(cookie, id, false);
+
 // Routes
 export async function listRoutes(cookie: string): Promise<RouteSummary[]> {
   const res = await fetch(`${BASE}/admin/v1/routes`, { headers: adminHeaders(cookie) });
@@ -191,8 +243,13 @@ export async function previewRoute(cookie: string, model: string): Promise<Route
 }
 
 // Requests
-export async function listRequests(cookie: string, limit = 50): Promise<RequestSummary[]> {
-  const res = await fetch(`${BASE}/admin/v1/requests?limit=${limit}`, {
+export async function listRequests(
+  cookie: string,
+  limit = 50,
+  status?: 'completed' | 'failed',
+): Promise<RequestSummary[]> {
+  const q = status ? `&status=${status}` : '';
+  const res = await fetch(`${BASE}/admin/v1/requests?limit=${limit}${q}`, {
     headers: adminHeaders(cookie),
   });
   if (!res.ok) throw new Error(`requests fetch failed: ${res.status}`);

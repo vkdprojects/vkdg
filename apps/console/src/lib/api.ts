@@ -38,12 +38,20 @@ export interface SessionUser {
   role: 'viewer' | 'operator' | 'admin';
 }
 
+export type ConnectionStatus = 'healthy' | 'degraded' | 'circuit_open' | 'cooldown' | 'unknown';
+
 export interface ConnectionSummary {
   id: string;
   provider: string;
-  status: string;
+  /** `unknown` when the data plane is not running. */
+  status: ConnectionStatus;
   model_count: number;
   active_requests: number;
+  max_concurrent: number;
+  /** RFC 3339; set while cooling down or while the circuit is open. */
+  cooldown_until?: string;
+  /** Set only while cooling down. */
+  failure_count?: number;
 }
 
 export type KeyScope = 'data_inference' | 'data_image';
@@ -65,7 +73,7 @@ export interface ClientKey {
   requests_per_minute?: number | null;
   /** Tokens and requests this calendar month (UTC). */
   usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
-  status: 'active' | 'expired' | 'revoked';
+  status: 'active' | 'disabled' | 'expired' | 'revoked';
 }
 
 /** Optional create-time limits; absent = unrestricted. */
@@ -79,7 +87,21 @@ export interface KeyLimits {
   requests_per_minute?: number;
 }
 
-/** Returned once by createKey; `key` is never shown again. */
+/**
+ * PATCH body: an absent field is left as it is; `null` clears
+ * `expires_at`, `monthly_token_limit` or `requests_per_minute`.
+ */
+export interface KeyPatch {
+  name?: string;
+  scopes?: KeyScope[];
+  expires_at?: string | null;
+  allowed_models?: string[];
+  allowed_ips?: string[];
+  monthly_token_limit?: number | null;
+  requests_per_minute?: number | null;
+}
+
+/** Returned once by createKey and regenerateKey; `key` is never shown again. */
 export interface CreatedKey extends ClientKey {
   key: string;
 }
@@ -141,15 +163,25 @@ export interface RoutePreview {
   excluded_connections: { id: string; reason: string }[];
 }
 
+export interface RequestDecision {
+  route_id: string | null;
+  attempt_count: number;
+  candidates_excluded: { id: string; reason: string }[];
+}
+
 export interface RequestSummary {
   request_id: string;
   model: string;
-  api_type?: string;
+  api_type: string;
+  /** `completed` or `failed`. */
   status: string;
-  connection_id?: string;
+  connection_id: string | null;
   started_at_ms: number;
-  duration_ms?: number;
+  duration_ms: number | null;
+  decision?: RequestDecision | null;
 }
+
+export type RequestStatusFilter = 'all' | 'completed' | 'failed';
 
 export interface ComboSummary {
   id: string;
@@ -187,8 +219,16 @@ export const api = {
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>
     req<CreatedKey>('POST', '/admin/v1/keys', { name, scopes, ...limits }),
+  updateKey: (id: string, patch: KeyPatch) =>
+    req<ClientKey>('PATCH', `/admin/v1/keys/${encodeURIComponent(id)}`, patch),
+  regenerateKey: (id: string) =>
+    req<CreatedKey>('POST', `/admin/v1/keys/${encodeURIComponent(id)}/regenerate`),
+  disableKey: (id: string) =>
+    req<void>('POST', `/admin/v1/keys/${encodeURIComponent(id)}/disable`),
+  enableKey: (id: string) =>
+    req<void>('POST', `/admin/v1/keys/${encodeURIComponent(id)}/enable`),
   revokeKey: (id: string) =>
-    req<void>('DELETE', `/admin/v1/keys/${id}`),
+    req<void>('DELETE', `/admin/v1/keys/${encodeURIComponent(id)}`),
   listAccounts: () =>
     req<{ items: Account[]; total: number }>('GET', '/admin/v1/accounts'),
   deleteAccount: (id: string) =>
@@ -205,10 +245,13 @@ export const api = {
     req<{ items: RouteSummary[] }>('GET', '/admin/v1/routes'),
   previewRoute: (model: string) =>
     req<RoutePreview>('GET', `/admin/v1/routes/preview?model=${encodeURIComponent(model)}`),
-  listRequests: (limit = 50) =>
-    req<{ items: RequestSummary[]; has_more: boolean }>('GET', `/admin/v1/requests?limit=${limit}`),
+  listRequests: (limit = 50, status: RequestStatusFilter = 'all') =>
+    req<{ items: RequestSummary[]; has_more: boolean; cursor: string | null }>(
+      'GET',
+      `/admin/v1/requests?limit=${limit}${status === 'all' ? '' : `&status=${status}`}`,
+    ),
   getRequest: (id: string) =>
-    req<RequestSummary>('GET', `/admin/v1/requests/${id}`),
+    req<RequestSummary>('GET', `/admin/v1/requests/${encodeURIComponent(id)}`),
   listCombos: () =>
     req<{ items: ComboSummary[]; total: number }>('GET', '/admin/v1/combos'),
   listPlugins: () =>

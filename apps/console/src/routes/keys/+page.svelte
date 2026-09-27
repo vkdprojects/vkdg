@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { ClientKey, CreatedKey, KeyLimits, KeyScope } from '$lib/api.js';
+  import type { ClientKey, CreatedKey, KeyLimits, KeyPatch, KeyScope } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { CopyButton, EmptyState, Button, Spinner } from '$lib/components/index.js';
+  import { Dialog } from 'bits-ui';
+  import { XIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let keys = $state<ClientKey[]>([]);
@@ -36,8 +38,116 @@
     return out;
   }
 
-  function statusLabel(s: ClientKey['status']): string {
-    return s === 'revoked' ? m.key_status_revoked() : s === 'expired' ? m.key_status_expired() : m.key_status_active();
+  const statusLabels: Record<ClientKey['status'], () => string> = {
+    active: m.key_status_active,
+    disabled: m.key_status_disabled,
+    expired: m.key_status_expired,
+    revoked: m.key_status_revoked,
+  };
+
+  // ── Row actions ──────────────────────────────────────────────────────────
+
+  /** Raw secret from a regenerate; shown once, next to the table. */
+  let regenerated = $state<CreatedKey | null>(null);
+  let busyId = $state<string | null>(null);
+
+  let editing = $state<ClientKey | null>(null);
+  let editOpen = $state(false);
+  let editError = $state('');
+  let editSaving = $state(false);
+  let editName = $state('');
+  let editExpiresOn = $state('');
+  let editModels = $state('');
+  let editIps = $state('');
+  let editTokens = $state<number | null>(null);
+  let editRpm = $state<number | null>(null);
+
+  /** Local `YYYY-MM-DD` for a date input, matching how create sets end-of-day. */
+  function toDateInput(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function openEdit(k: ClientKey) {
+    editing = k;
+    editName = k.name;
+    editExpiresOn = toDateInput(k.expires_at);
+    editModels = k.allowed_models.join(', ');
+    editIps = k.allowed_ips.join(', ');
+    editTokens = k.monthly_token_limit ?? null;
+    editRpm = k.requests_per_minute ?? null;
+    editError = '';
+    editOpen = true;
+  }
+
+  /** Only changed fields; a cleared expiry or limit becomes `null`. */
+  function buildPatch(k: ClientKey): KeyPatch {
+    const p: KeyPatch = {};
+    const name = editName.trim();
+    if (name !== k.name) p.name = name;
+    if (editExpiresOn !== toDateInput(k.expires_at)) {
+      p.expires_at = editExpiresOn ? new Date(`${editExpiresOn}T23:59:59`).toISOString() : null;
+    }
+    const models = splitList(editModels);
+    if (models.join('\n') !== k.allowed_models.join('\n')) p.allowed_models = models;
+    const ips = splitList(editIps);
+    if (ips.join('\n') !== k.allowed_ips.join('\n')) p.allowed_ips = ips;
+    // An emptied number input binds to null (or undefined); both mean "clear".
+    const tokens = editTokens ?? null;
+    if (tokens !== (k.monthly_token_limit ?? null)) p.monthly_token_limit = tokens;
+    const rpmVal = editRpm ?? null;
+    if (rpmVal !== (k.requests_per_minute ?? null)) p.requests_per_minute = rpmVal;
+    return p;
+  }
+
+  async function saveEdit(e: Event) {
+    e.preventDefault();
+    if (!editing) return;
+    if (!editName.trim()) { editError = m.key_name_required(); return; }
+    const patch = buildPatch(editing);
+    if (Object.keys(patch).length === 0) { editError = m.key_no_changes(); return; }
+    editSaving = true;
+    editError = '';
+    try {
+      await api.updateKey(editing.id, patch);
+      editOpen = false;
+      toast.success(m.key_updated());
+      keys = (await api.listKeys()).items;
+    } catch (err) {
+      // Backend 400s (bad CIDR, past date…) stay in the dialog.
+      editError = (err as Error).message;
+    } finally {
+      editSaving = false;
+    }
+  }
+
+  async function regenerateKey(k: ClientKey) {
+    if (!confirm(m.key_regenerate_confirm())) return;
+    busyId = k.id;
+    try {
+      regenerated = await api.regenerateKey(k.id);
+      keys = (await api.listKeys()).items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      busyId = null;
+    }
+  }
+
+  async function toggleDisabled(k: ClientKey) {
+    const disable = k.status !== 'disabled';
+    if (disable && !confirm(m.key_disable_confirm())) return;
+    busyId = k.id;
+    try {
+      await (disable ? api.disableKey(k.id) : api.enableKey(k.id));
+      toast.success(disable ? m.key_disabled_toast() : m.key_enabled_toast());
+      keys = (await api.listKeys()).items;
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      busyId = null;
+    }
   }
 
   function formatDate(iso: string): string {
@@ -167,28 +277,17 @@
     </form>
 
     {#if createdKey}
-      <div class="created-key" role="alert">
-        <div class="created-header">
-          <svg class="warning-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-            <path d="M12 9v4"/><path d="M12 17h.01"/>
-          </svg>
-          <strong class="created-notice">{m.key_store_warning()}</strong>
-        </div>
-        <div class="key-box">
-          <code class="key-value">{createdKey.key}</code>
-        </div>
-        <div class="key-copy-row">
-          <CopyButton text={createdKey.key} />
-        </div>
-      </div>
+      {@render secretReveal(createdKey.key, m.key_store_warning())}
     {/if}
   </section>
 
   <section aria-labelledby="keys-heading">
     <h2 id="keys-heading">{m.nav_keys()} ({keys.length})</h2>
+    {#if regenerated}
+      {@render secretReveal(regenerated.key, `${m.key_regenerated_notice({ name: regenerated.name })}. ${m.key_store_warning()}`)}
+    {/if}
     {#if loading}
-      <div class="loading"><Spinner size="sm" /> Loading…</div>
+      <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
     {:else if keys.length === 0}
       <EmptyState title={m.key_empty()} description={m.key_empty_desc()} />
     {:else}
@@ -219,8 +318,8 @@
               </td>
               <td>
                 <!-- Text, not color alone, carries the state. -->
-                <span class="role-badge {k.status === 'active' ? 'role-operator' : 'role-admin'}">
-                  {statusLabel(k.status)}
+                <span class="role-badge {k.status === 'active' ? 'role-operator' : k.status === 'disabled' ? 'role-viewer' : 'role-admin'}">
+                  {statusLabels[k.status]()}
                 </span>
               </td>
               <td class="date-cell">{k.expires_at ? formatDate(k.expires_at) : m.key_never()}</td>
@@ -248,8 +347,17 @@
               <td class="date-cell">{formatDate(k.created_at)}</td>
               <td class="date-cell">{k.last_used_at ? formatDate(k.last_used_at) : m.key_never()}</td>
               <td class="action-cell">
-                {#if k.status === 'active'}
-                  <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
+                {#if k.status !== 'revoked'}
+                  <div class="row-actions">
+                    <Button variant="outline" size="sm" onclick={() => openEdit(k)} ariaLabel={`${m.key_edit()} ${k.name}`}>{m.key_edit()}</Button>
+                    <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => regenerateKey(k)} ariaLabel={`${m.key_regenerate()} ${k.name}`}>{m.key_regenerate()}</Button>
+                    {#if k.status === 'disabled'}
+                      <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_enable()} ${k.name}`}>{m.key_enable()}</Button>
+                    {:else}
+                      <Button variant="ghost" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_disable()} ${k.name}`}>{m.key_disable()}</Button>
+                    {/if}
+                    <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
+                  </div>
                 {/if}
               </td>
             </tr>
@@ -267,6 +375,79 @@
     </p>
   </section>
 </div>
+
+{#snippet secretReveal(secret: string, notice: string)}
+  <div class="created-key" role="alert">
+    <div class="created-header">
+      <svg class="warning-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+        <path d="M12 9v4"/><path d="M12 17h.01"/>
+      </svg>
+      <strong class="created-notice">{notice}</strong>
+    </div>
+    <div class="key-box">
+      <code class="key-value">{secret}</code>
+    </div>
+    <div class="key-copy-row">
+      <CopyButton text={secret} />
+    </div>
+  </div>
+{/snippet}
+
+<Dialog.Root bind:open={editOpen}>
+  <Dialog.Portal>
+    <Dialog.Overlay class="dialog-overlay" />
+    <Dialog.Content class="dialog-content" aria-describedby={undefined}>
+      <div class="dialog-header">
+        <Dialog.Title class="dialog-title">{m.key_edit_title({ name: editing?.name ?? '' })}</Dialog.Title>
+        <Dialog.Close class="dialog-close" aria-label={m.common_close()}>
+          <XIcon size={16} aria-hidden="true" />
+        </Dialog.Close>
+      </div>
+      <form onsubmit={saveEdit} class="edit-form">
+        <div class="field">
+          <label for="edit-name">{m.key_name()}</label>
+          <input id="edit-name" type="text" bind:value={editName} required />
+        </div>
+        <div class="field">
+          <label for="edit-expires">{m.key_expires_on()}</label>
+          <input id="edit-expires" type="date" bind:value={editExpiresOn} aria-describedby="edit-expires-hint" />
+          <span id="edit-expires-hint" class="hint">{m.key_expiry_hint()}</span>
+        </div>
+        <div class="field">
+          <label for="edit-models">{m.key_allowed_models()}</label>
+          <textarea id="edit-models" rows="2" bind:value={editModels} aria-describedby="edit-models-hint"></textarea>
+          <span id="edit-models-hint" class="hint">{m.key_allowed_models_hint()}</span>
+        </div>
+        <div class="field">
+          <label for="edit-ips">{m.key_allowed_ips()}</label>
+          <textarea id="edit-ips" rows="2" bind:value={editIps} aria-describedby="edit-ips-hint"></textarea>
+          <span id="edit-ips-hint" class="hint">{m.key_allowed_ips_hint()}</span>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="edit-tokens">{m.key_monthly_tokens()}</label>
+            <input id="edit-tokens" type="number" min="1" step="1" bind:value={editTokens} aria-describedby="edit-unlimited-hint" />
+          </div>
+          <div class="field">
+            <label for="edit-rpm">{m.key_rpm()}</label>
+            <input id="edit-rpm" type="number" min="1" step="1" bind:value={editRpm} aria-describedby="edit-unlimited-hint" />
+          </div>
+        </div>
+        <span id="edit-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
+
+        {#if editError}
+          <p class="error-msg" role="alert">{editError}</p>
+        {/if}
+
+        <div class="dialog-footer">
+          <Button variant="outline" onclick={() => (editOpen = false)}>{m.common_cancel()}</Button>
+          <Button type="submit" disabled={editSaving}>{m.common_save()}</Button>
+        </div>
+      </form>
+    </Dialog.Content>
+  </Dialog.Portal>
+</Dialog.Root>
 
 <style>
   .loading {
@@ -471,6 +652,78 @@
 
   .action-cell {
     text-align: right;
+  }
+
+  .row-actions {
+    display: inline-flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+
+  .dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 20px 0;
+  }
+
+  .dialog-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  /* Same global dialog chrome as the connections and accounts pages. */
+  :global(.dialog-overlay) {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 50;
+  }
+
+  :global(.dialog-content) {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 51;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    width: min(480px, calc(100vw - 32px));
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  }
+
+  :global(.dialog-title) {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-1);
+    margin: 0;
+  }
+
+  :global(.dialog-close) {
+    display: flex;
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: var(--radius-sm);
+  }
+
+  :global(.dialog-close:hover) {
+    color: var(--text-1);
+    background: var(--bg-hover);
   }
 
   .role-badge {

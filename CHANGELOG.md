@@ -14,6 +14,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - Client IP comes from the TCP socket. `X-Forwarded-For` is believed only from peers in `VKDG_TRUSTED_PROXIES` (walked right to left); before, any client could claim any address and pass an IP allowlist
 - IP allowlist/blocklist entries match by bit mask for IPv4 and IPv6 (`10.16.0.0/12` no longer admits `10.32.0.1`). **Breaking:** the dotted-prefix form (`192.168.1.`) is gone; use CIDR. An unknown client IP now fails a non-empty allowlist instead of skipping it
 
+- **Breaking:** `vkdg serve --config <file>` exits with the validation error when the file is invalid. It used to log a warning and serve an env-derived gateway (different routes, possibly an `ANTHROPIC_API_KEY` passthrough) instead of the one the operator asked for
+
 ### Added
 - `vkdg keys create|list|revoke`. `create` prints only the raw key on stdout, so `$(vkdg keys create ci)` works
 - `/admin/v1/keys` takes `scopes` (`data_inference`, `data_image`) instead of `role`, and returns `prefix`, `status`, `last_used_at`, `revoked_at`. The console Keys page shows them and keeps revoked keys listed

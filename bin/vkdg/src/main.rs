@@ -357,14 +357,10 @@ async fn serve(
                 drop(vkdg_config::watch(path.clone(), tx, 1));
                 Some(pipeline)
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "config file invalid — falling back to env vars");
-                build_pipeline_from_env(
-                    max_concurrent,
-                    Arc::clone(&credentials),
-                    Arc::clone(&registry),
-                )
-            }
+            // The operator asked for this file. Serving a different gateway (env
+            // routes, maybe an ANTHROPIC_API_KEY passthrough) would hide the
+            // mistake, so refuse to start, as `vkdg config check` would.
+            Err(e) => anyhow::bail!("config file {path} is invalid: {e}"),
         }
     } else {
         build_pipeline_from_env(

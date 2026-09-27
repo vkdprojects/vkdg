@@ -385,6 +385,9 @@ async fn serve(
         }
     };
 
+    // Auth plugins, loaded once for both builders so a gateway started without
+    // a config file has them too; plugin reloads swap this same registry.
+    let hooks = Arc::new(build_hook_registry());
     let mut pipeline = if let Some(path) = &config_path {
         match load_and_validate(path, 1) {
             Ok(snap) => {
@@ -395,7 +398,7 @@ async fn serve(
                     Arc::clone(&credentials),
                     Arc::clone(&registry),
                 );
-                pipeline.hooks = Arc::new(build_hook_registry());
+                pipeline.hooks = Arc::clone(&hooks);
                 // Refuse to start on a route naming a hook that is not installed,
                 // exactly as a reload with one is refused.
                 unknown_hooks(&snap, &pipeline.hooks).map_err(anyhow::Error::msg)?;
@@ -421,6 +424,7 @@ async fn serve(
     // Share request_log Arc between pipeline and admin API.
     if let Some(p) = &mut pipeline {
         p.request_log = Some(Arc::clone(&request_log));
+        p.hooks = Arc::clone(&hooks);
     }
 
     // Combos: one service for both builders (config file or env), shared by the

@@ -170,11 +170,28 @@ pub async fn remove_plugin(
     if get_session(&state, &headers).is_none() {
         return unauthorized();
     }
+    // A route naming this plugin as an auth hook would deny every request
+    // once it is gone. Refuse; the operator removes the hook from the route first.
+    let snapshot = state.config_rx.borrow().clone();
+    if let Some(route) = snapshot
+        .routes
+        .iter()
+        .find(|r| r.plugin_hooks.auth.iter().any(|h| h == &name))
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "plugin {name} is the auth hook of route {}; remove it from the route first",
+                    route.id.0
+                )
+            })),
+        )
+            .into_response();
+    }
     let store = PluginStore::from_env();
     match store.remove(&name) {
         Ok(()) => {
-            // Routes still naming a removed auth plugin now deny: a missing hook
-            // fails closed, it is never skipped.
             reload(&state).await;
             StatusCode::NO_CONTENT.into_response()
         }
@@ -259,5 +276,91 @@ mod tests {
 
         assert!(decode_base64("aGVsbG8").is_err(), "bad length");
         assert!(decode_base64("aGVs!G8=").is_err(), "invalid character");
+    }
+
+    fn state_with_hooked_route(
+        reloads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> AdminState {
+        use vkdg_config::schema::{AuthDef, ConnectionDef, RouteDef};
+        let cfg = vkdg_config::GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![ConnectionDef {
+                id: "c1".into(),
+                provider: "anthropic".into(),
+                auth: AuthDef::ApiKey {
+                    env_var: "K".into(),
+                },
+                models: vec!["m-*".into()],
+                max_concurrent: None,
+                weight: None,
+            }],
+            routes: vec![RouteDef {
+                id: "guarded".into(),
+                match_models: vec!["m-*".into()],
+                strategy: "round_robin".into(),
+                targets: vec!["c1".into()],
+                hooks: serde_json::from_value(serde_json::json!({ "auth": ["gate"] })).unwrap(),
+            }],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        };
+        let snap = vkdg_config::ConfigSnapshot::build(1, cfg).unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(std::sync::Arc::new(snap));
+        AdminState {
+            sessions: crate::session::SessionStore::new("tok".into()),
+            config_rx: rx,
+            started_at: std::sync::Arc::new(std::time::Instant::now()),
+            key_store: std::sync::Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: crate::handlers::requests::RequestLog::new(),
+            combos: None,
+            reload_plugins: Some(std::sync::Arc::new(move || {
+                reloads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })),
+            catalog: None,
+            logins: None,
+        }
+    }
+
+    fn authed(state: &AdminState) -> HeaderMap {
+        let s = state.sessions.bootstrap_login().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&format!("vkdg_session={}", s.session_id)).unwrap(),
+        );
+        h
+    }
+
+    // One test owns VKDG_PLUGINS_DIR: env vars are process-wide.
+    #[tokio::test]
+    async fn removal_is_refused_while_a_route_uses_it_and_reloads_otherwise() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("VKDG_PLUGINS_DIR", dir.path());
+        for name in ["gate", "spare"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+            std::fs::write(dir.path().join(name).join("manifest.yaml"), "name: x\n").unwrap();
+        }
+        let reloads = std::sync::Arc::new(AtomicUsize::new(0));
+        let state = state_with_hooked_route(std::sync::Arc::clone(&reloads));
+        let h = authed(&state);
+
+        // Removing the route's auth hook would deny all its traffic.
+        let r = remove_plugin(State(state.clone()), h.clone(), Path("gate".into())).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(dir.path().join("gate").exists(), "nothing removed");
+        assert_eq!(reloads.load(Ordering::SeqCst), 0);
+
+        // An unused plugin goes, and the running gateway is told at once.
+        let r = remove_plugin(State(state.clone()), h.clone(), Path("spare".into())).await;
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        assert!(!dir.path().join("spare").exists());
+        assert_eq!(
+            reloads.load(Ordering::SeqCst),
+            1,
+            "reload ran without a restart"
+        );
+        std::env::remove_var("VKDG_PLUGINS_DIR");
     }
 }

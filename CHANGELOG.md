@@ -17,6 +17,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - **Breaking:** `vkdg serve --config <file>` exits with the validation error when the file is invalid. It used to log a warning and serve an env-derived gateway (different routes, possibly an `ANTHROPIC_API_KEY` passthrough) instead of the one the operator asked for
 
 ### Added
+- Browser end-to-end tests (`just e2e`, Playwright 1.62, `apps/console/e2e/`) run the real binary with the console embedded and a fresh data directory. They cover sign-in, the full API key lifecycle checked on `/v1/*` after each step, invalid limits, connecting two accounts on one provider, deleting one, and the provider list
 - `GET /admin/v1/providers/oauth` lists the providers on this gateway that support interactive login, OAuth plugins included; the console's Connect-account dialog uses it instead of a hardcoded list
 - Test-only `fake-oauth` provider for end-to-end tests of the login flows, registered only with `VKDG_E2E_FAKE_OAUTH=1` in debug builds (ignored with an error in release builds). Its device code approves on the first poll; a refresh token containing `revoked` behaves like a revoked login
 - Console: Connections show live state as text (healthy, degraded, circuit open, cooling down), in-flight vs capacity and cooldown details, refreshed every 5 s while visible. Requests page refreshes every 3 s (pausable), filters by status and opens a detail drawer with the routing decision. Keys page can edit, regenerate (new secret shown once), disable and enable keys

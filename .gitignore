@@ -154,3 +154,8 @@ coverage/
 .nextest/
 result
 result-*
+
+# Playwright e2e
+apps/console/e2e/.auth/
+apps/console/test-results/
+apps/console/playwright-report/

@@ -176,3 +176,7 @@ clean:
     cargo clean
     rm -rf apps/console/build dist
     @echo "Cleaned."
+
+# Browser end-to-end tests against the real binary with the console embedded.
+e2e:
+    cd apps/console && bun run build && bun run e2e

@@ -57,7 +57,9 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
         VkdgError::CapabilityUnsupported { .. } => {
             (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
-        VkdgError::NoEligibleConnection => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
+        VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
+            (StatusCode::SERVICE_UNAVAILABLE, "api_error")
+        }
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
             (s, "api_error")

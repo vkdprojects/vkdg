@@ -60,7 +60,9 @@ pub(super) fn error_response(err: VkdgError) -> Response {
         VkdgError::CapabilityUnsupported { .. } => {
             (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
-        VkdgError::NoEligibleConnection => (StatusCode::BAD_GATEWAY, "api_error"),
+        VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
+            (StatusCode::BAD_GATEWAY, "api_error")
+        }
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
             (s, "api_error")

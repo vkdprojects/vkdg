@@ -43,8 +43,8 @@ async fn no_eligible_connection_returns_error_no_routes() {
         .route(&envelope, &filter, &RoutingHints::default())
         .await;
     assert!(
-        matches!(result, Err(VkdgError::NoEligibleConnection)),
-        "Expected NoEligibleConnection with empty route table; got {:?}",
+        matches!(result, Err(VkdgError::NoRouteMatched)),
+        "Expected NoRouteMatched with empty route table; got {:?}",
         result
     );
 }
@@ -159,16 +159,16 @@ async fn router_no_matching_route_for_model() {
         .route(&envelope, &filter, &RoutingHints::default())
         .await;
     assert!(
-        matches!(result, Err(VkdgError::NoEligibleConnection)),
-        "Model not matching any route must return NoEligibleConnection; got {:?}",
+        matches!(result, Err(VkdgError::NoRouteMatched)),
+        "Model not matching any route must return NoRouteMatched; got {:?}",
         result
     );
 }
 
-/// Invariant: Router alone with no matching routes returns NoEligibleConnection;
+/// Invariant: Router alone with no matching routes returns NoRouteMatched;
 /// the pipeline's auto-route fallback (not the router) handles zero-config routing.
 /// Plausible wrong impl: pipeline calls router.route() without a fallback and
-/// returns NoEligibleConnection even when a catalog connection serves the model.
+/// returns NoRouteMatched even when a catalog connection serves the model.
 #[tokio::test]
 async fn auto_routing_invariant_router_alone_returns_no_eligible() {
     let router = Router::new(vec![]);
@@ -181,8 +181,8 @@ async fn auto_routing_invariant_router_alone_returns_no_eligible() {
         )
         .await;
     assert!(
-        matches!(result, Err(VkdgError::NoEligibleConnection)),
-        "router alone with no routes must return NoEligibleConnection; \
+        matches!(result, Err(VkdgError::NoRouteMatched)),
+        "router alone with no routes must return NoRouteMatched; \
          pipeline provides the auto-route fallback via catalog.eligible()"
     );
 }

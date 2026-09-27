@@ -139,7 +139,10 @@ pub(super) async fn run_pipeline_inner(
         .await
     {
         Ok(r) => r,
-        Err(VkdgError::NoEligibleConnection) => {
+        // Only when no route claims the model. A route that matched but has no
+        // usable target stays failed: falling through would send its traffic to
+        // connections outside its `targets` and around its policy.
+        Err(VkdgError::NoRouteMatched) => {
             // Auto-route: find any healthy catalog connection that serves the model.
             let model = &ctx.envelope.model_requested;
             let excluded_ids = filter.excluded_connections.to_vec();

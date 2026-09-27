@@ -317,7 +317,7 @@ mod tests {
         router.replace_routes(vec![rr_route("r2", "bar-*", "c2")]);
         assert!(matches!(
             router.route(&test_envelope("foo-1"), &f, &h).await,
-            Err(vkdg_core::VkdgError::NoEligibleConnection)
+            Err(vkdg_core::VkdgError::NoRouteMatched)
         ));
         let r = router.route(&test_envelope("bar-1"), &f, &h).await.unwrap();
         assert_eq!(r.route_id, RouteId("r2".into()));
@@ -377,5 +377,28 @@ mod tests {
             )
             .await;
         assert!(r.is_ok());
+    }
+
+    // A route that matched but has no usable target must not look like "no
+    // route": the pipeline falls back to any connection only on the latter, and
+    // treating both alike let requests escape the matched route's targets.
+    #[tokio::test]
+    async fn matched_route_with_no_usable_target_is_not_a_miss() {
+        let router = Router::new(vec![rr_route("r1", "foo-*", "c1")]);
+        let h = RoutingHints::default();
+        let all_out = EligibilityFilter {
+            excluded_connections: vec![vkdg_core::ConnectionId("c1".into())],
+            reason_map: Default::default(),
+        };
+        assert!(matches!(
+            router.route(&test_envelope("foo-1"), &all_out, &h).await,
+            Err(vkdg_core::VkdgError::NoEligibleConnection)
+        ));
+        assert!(matches!(
+            router
+                .route(&test_envelope("bar-1"), &EligibilityFilter::default(), &h)
+                .await,
+            Err(vkdg_core::VkdgError::NoRouteMatched)
+        ));
     }
 }

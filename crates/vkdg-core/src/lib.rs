@@ -138,6 +138,12 @@ pub enum VkdgError {
     #[error("no eligible connection")]
     NoEligibleConnection,
 
+    /// No route matched the requested model. Distinct from
+    /// `NoEligibleConnection` (a route matched but none of its targets can
+    /// serve): only this case may fall back to any connection serving the model.
+    #[error("no route matches the requested model")]
+    NoRouteMatched,
+
     #[error("upstream error {code}: {message}")]
     UpstreamError { code: u16, message: String },
 
@@ -168,7 +174,7 @@ impl VkdgError {
             VkdgError::AdmissionRejected { .. } => 429,
             VkdgError::CapabilityUnsupported { .. } => 400,
             VkdgError::BudgetExceeded { .. } => 402,
-            VkdgError::NoEligibleConnection => 502,
+            VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => 502,
             VkdgError::UpstreamError { code, .. } => *code,
             VkdgError::PluginError { .. } => 500,
             VkdgError::ConfigInvalid { .. } => 400,

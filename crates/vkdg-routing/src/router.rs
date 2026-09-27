@@ -55,7 +55,7 @@ impl Router {
         hints: &RoutingHints,
     ) -> Result<RouteResult> {
         let routes = self.routes();
-        let route = Self::match_route(&routes, envelope).ok_or(VkdgError::NoEligibleConnection)?;
+        let route = Self::match_route(&routes, envelope).ok_or(VkdgError::NoRouteMatched)?;
 
         // Fusion is handled separately — it builds fusion_targets directly.
         if let StrategyKind::Fusion { max_candidates } = &route.strategy {

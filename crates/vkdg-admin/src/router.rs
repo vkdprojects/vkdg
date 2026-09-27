@@ -19,6 +19,8 @@ pub struct AdminState {
     pub request_log: Arc<RequestLog>,
     pub combo_resolver: Option<Arc<ComboResolver>>,
     pub catalog: Option<Arc<ConnectionCatalog>>,
+    /// Provider login + account store; `None` disables `/oauth` and `/accounts`.
+    pub logins: Option<Arc<crate::handlers::oauth::LoginService>>,
 }
 
 pub fn build_admin_router(state: AdminState) -> Router {
@@ -65,6 +67,39 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route(
             "/admin/v1/combos",
             get(crate::handlers::routes::list_combos),
+        )
+        .route(
+            "/admin/v1/providers/{id}/login-methods",
+            get(crate::handlers::oauth::list_login_methods),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/start",
+            post(crate::handlers::oauth::start_login),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/poll",
+            post(crate::handlers::oauth::poll_login),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/import",
+            post(crate::handlers::oauth::import_token),
+        )
+        .route(
+            "/admin/v1/plugins",
+            get(crate::handlers::plugins::list_plugins)
+                .post(crate::handlers::plugins::install_plugin),
+        )
+        .route(
+            "/admin/v1/plugins/{name}",
+            delete(crate::handlers::plugins::remove_plugin),
+        )
+        .route(
+            "/admin/v1/accounts",
+            get(crate::handlers::oauth::list_accounts),
+        )
+        .route(
+            "/admin/v1/accounts/{id}",
+            delete(crate::handlers::oauth::delete_account),
         )
         .with_state(state)
 }

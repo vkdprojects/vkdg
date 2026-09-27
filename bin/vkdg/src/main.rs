@@ -8,7 +8,8 @@ use axum::Router;
 use clap::{Parser, Subcommand};
 use vkdg_config::{load_and_validate, ConfigSnapshot};
 use vkdg_connections::{
-    AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
+    Account, AccountStore, AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager,
+    ProviderKind,
 };
 use vkdg_core::ConnectionId;
 use vkdg_http::upstream::HttpClient;
@@ -31,7 +32,10 @@ use vkdg_provider_mistral::provider as mistral_provider;
 use vkdg_provider_nvidia_nim::provider as nvidia_nim_provider;
 use vkdg_provider_openai::OpenAIAdapter;
 use vkdg_provider_sambanova::provider as sambanova_provider;
-use vkdg_provider_sdk::ProviderRegistry;
+use vkdg_provider_sdk::{
+    find_login_method, resolve_login_params, run_device_login, LoginParams, LoginResult, OAuthFlow,
+    ProviderRegistry,
+};
 use vkdg_provider_together::provider as together_provider;
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
 
@@ -116,6 +120,36 @@ enum Command {
         #[command(subcommand)]
         sub: PluginSub,
     },
+    /// Log in to an OAuth provider plugin and save the account.
+    Login {
+        /// Provider plugin id, e.g. `kiro`, `github-copilot`.
+        provider: String,
+        /// Login method id (default: the provider's first method).
+        #[arg(long)]
+        method: Option<String>,
+        /// Plugin-defined option, repeatable: `--opt region=us-east-1`.
+        #[arg(long = "opt", value_name = "KEY=VALUE")]
+        opts: Vec<String>,
+        /// PKCE only: authorization code or pasted callback URL (skips the prompt).
+        #[arg(long)]
+        code: Option<String>,
+        /// Print the provider's login methods and exit.
+        #[arg(long)]
+        list_methods: bool,
+    },
+    /// Manage saved provider accounts.
+    Accounts {
+        #[command(subcommand)]
+        sub: AccountsSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountsSub {
+    /// List saved accounts (tokens are never printed).
+    List,
+    /// Delete a saved account.
+    Remove { id: String },
 }
 
 #[derive(Subcommand)]
@@ -227,6 +261,14 @@ async fn main() -> Result<()> {
         Command::Install { config, user } => cmd_install(&config, user)?,
         Command::Update { yes, version } => cmd_update(yes, version.as_deref())?,
         Command::Plugin { sub } => handle_plugin(sub),
+        Command::Login {
+            provider,
+            method,
+            opts,
+            code,
+            list_methods,
+        } => cmd_login(&provider, method.as_deref(), &opts, code, list_methods).await?,
+        Command::Accounts { sub } => cmd_accounts(sub)?,
     }
     Ok(())
 }
@@ -262,6 +304,16 @@ async fn serve(
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
 
+    let registry = build_provider_registry();
+    let account_store = match AccountStore::open(&AccountStore::default_path()) {
+        Ok(store) => Some(Arc::new(store)),
+        Err(e) => {
+            tracing::warn!(error = %e, "account store unavailable — `type: account` connections will fail");
+            None
+        }
+    };
+    let credentials = Arc::new(build_credentials(account_store.as_ref(), &registry));
+
     let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
     let request_log = vkdg_admin::handlers::requests::RequestLog::new();
 
@@ -269,7 +321,12 @@ async fn serve(
         match load_and_validate(path, 1) {
             Ok(snap) => {
                 tracing::info!(path = %path, version = snap.version, "loaded config from file");
-                let pipeline = build_pipeline_from_snapshot(&snap, max_concurrent);
+                let pipeline = build_pipeline_from_snapshot(
+                    &snap,
+                    max_concurrent,
+                    Arc::clone(&credentials),
+                    Arc::clone(&registry),
+                );
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
                 admin_config_rx = Some(tx.subscribe());
@@ -278,11 +335,19 @@ async fn serve(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "config file invalid — falling back to env vars");
-                build_pipeline_from_env(max_concurrent)
+                build_pipeline_from_env(
+                    max_concurrent,
+                    Arc::clone(&credentials),
+                    Arc::clone(&registry),
+                )
             }
         }
     } else {
-        build_pipeline_from_env(max_concurrent)
+        build_pipeline_from_env(
+            max_concurrent,
+            Arc::clone(&credentials),
+            Arc::clone(&registry),
+        )
     };
     // Share request_log Arc between pipeline and admin API.
     if let Some(p) = &mut pipeline {
@@ -343,6 +408,13 @@ async fn serve(
         request_log: Arc::clone(&request_log),
         combo_resolver: None,
         catalog: admin_catalog,
+        logins: account_store.map(|store| {
+            vkdg_admin::handlers::oauth::LoginService::new(
+                Arc::clone(&registry),
+                store,
+                Some(Arc::clone(&credentials)),
+            )
+        }),
     };
     // Console SPA served as fallback on the admin port (9090).
     // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.
@@ -444,7 +516,12 @@ async fn info() -> impl axum::response::IntoResponse {
 
 // ── Pipeline builder — from ConfigSnapshot ────────────────────────────────────
 
-fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) -> PipelineState {
+fn build_pipeline_from_snapshot(
+    snap: &ConfigSnapshot,
+    max_concurrent: usize,
+    credentials: Arc<CredentialManager>,
+    provider_registry: Arc<ProviderRegistry>,
+) -> PipelineState {
     let admission = Arc::new(AdmissionGuard::new(
         snap.limits
             .max_concurrent_requests
@@ -456,10 +533,10 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
         admission,
         router,
         catalog,
-        credentials: Arc::new(CredentialManager::new()),
+        credentials,
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_registry: build_provider_registry(),
+        provider_registry,
         cache: None,
         combo_resolver: None,
         compressor: None,
@@ -478,7 +555,11 @@ fn build_pipeline_from_snapshot(snap: &ConfigSnapshot, max_concurrent: usize) ->
 
 // ── Pipeline builder — from env vars (fallback) ───────────────────────────────
 
-fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
+fn build_pipeline_from_env(
+    max_concurrent: usize,
+    credentials: Arc<CredentialManager>,
+    provider_registry: Arc<ProviderRegistry>,
+) -> Option<PipelineState> {
     let api_key_var = "ANTHROPIC_API_KEY";
     if std::env::var(api_key_var).is_err() {
         eprintln!("ANTHROPIC_API_KEY not set — pipeline disabled, /v1/messages returns 501");
@@ -512,10 +593,10 @@ fn build_pipeline_from_env(max_concurrent: usize) -> Option<PipelineState> {
         admission: Arc::new(AdmissionGuard::new(max_concurrent)),
         router: Arc::new(VkdgRouter::new(vec![route])),
         catalog: Arc::new(ConnectionCatalog::new(vec![config])),
-        credentials: Arc::new(CredentialManager::new()),
+        credentials,
         http_client: Arc::new(HttpClient::new()),
         exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_registry: build_provider_registry(),
+        provider_registry,
         cache: None,
         combo_resolver: None,
         compressor: None,
@@ -552,6 +633,144 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
     r.register(Arc::new(cerebras_provider()));
     r.register(Arc::new(nvidia_nim_provider()));
     Arc::new(r)
+}
+
+/// Credential manager with account auth enabled when the store opened.
+fn build_credentials(
+    store: Option<&Arc<AccountStore>>,
+    registry: &Arc<ProviderRegistry>,
+) -> CredentialManager {
+    let mgr = CredentialManager::new();
+    match store {
+        Some(store) => mgr.with_accounts(Arc::clone(store), Arc::clone(registry) as _),
+        None => mgr,
+    }
+}
+
+// ── Login / accounts ──────────────────────────────────────────────────────────
+
+fn parse_opts(opts: &[String]) -> Result<LoginParams> {
+    opts.iter()
+        .map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.trim().to_owned(), v.to_owned()))
+                .ok_or_else(|| anyhow::anyhow!("--opt expects KEY=VALUE, got '{kv}'"))
+        })
+        .collect()
+}
+
+async fn cmd_login(
+    provider: &str,
+    method: Option<&str>,
+    opts: &[String],
+    code: Option<String>,
+    list_methods: bool,
+) -> Result<()> {
+    let registry = build_provider_registry();
+    let adapter = registry
+        .get(provider)
+        .ok_or_else(|| anyhow::anyhow!("unknown provider '{provider}'"))?;
+    let oauth = adapter
+        .oauth()
+        .ok_or_else(|| anyhow::anyhow!("provider '{provider}' does not support login"))?;
+
+    if list_methods {
+        for m in oauth.login_methods() {
+            println!("{}  ({:?}) {}", m.id, m.flow, m.label);
+            for f in &m.fields {
+                let req = if f.required { "required" } else { "optional" };
+                let def = f
+                    .default
+                    .as_deref()
+                    .map(|d| format!(" [default: {d}]"))
+                    .unwrap_or_default();
+                println!("    --opt {}=...  {} ({req}){def}", f.id, f.label);
+            }
+        }
+        return Ok(());
+    }
+
+    let method = find_login_method(oauth, method)?;
+    let params = resolve_login_params(&method, &parse_opts(opts)?)?;
+
+    let result: LoginResult = match method.flow {
+        OAuthFlow::DeviceCode => {
+            let auth = oauth.start_device_login(&method.id, &params).await?;
+            println!(
+                "Open: {}",
+                auth.verification_uri_complete
+                    .as_deref()
+                    .unwrap_or(&auth.verification_uri)
+            );
+            println!("Code: {}", auth.user_code);
+            println!(
+                "Waiting for approval (expires in {}s)…",
+                auth.expires_in_secs
+            );
+            run_device_login(oauth, &method.id, &auth, tokio::time::sleep).await?
+        }
+        OAuthFlow::AuthorizationCodePkce => {
+            let auth = oauth.start_pkce_login(&method.id, &params).await?;
+            println!("Open: {}", auth.authorize_url);
+            let code = match code {
+                Some(c) => c,
+                None => {
+                    println!("Paste the authorization code or callback URL:");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim().to_owned()
+                }
+            };
+            oauth
+                .finish_pkce_login(&method.id, &auth.state, &code)
+                .await?
+        }
+        OAuthFlow::ImportToken => oauth.import_token(&method.id, &params).await?,
+    };
+
+    let label = if result.label.is_empty() {
+        provider.to_owned()
+    } else {
+        result.label.clone()
+    };
+    let account = Account::from_token_pair(provider, &label, result.tokens);
+    let path = AccountStore::default_path();
+    AccountStore::open(&path)?.upsert(&account)?;
+
+    println!(
+        "Saved account {} ({label}) to {}",
+        account.id,
+        path.display()
+    );
+    println!("\nReference it from your config:\n");
+    println!("connections:\n  - id: {provider}\n    provider: {provider}\n    auth: {{ type: account, account: {} }}\n    models: [\"<model>\"]", account.id);
+    Ok(())
+}
+
+fn cmd_accounts(sub: AccountsSub) -> Result<()> {
+    let store = AccountStore::open(&AccountStore::default_path())?;
+    match sub {
+        AccountsSub::List => {
+            let accounts = store.list()?;
+            if accounts.is_empty() {
+                println!("No accounts. Run `vkdg login <provider>`.");
+            }
+            for a in accounts {
+                let exp = a
+                    .expires_at
+                    .map_or_else(|| "unknown".to_owned(), |t| t.to_rfc3339());
+                println!("{}\t{}\t{}\texpires {exp}", a.id, a.provider, a.label);
+            }
+        }
+        AccountsSub::Remove { id } => {
+            if store.remove(&id)? {
+                println!("Removed {id}");
+            } else {
+                anyhow::bail!("account '{id}' not found");
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Setup wizard ──────────────────────────────────────────────────────────────
@@ -1021,43 +1240,84 @@ fn is_root() -> bool {
 
 // ── Plugin subcommands ────────────────────────────────────────────────────────
 
+use anyhow::Context as _;
+use vkdg_plugin_host::{PluginStore, RegistryIndex, RegistryManifest, DEFAULT_REGISTRY};
+
 fn handle_plugin(sub: PluginSub) {
     use PluginSub::*;
     match sub {
         Search { query, kind } => {
-            let q = query.as_deref().unwrap_or("(all)");
-            let kind_str = kind.map(|k| format!(" [kind={k:?}]")).unwrap_or_default();
-            println!("Searching registry for: {q}{kind_str}");
-            println!();
-            println!("  Registry: https://github.com/vkdprojects/vkdg-registry");
-            println!();
-            println!("  The plugin registry client is coming in Phase 3.");
-            println!(
-                "  For now, browse: https://github.com/vkdprojects/vkdg-registry/tree/main/plugins"
-            );
+            if let Err(e) = plugin_search(query.as_deref().unwrap_or(""), kind.as_ref()) {
+                eprintln!("\x1b[31m✗\x1b[0m {e}");
+                std::process::exit(1);
+            }
         }
-        Install { plugin, .. } => {
-            println!("Plugin install is coming in Phase 3.");
-            println!();
-            println!("  To use a plugin now:");
-            println!("    1. Download the .wasm file");
-            println!("    2. Drop it in ~/.config/vkdg/plugins/{plugin}/");
-            println!("    3. Add 'plugins: [{plugin}]' to your vkdg.yaml");
+        Install {
+            plugin,
+            registry_ref,
+        } => {
+            if let Err(e) = plugin_install(&plugin, &registry_ref) {
+                eprintln!("\x1b[31m✗\x1b[0m {e}");
+                std::process::exit(1);
+            }
         }
         List => {
-            println!("Installed plugins: (none — plugin manager coming in Phase 3)");
+            let store = PluginStore::from_env();
+            match store.list() {
+                Err(e) => {
+                    eprintln!(
+                        "\x1b[31m✗\x1b[0m cannot read {}: {e}",
+                        store.root().display()
+                    );
+                    std::process::exit(1);
+                }
+                Ok(installed) if installed.is_empty() => {
+                    println!("No plugins installed in {}.", store.root().display());
+                    println!();
+                    println!("  Install one with:  vkdg plugin install <name|url|path>");
+                }
+                Ok(installed) => {
+                    println!("Installed plugins ({}):", store.root().display());
+                    for p in &installed {
+                        let m = &p.manifest;
+                        println!("  {:<24} {:<10} {:?}", m.name, m.version, m.kind);
+                        if !m.models.is_empty() {
+                            println!("  {:<24} models: {}", "", m.models.join(", "));
+                        }
+                    }
+                }
+            }
             println!();
             println!("  Built-in providers (no install needed):");
             println!("    anthropic, openai, gemini, groq, deepseek, mistral, together, fireworks");
             println!("    claude-code, codex, kiro, kimi-coding, github-copilot, antigravity");
         }
         Remove { name } => {
-            println!(
-                "Plugin manager coming in Phase 3. Remove {name} manually from ~/.config/vkdg/plugins/"
-            );
+            let store = PluginStore::from_env();
+            match store.remove(&name) {
+                Ok(()) => println!("\x1b[32m✓\x1b[0m removed {name}"),
+                Err(e) => {
+                    eprintln!("\x1b[31m✗\x1b[0m {e}");
+                    std::process::exit(1);
+                }
+            }
         }
         Update => {
-            println!("Plugin manager coming in Phase 3.");
+            // Updating means re-resolving each manifest against its source, which
+            // needs the registry client; refuse clearly rather than no-op.
+            let store = PluginStore::from_env();
+            let installed = store.list().unwrap_or_default();
+            if installed.is_empty() {
+                println!("No plugins installed.");
+            } else {
+                println!("Re-install to update:");
+                for p in &installed {
+                    println!(
+                        "  vkdg plugin install {}   (currently {})",
+                        p.manifest.name, p.manifest.version
+                    );
+                }
+            }
         }
         Tap { repo, list } => {
             if list {
@@ -1068,16 +1328,191 @@ fn handle_plugin(sub: PluginSub) {
         }
         ValidateManifest { path } => match std::fs::read_to_string(&path) {
             Err(e) => {
-                eprintln!("Error reading {path}: {e}");
+                eprintln!("\x1b[31m✗\x1b[0m cannot read {path}: {e}");
                 std::process::exit(1);
             }
-            Ok(content) => match serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                Ok(_) => println!("✓ {path}: valid YAML"),
+            // Validate against the published schema, not just YAML syntax: this is
+            // what the registry bot runs, so an author sees the same verdict locally.
+            Ok(content) => match RegistryManifest::from_yaml(&content) {
+                Ok(m) => {
+                    println!(
+                        "\x1b[32m✓\x1b[0m {path}: {} {} ({:?})",
+                        m.name, m.version, m.kind
+                    );
+                    if !m.installs_without_rebuild() {
+                        println!("  note: ships as a Rust crate, so it needs a gateway rebuild");
+                    }
+                }
                 Err(e) => {
-                    eprintln!("✗ {path}: invalid YAML: {e}");
+                    eprintln!("\x1b[31m✗\x1b[0m {path}: {e}");
                     std::process::exit(1);
                 }
             },
         },
     }
+}
+
+/// Install a plugin from a local directory, a manifest file, or a URL.
+///
+/// Accepted forms:
+/// - a directory containing `manifest.yaml` (+ `plugin.wasm` for wasm plugins)
+/// - a path to a manifest `.yaml`
+/// - an `https://` URL to a manifest `.yaml`
+///
+/// A wasm artefact is fetched from the manifest's `install.wasm` and checked
+/// against its checksum before anything is written.
+fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
+    let store = PluginStore::from_env();
+    let (manifest, local_wasm) = load_manifest(source, registry_ref)?;
+
+    let wasm = match manifest.source_kind() {
+        Ok(vkdg_plugin_host::SourceKind::Wasm) => match local_wasm {
+            Some(bytes) => Some(bytes),
+            None => {
+                let url = manifest
+                    .install
+                    .wasm
+                    .as_deref()
+                    .context("manifest declares a wasm install without a URL")?;
+                println!("Fetching {url}");
+                Some(fetch_bytes(url)?)
+            }
+        },
+        _ => None,
+    };
+
+    let installed = store
+        .install(&manifest, wasm.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!(
+        "\x1b[32m✓\x1b[0m installed {} {} to {}",
+        installed.manifest.name,
+        installed.manifest.version,
+        installed.dir.display()
+    );
+    if let Some(snippet) = &installed.manifest.install.config_snippet {
+        println!();
+        println!("Add to your config:");
+        for line in snippet.lines() {
+            println!("  {line}");
+        }
+    } else {
+        println!();
+        println!("Reference it in your config:");
+        println!("  plugins: [{}]", installed.manifest.name);
+    }
+    Ok(())
+}
+
+/// Resolve a source into a manifest, plus component bytes when they are already
+/// local (an installed directory needs no download).
+fn load_manifest(source: &str, registry_ref: &str) -> Result<(RegistryManifest, Option<Vec<u8>>)> {
+    let path = std::path::Path::new(source);
+
+    if path.is_dir() {
+        let manifest_path = path.join("manifest.yaml");
+        let yaml = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("reading {}", manifest_path.display()))?;
+        let manifest = RegistryManifest::from_yaml(&yaml).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let wasm_path = path.join("plugin.wasm");
+        let wasm = wasm_path
+            .is_file()
+            .then(|| std::fs::read(&wasm_path))
+            .transpose()?;
+        return Ok((manifest, wasm));
+    }
+    if path.is_file() {
+        let yaml =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let manifest = RegistryManifest::from_yaml(&yaml).map_err(|e| anyhow::anyhow!("{e}"))?;
+        // A manifest beside its component: common when testing a local build.
+        let sibling = path.with_file_name("plugin.wasm");
+        let wasm = sibling
+            .is_file()
+            .then(|| std::fs::read(&sibling))
+            .transpose()?;
+        return Ok((manifest, wasm));
+    }
+    if source.starts_with("https://") || source.starts_with("http://") {
+        let yaml = String::from_utf8(fetch_bytes(source)?)
+            .context("manifest at that URL is not valid UTF-8")?;
+        let manifest = RegistryManifest::from_yaml(&yaml).map_err(|e| anyhow::anyhow!("{e}"))?;
+        return Ok((manifest, None));
+    }
+
+    // A bare name (optionally name@version) resolves through the registry index.
+    let (name, wanted_version) = match source.split_once('@') {
+        Some((n, v)) => (n, Some(v)),
+        None => (source, None),
+    };
+    let index = fetch_index(DEFAULT_REGISTRY, registry_ref)?;
+    let entry = index.get(name).with_context(|| {
+        format!("no plugin named {name:?} in {DEFAULT_REGISTRY}; try `vkdg plugin search {name}`")
+    })?;
+    if let Some(v) = wanted_version {
+        if entry.version != v {
+            anyhow::bail!(
+                "{name} is at {} in the registry, not {v}; pin a version by installing its manifest URL directly",
+                entry.version
+            );
+        }
+    }
+    let url = vkdg_plugin_host::registry_index::manifest_url(
+        DEFAULT_REGISTRY,
+        registry_ref,
+        &entry.manifest_path,
+    );
+    let yaml = String::from_utf8(fetch_bytes(&url)?).context("manifest is not valid UTF-8")?;
+    let manifest = RegistryManifest::from_yaml(&yaml).map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok((manifest, None))
+}
+
+/// Fetch and validate a registry index.
+fn fetch_index(registry: &str, git_ref: &str) -> Result<RegistryIndex> {
+    let url = vkdg_plugin_host::registry_index::index_url(registry, git_ref);
+    let json = String::from_utf8(fetch_bytes(&url)?).context("index is not valid UTF-8")?;
+    RegistryIndex::from_json(&json).map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Search the registry index.
+fn plugin_search(query: &str, kind: Option<&PluginKind>) -> Result<()> {
+    let index = fetch_index(DEFAULT_REGISTRY, "main")?;
+    let hits = index.search(query, kind.map(manifest_kind_of));
+    if hits.is_empty() {
+        let shown = if query.is_empty() { "(all)" } else { query };
+        println!("No plugins matching {shown} in {DEFAULT_REGISTRY}.");
+        return Ok(());
+    }
+    println!("{} plugin(s) in {DEFAULT_REGISTRY}:", hits.len());
+    for e in hits {
+        println!("  {:<24} {:<10} {}", e.name, e.version, e.description);
+        if !e.tags.is_empty() {
+            println!("  {:<24} tags: {}", "", e.tags.join(", "));
+        }
+    }
+    println!();
+    println!("  Install with:  vkdg plugin install <name>");
+    Ok(())
+}
+
+/// Map the CLI's kind flag onto the manifest schema's kind.
+fn manifest_kind_of(kind: &PluginKind) -> vkdg_plugin_host::PluginManifestKind {
+    use vkdg_plugin_host::PluginManifestKind as K;
+    match kind {
+        PluginKind::Provider => K::Provider,
+        PluginKind::OauthProvider => K::OauthProvider,
+        PluginKind::FilterPack => K::FilterPack,
+        PluginKind::Compressor => K::Compressor,
+        PluginKind::Router => K::Router,
+    }
+}
+
+fn fetch_bytes(url: &str) -> Result<Vec<u8>> {
+    let resp = reqwest::blocking::get(url).with_context(|| format!("fetching {url}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("fetching {url} returned HTTP {status}");
+    }
+    Ok(resp.bytes()?.to_vec())
 }

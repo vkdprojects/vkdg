@@ -7,7 +7,7 @@
   import { m } from '$lib/paraglide/messages.js';
   import { getLocale, setLocale } from '$lib/paraglide/runtime.js';
   import { Toaster } from 'svelte-sonner';
-  import { Home, Plug, Combine, Route, List, Gamepad2, Key, Settings } from 'lucide-svelte';
+  import { Home, Plug, Combine, Route, List, Gamepad2, Key, Settings, Puzzle } from 'lucide-svelte';
   import { Logo } from '$lib/components/index.js';
   import { api } from '$lib/api.js';
   import type { SessionUser, SystemInfo } from '$lib/api.js';
@@ -41,6 +41,7 @@
       label: 'MANAGE',
       items: [
         { href: '/keys', icon: Key, label: () => m.nav_keys() },
+        { href: '/plugins', icon: Puzzle, label: () => 'Plugins' },
         { href: '/settings', icon: Settings, label: () => m.nav_settings() },
       ],
     },

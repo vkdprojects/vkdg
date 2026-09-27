@@ -92,6 +92,16 @@ export interface ComboSummary {
   has_budget: boolean;
 }
 
+export interface PluginSummary {
+  name: string;
+  version: string;
+  kind: string;
+  description: string;
+  tags: string[];
+  models: string[];
+  removable: boolean;
+}
+
 // ── Endpoints ──────────────────────────────────────────────────────────────
 export const api = {
   system: () =>
@@ -120,4 +130,13 @@ export const api = {
     req<RequestSummary>('GET', `/admin/v1/requests/${id}`),
   listCombos: () =>
     req<{ items: ComboSummary[]; total: number }>('GET', '/admin/v1/combos'),
+  listPlugins: () =>
+    req<{ items: PluginSummary[]; total: number; directory: string }>('GET', '/admin/v1/plugins'),
+  installPlugin: (manifest: string, wasmBase64?: string) =>
+    req<{ name: string; version: string; directory: string }>('POST', '/admin/v1/plugins', {
+      manifest,
+      wasm_base64: wasmBase64,
+    }),
+  removePlugin: (name: string) =>
+    req<void>('DELETE', `/admin/v1/plugins/${encodeURIComponent(name)}`),
 };

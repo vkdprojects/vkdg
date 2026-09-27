@@ -19,8 +19,10 @@ vkdg-ingress-anthropic = { workspace = true }
 vkdg-ingress-openai     = { workspace = true }
 axum                   = { workspace = true }
 vkdg-operations        = { workspace = true }
+vkdg-plugin-host       = { workspace = true }
 serde_json       = { workspace = true }
 anyhow           = { workspace = true }
+reqwest          = { workspace = true }
 tokio            = { workspace = true }
 clap             = { workspace = true }
 tracing          = { workspace = true }
@@ -49,7 +51,6 @@ rust-embed  = { workspace = true }
 axum-embed  = { workspace = true }
 inquire     = { workspace = true }
 self_update = { workspace = true }
-serde_yaml  = { workspace = true }
 console     = { workspace = true }
 indicatif   = { workspace = true }
 

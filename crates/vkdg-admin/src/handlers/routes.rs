@@ -211,6 +211,7 @@ mod tests {
             request_log: RequestLog::new(),
             combo_resolver: None,
             catalog: None,
+            logins: None,
         }
     }
 
@@ -247,6 +248,7 @@ mod tests {
             request_log: RequestLog::new(),
             combo_resolver: None,
             catalog: None,
+            logins: None,
         }
     }
 

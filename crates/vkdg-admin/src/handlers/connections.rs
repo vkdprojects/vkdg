@@ -85,6 +85,7 @@ mod tests {
             request_log: crate::handlers::requests::RequestLog::new(),
             combo_resolver: None,
             catalog: None,
+            logins: None,
         }
     }
 
@@ -129,6 +130,7 @@ mod tests {
             request_log: crate::handlers::requests::RequestLog::new(),
             combo_resolver: None,
             catalog: None,
+            logins: None,
         };
 
         let mut headers = HeaderMap::new();

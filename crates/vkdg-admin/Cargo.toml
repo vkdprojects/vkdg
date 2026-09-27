@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 vkdg-core        = { workspace = true }
 vkdg-connections = { workspace = true }
+vkdg-plugin-host = { workspace = true }
 vkdg-config      = { workspace = true }
 axum             = { workspace = true }
 tokio            = { workspace = true }
@@ -17,6 +18,11 @@ uuid             = { workspace = true }
 chrono           = { workspace = true }
 vkdg-combos     = { workspace = true }
 parking_lot      = { workspace = true }
+vkdg-provider-sdk = { workspace = true }
+
+[dev-dependencies]
+futures          = { workspace = true }
+vkdg-operations  = { workspace = true }
 
 [lib]
 doctest = false

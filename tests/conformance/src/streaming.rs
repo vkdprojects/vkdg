@@ -337,6 +337,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),

@@ -46,6 +46,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),

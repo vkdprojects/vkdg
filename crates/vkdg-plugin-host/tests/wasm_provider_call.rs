@@ -105,6 +105,7 @@ fn connection() -> ConnectionConfig {
 
 fn operation() -> Operation {
     Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("hello".into()),

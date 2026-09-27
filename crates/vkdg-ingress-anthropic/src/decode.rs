@@ -58,6 +58,7 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         .collect();
 
     let operation = Operation::Conversation(ConversationRequest {
+        model: req.model.clone(),
         messages,
         tools,
         max_tokens: req.max_tokens,

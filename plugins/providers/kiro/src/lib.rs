@@ -63,9 +63,9 @@ impl ProviderAdapter for KiroAdapter {
             region::runtime_region(profile_arn, extra.get("oidc_region").map(String::as_str));
         let kind = EndpointKind::for_auth_method(auth_method);
 
-        // The pipeline does not pass the client's requested model into prepare(),
-        // so the connection's first pattern names the model, as in every adapter.
-        let model_id = models::resolve_model_id(config.models.first().map(String::as_str));
+        // The model the client asked for. The connection's `models` list holds
+        // route patterns, so falling back to it would send a glob upstream.
+        let model_id = models::resolve_model_id(Some(conv.model.as_str()));
 
         let body = KiroRequestBody {
             conversation_state: build_conversation_state(conv, &model_id, kind.origin()),

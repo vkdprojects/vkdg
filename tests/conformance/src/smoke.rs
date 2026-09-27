@@ -83,6 +83,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -114,6 +115,7 @@ fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -708,6 +710,7 @@ fn context_relay_injects_history_on_account_rotation() {
     use vkdg_http::pipeline::phases::relay_on_rotation;
 
     let mut op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![
             Message {
                 role: Role::User,

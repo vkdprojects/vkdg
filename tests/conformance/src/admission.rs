@@ -206,6 +206,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         client_ip: Some("1.2.3.4".into()), // NOT in allowlist
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("hi".into()),

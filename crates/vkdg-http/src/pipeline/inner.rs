@@ -837,6 +837,7 @@ mod tests {
 
     fn make_conv_op() -> Operation {
         Operation::Conversation(ConversationRequest {
+            model: "test-model".into(),
             messages: vec![],
             tools: vec![],
             max_tokens: Some(100),
@@ -1080,6 +1081,7 @@ mod tests {
         // and estimated_cost_microdollars (tokens * 3) > 0 = max_cost.
         use vkdg_operations::{Message, MessageContent, Role};
         let op = Operation::Conversation(ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text("hello world".into()),

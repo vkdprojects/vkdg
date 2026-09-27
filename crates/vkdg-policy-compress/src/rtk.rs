@@ -113,6 +113,7 @@ mod tests {
 
     fn tool_result_req(content: &str) -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::Tool,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {

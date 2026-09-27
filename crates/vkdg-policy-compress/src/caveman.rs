@@ -120,6 +120,7 @@ mod tests {
 
     fn make_req(text: &str) -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text(text.into()),

@@ -93,6 +93,12 @@ pub struct Tool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationRequest {
+    /// Model the client asked for, as written on the wire.
+    ///
+    /// A connection's `models` list holds route patterns (`claude-*`), not model
+    /// ids, so an adapter that read it would send a glob upstream. This carries the
+    /// actual request through to `prepare`.
+    pub model: String,
     pub messages: Vec<Message>,
     pub tools: Vec<Tool>,
     pub max_tokens: Option<u32>,

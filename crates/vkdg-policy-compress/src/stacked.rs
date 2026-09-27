@@ -106,6 +106,7 @@ mod tests {
         use vkdg_operations::{CapabilitySet, ConversationRequest, Message, MessageContent, Role};
         let c = StackedCompressor::rtk_caveman();
         let req = ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text(

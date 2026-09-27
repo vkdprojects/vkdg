@@ -158,11 +158,17 @@ pub(crate) fn build_video_generate_body(req: &VideoGenerateRequest) -> Bytes {
 
 /// Serialise a [`ConversationRequest`] to an OpenAI Chat Completions JSON body.
 fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "gpt-4o".into());
+    // The model the client asked for. `config.models` holds route patterns, so a
+    // connection matching `gpt-*` would otherwise send that glob upstream.
+    let model = if req.model.is_empty() {
+        config
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "gpt-4o".into())
+    } else {
+        req.model.clone()
+    };
 
     // Prepend system prompt as a role:system message when present.
     let mut messages: Vec<Value> = Vec::new();
@@ -348,6 +354,7 @@ mod tests {
 
     fn simple_request() -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text("hello".into()),
@@ -361,15 +368,29 @@ mod tests {
         }
     }
 
-    /// A basic request should produce model and messages fields in the JSON body.
+    /// Refutes: sending `config.models.first()` as the model id. That list holds
+    /// route patterns, so a connection matching `gpt-*` would send the glob
+    /// upstream, and a multi-model connection would pin every call to its first
+    /// entry regardless of what the client asked for.
     #[test]
-    fn prepare_basic_body() {
+    fn body_uses_the_model_the_client_asked_for() {
         let req = simple_request();
         let body = build_body(&req, &openai_config());
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["model"], "gpt-4o");
+        assert_eq!(v["model"], "test-model", "the request's model must win");
         assert_eq!(v["messages"][0]["role"], "user");
         assert_eq!(v["messages"][0]["content"], "hello");
+    }
+
+    /// Refutes: sending an empty model when a caller omitted it; the connection's
+    /// first entry is the only sensible fallback there.
+    #[test]
+    fn empty_model_falls_back_to_the_connection() {
+        let mut req = simple_request();
+        req.model = String::new();
+        let body = build_body(&req, &openai_config());
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["model"], "gpt-4o");
     }
 
     /// system Some(s) must appear as first message with role:system.

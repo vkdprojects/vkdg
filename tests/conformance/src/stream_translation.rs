@@ -185,6 +185,7 @@ async fn client_stream(api_type: ApiType) -> String {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("weather in Paris?".into()),

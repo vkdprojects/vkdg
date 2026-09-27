@@ -128,6 +128,7 @@ mod tests {
 
     fn make_req(messages: Vec<Message>) -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages,
             tools: vec![],
             max_tokens: None,

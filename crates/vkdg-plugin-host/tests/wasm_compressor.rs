@@ -73,6 +73,7 @@ fn bare_component() -> Vec<u8> {
 
 fn request() -> ConversationRequest {
     ConversationRequest {
+        model: "test-model".into(),
         messages: vec![
             Message {
                 role: Role::User,

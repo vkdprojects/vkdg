@@ -24,6 +24,7 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
         })
         .collect();
     Operation::Conversation(ConversationRequest {
+        model: "bench-model".into(),
         messages,
         tools: vec![],
         max_tokens: Some(100),

@@ -233,6 +233,7 @@ mod tests {
                 match_models: vec!["claude-*".into()],
                 strategy: "round_robin".into(),
                 targets: vec!["conn-a".into()],
+                hooks: Default::default(),
             }],
             limits: None,
             observe: None,

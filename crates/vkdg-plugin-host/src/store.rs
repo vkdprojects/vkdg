@@ -93,6 +93,33 @@ impl InstalledPlugin {
     }
 }
 
+/// Load every installed auth plugin that ships a component, reporting each
+/// failure by name like [`PluginStore::load_providers`].
+impl PluginStore {
+    pub fn load_auth(&self) -> Vec<(String, Result<crate::WasmAuth, String>)> {
+        let scanned = match self.scan() {
+            Ok(list) => list,
+            Err(e) => return vec![(self.root.display().to_string(), Err(e.to_string()))],
+        };
+        scanned
+            .into_iter()
+            .filter_map(|(dir, parsed)| match parsed {
+                Err(e) => Some((dir, Err(e.to_string()))),
+                Ok(p) if role_for(&p.manifest) != PluginRole::Auth => None,
+                Ok(p) => {
+                    let path = p.wasm_path()?;
+                    let manifest = p.host_manifest();
+                    let loaded = fs::read(&path)
+                        .map_err(|e| format!("read {}: {e}", path.display()))
+                        .and_then(|b| crate::WasmPluginInstance::from_bytes(&b, &manifest))
+                        .map(|i| crate::WasmAuth::new(std::sync::Arc::new(i), &manifest));
+                    Some((p.manifest.name.clone(), loaded))
+                }
+            })
+            .collect()
+    }
+}
+
 fn load_provider(
     plugin: &InstalledPlugin,
     path: &Path,

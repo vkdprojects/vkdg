@@ -4,6 +4,7 @@ pub mod auth;
 pub mod dedup;
 pub mod external_service;
 pub mod frontdoor;
+pub mod hooks;
 pub mod metering;
 pub mod pipeline;
 pub mod provider;

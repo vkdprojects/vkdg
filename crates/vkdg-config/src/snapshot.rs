@@ -5,7 +5,7 @@ use tokio::sync::watch;
 use vkdg_connections::{AuthKind, ConnectionConfig, ProviderKind};
 use vkdg_core::net::{parse_ip_list, IpRules};
 use vkdg_core::{CapabilitySet, ConnectionId};
-use vkdg_routing::{PluginHooks, RouteConfig, RouteId, StrategyKind};
+use vkdg_routing::{RouteConfig, RouteId, StrategyKind};
 
 use crate::error::ConfigError;
 use crate::schema::{GatewayConfig, LimitsDef, ObserveDef};
@@ -220,7 +220,7 @@ fn build_routes(
                 .iter()
                 .map(|t| ConnectionId(t.clone()))
                 .collect(),
-            plugin_hooks: PluginHooks::default(),
+            plugin_hooks: def.hooks.clone(),
         });
     }
 

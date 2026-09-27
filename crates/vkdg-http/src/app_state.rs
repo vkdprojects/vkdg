@@ -58,6 +58,9 @@ pub struct PipelineState {
     pub ip_policy: Option<Arc<IpPolicy>>,
     /// Optional admin request log.  None = request logging disabled.
     pub request_log: Option<Arc<RequestLog>>,
+    /// Plugins named by route `hooks`. A route naming a hook absent here is
+    /// denied, never skipped.
+    pub hooks: Arc<crate::hooks::HookRegistry>,
 }
 
 impl PipelineState {
@@ -93,6 +96,7 @@ impl PipelineState {
             eval_enabled: false,
             relay_enabled: false,
             request_log: None,
+            hooks: Arc::default(),
         }
     }
 }

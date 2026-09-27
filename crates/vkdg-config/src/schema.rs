@@ -54,6 +54,9 @@ pub struct RouteDef {
     pub strategy: String,
     /// Connection ids.
     pub targets: Vec<String>,
+    /// Plugin hooks for this route, e.g. `hooks: { auth: [my-sso] }`.
+    #[serde(default)]
+    pub hooks: vkdg_routing::PluginHooks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

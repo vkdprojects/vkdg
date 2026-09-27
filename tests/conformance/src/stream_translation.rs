@@ -157,6 +157,7 @@ fn make_pipeline(base_url: String) -> Arc<PipelineState> {
         eval_enabled: false,
         relay_enabled: false,
         request_log: None,
+        hooks: Default::default(),
     })
 }
 

@@ -88,6 +88,7 @@ impl Router {
                 excluded,
                 fusion_targets,
                 chain_steps: vec![],
+                hooks: route.plugin_hooks.clone(),
             });
         }
         // PromptChain is handled separately — it builds chain_steps directly.
@@ -133,6 +134,7 @@ impl Router {
                 excluded,
                 fusion_targets: vec![],
                 chain_steps: steps.clone(),
+                hooks: route.plugin_hooks.clone(),
             });
         }
 
@@ -183,6 +185,7 @@ impl Router {
             excluded,
             fusion_targets: vec![],
             chain_steps: vec![],
+            hooks: route.plugin_hooks.clone(),
         })
     }
 

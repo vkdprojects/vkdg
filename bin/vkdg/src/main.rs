@@ -360,12 +360,16 @@ async fn serve(
         match load_and_validate(path, 1) {
             Ok(snap) => {
                 tracing::info!(path = %path, version = snap.version, "loaded config from file");
-                let pipeline = build_pipeline_from_snapshot(
+                let mut pipeline = build_pipeline_from_snapshot(
                     &snap,
                     max_concurrent,
                     Arc::clone(&credentials),
                     Arc::clone(&registry),
                 );
+                pipeline.hooks = Arc::new(build_hook_registry());
+                // Refuse to start on a route naming a hook that is not installed,
+                // exactly as a reload with one is refused.
+                unknown_hooks(&snap, &pipeline.hooks).map_err(anyhow::Error::msg)?;
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
                 admin_config_rx = Some(tx.subscribe());
@@ -596,6 +600,7 @@ fn build_pipeline_from_snapshot(
         eval_enabled: false,
         relay_enabled: false,
         request_log: None,
+        hooks: Default::default(),
     }
 }
 
@@ -656,6 +661,7 @@ fn build_pipeline_from_env(
         eval_enabled: false,
         relay_enabled: false,
         request_log: None,
+        hooks: Default::default(),
     })
 }
 
@@ -845,6 +851,7 @@ fn cmd_accounts(sub: AccountsSub) -> Result<()> {
 /// trackers) is kept, so a reload never resets capacity accounting. The
 /// watcher already rejects invalid files, so this only ever sees valid ones.
 fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState) {
+    let hooks = Arc::clone(&pipeline.hooks);
     let router = Arc::clone(&pipeline.router);
     let catalog = Arc::clone(&pipeline.catalog);
     let ip_policy = pipeline.ip_policy.clone();
@@ -853,6 +860,12 @@ fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState)
     tokio::spawn(async move {
         while rx.changed().await.is_ok() {
             let snap = Arc::clone(&rx.borrow_and_update());
+            // Invariant 7: a reload applies whole or not at all. A route naming
+            // a missing hook rejects the entire snapshot before anything moves.
+            if let Err(e) = unknown_hooks(&snap, &hooks) {
+                tracing::warn!(version = snap.version, error = %e, "config reload rejected — keeping current snapshot");
+                continue;
+            }
             catalog.apply(snap.connections.as_ref().clone()).await;
             router.replace_routes(snap.routes.as_ref().clone());
             if let Some(policy) = &ip_policy {
@@ -861,6 +874,63 @@ fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState)
             tracing::info!(version = snap.version, "config applied to data plane");
         }
     });
+}
+
+// ── Route hooks ───────────────────────────────────────────────────────────────
+
+/// Adapts an installed auth plugin to the pipeline's hook contract. The plugin
+/// gets identity fields only (see `vkdg_http::hooks::HookRequest`), never the
+/// client's headers or key.
+struct WasmAuthHook(vkdg_plugin_host::WasmAuth);
+
+impl vkdg_http::hooks::AuthHook for WasmAuthHook {
+    fn check(&self, request: &vkdg_http::hooks::HookRequest) -> vkdg_http::hooks::HookVerdict {
+        use vkdg_http::hooks::HookVerdict;
+        use vkdg_plugin_host::{AuthOutcome, AuthPlugin};
+        let Ok(json) = serde_json::to_string(request) else {
+            return HookVerdict::Deny("could not serialise hook request".into());
+        };
+        match self.0.authenticate(&json) {
+            AuthOutcome::Allowed(_) => HookVerdict::Allow,
+            AuthOutcome::Denied(reason) => HookVerdict::Deny(reason),
+        }
+    }
+}
+
+/// Auth plugins installed on this gateway, by plugin name. Broken ones are
+/// logged and left out, so routes naming them are refused at load.
+fn build_hook_registry() -> vkdg_http::hooks::HookRegistry {
+    let mut reg = vkdg_http::hooks::HookRegistry::default();
+    for (name, loaded) in vkdg_plugin_host::PluginStore::from_env().load_auth() {
+        match loaded {
+            Ok(auth) => {
+                tracing::info!(plugin = %name, "loaded WASM auth plugin");
+                reg.register_auth(name, Arc::new(WasmAuthHook(auth)));
+            }
+            Err(e) => {
+                tracing::error!(plugin = %name, error = %e, "WASM auth plugin failed to load; skipped")
+            }
+        }
+    }
+    reg
+}
+
+/// Every route hook id must name a loaded plugin.
+fn unknown_hooks(
+    snap: &ConfigSnapshot,
+    hooks: &vkdg_http::hooks::HookRegistry,
+) -> Result<(), String> {
+    for route in snap.routes.iter() {
+        for id in &route.plugin_hooks.auth {
+            if !hooks.has_auth(id) {
+                return Err(format!(
+                    "routes[{}].hooks.auth: plugin {id:?} is not an installed auth plugin",
+                    route.id.0
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Data-plane API keys ───────────────────────────────────────────────────────

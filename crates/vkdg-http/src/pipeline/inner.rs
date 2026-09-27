@@ -159,10 +159,28 @@ pub(super) async fn run_pipeline_inner(
                 excluded: vec![],
                 fusion_targets: vec![],
                 chain_steps: vec![],
+                hooks: Default::default(),
             }
         }
         Err(e) => return Err(e),
     };
+    // Route hooks run before any dispatch path, fusion and chains included.
+    if !route_result.hooks.auth.is_empty() {
+        pipeline
+            .hooks
+            .authorize(
+                &route_result.hooks.auth,
+                crate::hooks::HookRequest {
+                    key_id: ctx.envelope.client_id.0.clone(),
+                    tenant_id: ctx.envelope.tenant_id.0.clone(),
+                    client_ip: ctx.envelope.client_ip,
+                    model: ctx.envelope.model_requested.clone(),
+                    route_id: route_result.route_id.0.clone(),
+                },
+            )
+            .await?;
+    }
+
     // Fusion fast-path: fan-out to all targets in parallel, return first success.
     if route_result.fusion_targets.len() > 1 {
         return run_fusion_dispatch(
@@ -1157,6 +1175,121 @@ mod tests {
             resp.status(),
             http::StatusCode::INTERNAL_SERVER_ERROR,
             "adapter prepare() returning Err must produce 500, not panic"
+        );
+    }
+
+    use vkdg_routing::{RouteConfig, StrategyKind};
+
+    struct Fixed(
+        crate::hooks::HookVerdict,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    );
+    impl crate::hooks::AuthHook for Fixed {
+        fn check(&self, r: &crate::hooks::HookRequest) -> crate::hooks::HookVerdict {
+            self.1
+                .lock()
+                .unwrap()
+                .push(serde_json::to_string(r).unwrap());
+            self.0.clone()
+        }
+    }
+
+    fn hooked_pipeline(
+        strategy: StrategyKind,
+        hooks: &[&str],
+    ) -> (Arc<PipelineState>, Arc<std::sync::Mutex<Vec<String>>>) {
+        use crate::hooks::{HookRegistry, HookVerdict};
+        let ids: Vec<ConnectionId> = ["h1", "h2"]
+            .iter()
+            .map(|i| ConnectionId((*i).into()))
+            .collect();
+        let conns = ids
+            .iter()
+            .map(|id| vkdg_connections::ConnectionConfig {
+                id: id.clone(),
+                provider: vkdg_connections::ProviderKind::Custom {
+                    base_url: "http://127.0.0.1:1".into(),
+                },
+                auth: vkdg_connections::AuthKind::ApiKey {
+                    env_var: "UNUSED".into(),
+                },
+                models: vec!["hooked".into()],
+                max_concurrent: 10,
+                weight: 1,
+                tags: vec![],
+                capabilities: CapabilitySet::default(),
+            })
+            .collect();
+        let route = RouteConfig {
+            id: RouteId("guarded".into()),
+            match_models: vec!["hooked".into()],
+            strategy,
+            targets: ids,
+            plugin_hooks: vkdg_routing::PluginHooks {
+                auth: hooks.iter().map(|h| (*h).to_owned()).collect(),
+            },
+        };
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut reg = HookRegistry::default();
+        reg.register_auth(
+            "allow",
+            Arc::new(Fixed(HookVerdict::Allow, Arc::clone(&seen))),
+        );
+        reg.register_auth(
+            "deny",
+            Arc::new(Fixed(HookVerdict::Deny("nope".into()), Arc::clone(&seen))),
+        );
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
+        let mut p = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(10)),
+            Arc::new(VkdgRouter::new(vec![route])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        );
+        p.hooks = Arc::new(reg);
+        (Arc::new(p), seen)
+    }
+
+    // Found in review: route hooks were parsed and never run.
+    #[tokio::test]
+    async fn route_auth_hook_denial_is_forbidden_on_every_dispatch_path() {
+        for strategy in [
+            StrategyKind::RoundRobin,
+            StrategyKind::Fusion {
+                max_candidates: None,
+            },
+        ] {
+            let (p, _) = hooked_pipeline(strategy.clone(), &["allow", "deny"]);
+            let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+            assert_eq!(resp.status(), http::StatusCode::FORBIDDEN, "{strategy:?}");
+        }
+    }
+
+    // A hook that is not installed must deny, not be skipped.
+    #[tokio::test]
+    async fn unknown_route_hook_denies() {
+        let (p, _) = hooked_pipeline(StrategyKind::RoundRobin, &["not-installed"]);
+        let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+        assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+    }
+
+    // Allowed requests go on to dispatch; the hook sees identity, not secrets.
+    #[tokio::test]
+    async fn allowing_hook_passes_and_sees_no_credentials() {
+        let (p, seen) = hooked_pipeline(StrategyKind::RoundRobin, &["allow"]);
+        let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+        assert_ne!(resp.status(), http::StatusCode::FORBIDDEN);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("\"route_id\":\"guarded\""), "{}", seen[0]);
+        assert!(
+            !seen[0].to_lowercase().contains("api-key") && !seen[0].contains("vkdg_"),
+            "{}",
+            seen[0]
         );
     }
 }

@@ -754,37 +754,60 @@ impl OAuthProvider for KiroAdapter {
 
 // ── Social device flow (Google / GitHub via the Kiro auth service) ────────────
 
+/// Normalises a login provider to the enum the service accepts.
+///
+/// The endpoint validates against exactly `[Github, Cognito, Google]` — `GitHub`
+/// with a capital H is rejected — so a user-supplied value is mapped rather than
+/// forwarded.
+fn social_login_provider(input: &str) -> &'static str {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "github" => "Github",
+        "cognito" | "builder-id" | "builderid" => "Cognito",
+        _ => "Google",
+    }
+}
+
 async fn start_social_device_login(
     params: &LoginParams,
 ) -> Result<DeviceAuthorization, ProviderError> {
-    let provider = get(params, "provider").unwrap_or("Google");
+    let provider = social_login_provider(get(params, "provider").unwrap_or("Google"));
     let (ok, value) = json_post(
         SOCIAL_DEVICE_AUTHORIZE_URL,
-        &json!({ "clientId": SOCIAL_CLIENT_ID, "provider": provider }),
+        // The field is `loginProvider`; `provider` is rejected as a null member.
+        &json!({ "clientId": SOCIAL_CLIENT_ID, "loginProvider": provider }),
     )
     .await?;
     if !ok {
         return Err(ProviderError::Http(format!(
             "kiro social device authorization failed: {}",
-            error_code(&value)
+            // This service reports validation failures in `message`.
+            str_field(&value, "message")
+                .map(|m| m.to_owned())
+                .unwrap_or_else(|| error_code(&value))
         )));
     }
 
     let device_code = str_field(&value, "deviceCode")
         .ok_or_else(|| ProviderError::Http("social authorization returned no deviceCode".into()))?;
-    let auth_url = str_field(&value, "authUrl")
-        .ok_or_else(|| ProviderError::Http("social authorization returned no authUrl".into()))?;
+    let verification_uri = str_field(&value, "verificationUri").ok_or_else(|| {
+        ProviderError::Http("social authorization returned no verificationUri".into())
+    })?;
+
+    // This endpoint reports durations in milliseconds, unlike the AWS OIDC one.
+    let secs = |key: &str, default: u64| {
+        value
+            .get(key)
+            .and_then(Value::as_u64)
+            .map_or(default, |ms| (ms / 1000).max(1))
+    };
 
     Ok(DeviceAuthorization {
-        // Kiro returns one ready-to-open URL rather than a URI + code pair.
-        verification_uri: auth_url.clone(),
-        verification_uri_complete: Some(auth_url),
+        verification_uri,
+        // Carries the user code and provider, so the user only has to approve.
+        verification_uri_complete: str_field(&value, "verificationUriComplete"),
         user_code: str_field(&value, "userCode").unwrap_or_default(),
-        interval_secs: value.get("interval").and_then(Value::as_u64).unwrap_or(5),
-        expires_in_secs: value
-            .get("expiresIn")
-            .and_then(Value::as_u64)
-            .unwrap_or(600),
+        interval_secs: secs("intervalInMilliseconds", 5),
+        expires_in_secs: secs("expiresInMilliseconds", 300),
         state: LoginState::from([
             ("device_code".to_owned(), device_code),
             ("provider".to_owned(), provider.to_owned()),
@@ -820,15 +843,25 @@ async fn poll_social_device_login(state: &LoginState) -> Result<DevicePoll, Prov
         return Ok(DevicePoll::Failed("invalid_token_response".to_owned()));
     };
     let provider = get(state, "provider").unwrap_or("Google").to_owned();
+
+    let mut extra = HashMap::from([
+        ("auth_method".to_owned(), AUTH_SOCIAL.to_owned()),
+        ("provider".to_owned(), provider.clone()),
+    ]);
+    // The service hands back the profile ARN here. Social accounts still need it
+    // on every request — upstream answers 400 "profileArn is required" without one
+    // — and `ListAvailableProfiles` returns nothing for them, so this response is
+    // the only place it can be obtained.
+    if let Some(arn) = str_field(&value, "profileArn") {
+        extra.insert("profile_arn".to_owned(), arn);
+    }
+
     Ok(DevicePoll::Done(LoginResult {
         tokens: TokenPair {
             access_token,
             refresh_token: str_field(&value, "refreshToken"),
             expires_in_secs: value.get("expiresIn").and_then(Value::as_u64),
-            extra: HashMap::from([
-                ("auth_method".to_owned(), AUTH_SOCIAL.to_owned()),
-                ("provider".to_owned(), provider.clone()),
-            ]),
+            extra,
         },
         label: provider,
     }))

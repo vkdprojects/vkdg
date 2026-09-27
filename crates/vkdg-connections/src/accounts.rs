@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+/// Where a deployment mounts its persistent volume. Used when the process has no
+/// usable home directory, which is the normal case inside a container image.
+const SERVICE_DATA_DIR: &str = "/var/lib/vkdg";
+
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use vkdg_core::{Result, VkdgError};
@@ -170,15 +174,23 @@ impl AccountStore {
         Self::init(conn)
     }
 
-    /// `$VKDG_ACCOUNTS_DB`, else `$HOME/.config/vkdg/accounts.db`, else `./accounts.db`.
+    /// `$VKDG_ACCOUNTS_DB`, else `$HOME/.config/vkdg/accounts.db`, else the
+    /// service data dir.
+    ///
+    /// A container image has no real home: `HOME` is unset or `/`, which put the
+    /// database at `/.config/vkdg/accounts.db` on the container's own filesystem,
+    /// so every account vanished on the next `docker compose up` and users had to
+    /// log in again after each deploy. With no usable home, fall back to
+    /// `/var/lib/vkdg`, which is where deployments mount their volume.
     pub fn default_path() -> std::path::PathBuf {
         if let Ok(p) = std::env::var("VKDG_ACCOUNTS_DB") {
             return p.into();
         }
-        std::env::var_os("HOME").map_or_else(
-            || "accounts.db".into(),
-            |h| Path::new(&h).join(".config/vkdg/accounts.db"),
-        )
+        match std::env::var_os("HOME") {
+            // `/` is what a scratch container reports; it is not a home directory.
+            Some(h) if h != "/" && !h.is_empty() => Path::new(&h).join(".config/vkdg/accounts.db"),
+            _ => Path::new(SERVICE_DATA_DIR).join("accounts.db"),
+        }
     }
 
     pub fn in_memory() -> Result<Self> {
@@ -334,6 +346,57 @@ fn create_private_file(_path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Refutes: resolving the store to the container's own filesystem.
+    ///
+    /// A scratch image reports `HOME=/`, which produced `/.config/vkdg/accounts.db`
+    /// — outside any mounted volume — so every account was lost on the next
+    /// `docker compose up` and users had to log in again after each deploy.
+    ///
+    /// The env var is process-global, so this test does not run in parallel with
+    /// others that read it; it restores what it found.
+    #[test]
+    fn default_path_avoids_the_container_filesystem() {
+        let saved_db = std::env::var_os("VKDG_ACCOUNTS_DB");
+        let saved_home = std::env::var_os("HOME");
+        std::env::remove_var("VKDG_ACCOUNTS_DB");
+
+        // An explicit override always wins.
+        std::env::set_var("VKDG_ACCOUNTS_DB", "/custom/accounts.db");
+        assert_eq!(
+            AccountStore::default_path(),
+            std::path::PathBuf::from("/custom/accounts.db")
+        );
+        std::env::remove_var("VKDG_ACCOUNTS_DB");
+
+        // A real home keeps the per-user location.
+        std::env::set_var("HOME", "/home/dev");
+        assert_eq!(
+            AccountStore::default_path(),
+            std::path::PathBuf::from("/home/dev/.config/vkdg/accounts.db")
+        );
+
+        // `HOME=/` and an unset HOME both mean "no home": use the volume.
+        let expected = std::path::Path::new(SERVICE_DATA_DIR).join("accounts.db");
+        std::env::set_var("HOME", "/");
+        assert_eq!(
+            AccountStore::default_path(),
+            expected,
+            "HOME=/ is not a home"
+        );
+        std::env::set_var("HOME", "");
+        assert_eq!(AccountStore::default_path(), expected, "empty HOME");
+        std::env::remove_var("HOME");
+        assert_eq!(AccountStore::default_path(), expected, "unset HOME");
+
+        match saved_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        if let Some(db) = saved_db {
+            std::env::set_var("VKDG_ACCOUNTS_DB", db);
+        }
+    }
 
     fn sample() -> Account {
         let mut extra = HashMap::new();

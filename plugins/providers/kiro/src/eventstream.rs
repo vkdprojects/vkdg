@@ -3,6 +3,8 @@
 //! Frame format:
 //! - Prelude: total_len (4) + headers_len (4) + prelude_crc (4)
 //! - Headers: variable length
+//! - Gap: 4 bytes, always zero (undocumented, confirmed empirically against
+//!   real Kiro fixtures — not part of the AWS Event Stream spec)
 //! - Payload: variable length
 //! - Message CRC: 4 bytes
 //!
@@ -12,6 +14,8 @@
 //! - name: [u8; name_len]
 //! - value_type: u8
 //! - value: depends on value_type
+//!   - String (type 7): u8 length + bytes + trailing NUL terminator
+//!     (NOT the AWS-spec u16 BE length — confirmed against real fixture bytes)
 
 use bytes::Bytes;
 
@@ -113,8 +117,12 @@ impl EventStreamParser {
         // Parse headers
         let headers = self.parse_headers(headers_len)?;
 
-        // Payload: frame_size - prelude(8) - prelude_crc(4) - headers_len - message_crc(4)
-        let payload_len = frame_size - 8 - 4 - headers_len - 4;
+        // Kiro frames have a 4-byte all-zero gap between the header block
+        // and the payload (confirmed against real fixture bytes).
+        self.pos += 4;
+
+        // Payload: frame_size - prelude(8) - prelude_crc(4) - headers_len - gap(4) - message_crc(4)
+        let payload_len = frame_size - 8 - 4 - headers_len - 4 - 4;
         let payload = self.buffer[self.pos..self.pos + payload_len].to_vec();
         self.pos += payload_len;
         
@@ -291,26 +299,28 @@ mod tests {
 
     #[test]
     fn test_parse_single_frame() {
-        // Minimal valid frame with one header
+        // Minimal valid frame with one header, no payload
         let mut data = Vec::new();
         
-        // Prelude: total_len (8 + 4 + header + 4) + headers_len
         let header_data = vec![
             7, // header_type (always 7=String for header names)
             4, // name_len
             b't', b'e', b's', b't', // name "test"
             7, // value_type = String
-            0, 5, // value_len (5)
+            5, // value_len (u8)
             b'h', b'e', b'l', b'l', b'o', // value "hello"
+            0, // trailing NUL terminator
         ];
         
-        let total_len = 8 + 4 + header_data.len() as u32 + 4;
         let headers_len = header_data.len() as u32;
+        // total_len = prelude_fields(8) + prelude_crc(4) + headers_len + gap(4) + payload(0) + message_crc(4)
+        let total_len = 8 + 4 + headers_len + 4 + 4;
         
         data.extend_from_slice(&total_len.to_be_bytes());
         data.extend_from_slice(&headers_len.to_be_bytes());
         data.extend_from_slice(&0u32.to_be_bytes()); // prelude_crc
         data.extend_from_slice(&header_data);
+        data.extend_from_slice(&0u32.to_be_bytes()); // gap (always zero)
         data.extend_from_slice(&0u32.to_be_bytes()); // message_crc
         
         let mut parser = EventStreamParser::new();

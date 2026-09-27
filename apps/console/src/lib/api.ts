@@ -209,8 +209,13 @@ export const api = {
     req<SystemInfo>('GET', '/admin/v1/system'),
   me: () =>
     req<SessionUser>('GET', '/admin/v1/session/me'),
-  login: (token: string) =>
-    req<SessionUser>('POST', '/admin/v1/session', { token }),
+  /** First run: the bootstrap token. Once a password is set: the password. */
+  login: (credential: { token: string } | { password: string }) =>
+    req<SessionUser>('POST', '/admin/v1/session', credential),
+  setupStatus: () =>
+    req<{ password_set: boolean }>('GET', '/admin/v1/setup'),
+  setPassword: (password: string) =>
+    req<void>('POST', '/admin/v1/setup', { password }),
   logout: () =>
     req<void>('DELETE', '/admin/v1/session'),
   listConnections: () =>

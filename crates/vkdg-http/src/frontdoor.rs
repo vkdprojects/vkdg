@@ -87,41 +87,21 @@ pub fn extract_vkdg_overrides(headers: &http::HeaderMap, envelope: &mut RequestE
         .unwrap_or(false);
 }
 
-/// The client's address as the gateway should trust it.
-///
-/// `peer` is the TCP socket address. `X-Forwarded-For` is honored only when the
-/// peer is inside `trusted_proxies`; the chain is then walked from the right and
-/// the first hop that is not a proxy is the client. Anyone else could set the
-/// header to any address they like. `None` only when there is no socket
-/// address at all (in-process calls).
+/// The client's address as the gateway should trust it. See
+/// [`vkdg_core::net::resolve_client_ip`]; this reads `X-Forwarded-For` from the
+/// request headers.
 pub fn resolve_client_ip(
     peer: Option<IpAddr>,
     headers: &http::HeaderMap,
     trusted_proxies: &[IpNet],
 ) -> Option<IpAddr> {
-    // Report IPv4 clients of a dual-stack listener as IPv4, not ::ffff:a.b.c.d.
-    let peer = peer?.to_canonical();
-    let trusted = |ip: IpAddr| trusted_proxies.iter().any(|n| n.contains(ip));
-    if !trusted(peer) {
-        return Some(peer);
-    }
-    let hops: Vec<IpAddr> = headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.split(','))
-        .filter_map(|h| h.trim().parse::<IpAddr>().ok())
-        .map(|h| h.to_canonical())
-        .collect();
-    // Each proxy appends the address it received from, so everything left of
-    // the rightmost non-proxy hop is client-controlled.
-    Some(
-        hops.iter()
-            .rev()
-            .find(|h| !trusted(**h))
-            .or_else(|| hops.first())
-            .copied()
-            .unwrap_or(peer),
+    vkdg_core::net::resolve_client_ip(
+        peer,
+        headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok()),
+        trusted_proxies,
     )
 }
 

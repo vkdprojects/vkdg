@@ -236,5 +236,13 @@
   "key_enable": "Enable",
   "key_disable_confirm": "Disable this key? Clients using it get 401 until you enable it again.",
   "key_disabled_toast": "Key disabled.",
-  "key_enabled_toast": "Key enabled."
+  "key_enabled_toast": "Key enabled.",
+  "login_password_label": "Password",
+  "login_new_password_label": "New console password",
+  "login_confirm_password_label": "Repeat the password",
+  "login_set_heading": "Set a console password",
+  "login_set_hint": "The bootstrap token only works once. Choose a password (at least 12 characters) to sign in from now on.",
+  "login_set_submit": "Save password",
+  "login_password_mismatch": "The passwords do not match.",
+  "login_busy": "Signing in…"
 }

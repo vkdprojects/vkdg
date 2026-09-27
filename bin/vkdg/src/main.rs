@@ -149,6 +149,18 @@ enum Command {
         #[command(subcommand)]
         sub: KeysSub,
     },
+    /// Admin console sign-in.
+    Admin {
+        #[command(subcommand)]
+        sub: AdminSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminSub {
+    /// Set or replace the console password (reads it from stdin, or prompts).
+    /// Use this to recover access; it needs shell access to the host.
+    SetPassword,
 }
 
 #[derive(Subcommand)]
@@ -310,6 +322,7 @@ async fn main() -> Result<()> {
         } => cmd_login(&provider, method.as_deref(), &opts, code, list_methods).await?,
         Command::Accounts { sub } => cmd_accounts(sub)?,
         Command::Keys { sub } => cmd_keys(sub)?,
+        Command::Admin { sub } => cmd_admin(sub)?,
     }
     Ok(())
 }
@@ -462,7 +475,11 @@ async fn serve(
         rx
     });
     let admin_state = vkdg_admin::AdminState {
-        sessions: vkdg_admin::session::SessionStore::new(bootstrap_token),
+        sessions: vkdg_admin::session::SessionStore::with_password_file(
+            bootstrap_token,
+            admin_password_path(),
+            trusted_proxies_from_env()?,
+        ),
         config_rx,
         started_at: std::sync::Arc::new(std::time::Instant::now()),
         key_store: Arc::clone(&key_store),
@@ -493,7 +510,13 @@ async fn serve(
             .await
             .expect("bind admin listener");
         tracing::info!(addr = %admin_addr, "admin API listening");
-        axum::serve(listener, admin_router).await.ok();
+        // Connect info lets sign-in throttling see the real client address.
+        axum::serve(
+            listener,
+            admin_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .ok();
     });
 
     print_startup_banner(&listen, &admin_addr_banner, auto_token.as_deref());
@@ -945,6 +968,51 @@ fn unknown_hooks(
                     route.id.0
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+// ── Admin console password ────────────────────────────────────────────────────
+
+/// `$VKDG_ADMIN_PASSWORD_FILE`, else `admin.password` next to `accounts.db`, so
+/// the password lives on the same persistent volume.
+fn admin_password_path() -> std::path::PathBuf {
+    std::env::var_os("VKDG_ADMIN_PASSWORD_FILE").map_or_else(
+        || AccountStore::default_path().with_file_name("admin.password"),
+        Into::into,
+    )
+}
+
+fn cmd_admin(sub: AdminSub) -> Result<()> {
+    match sub {
+        AdminSub::SetPassword => {
+            use std::io::{BufRead, IsTerminal};
+            let stdin = std::io::stdin();
+            let password = if stdin.is_terminal() {
+                let first = inquire::Password::new("New console password:")
+                    .without_confirmation()
+                    .prompt()?;
+                let again = inquire::Password::new("Repeat it:")
+                    .without_confirmation()
+                    .prompt()?;
+                anyhow::ensure!(first == again, "the passwords do not match");
+                first
+            } else {
+                let mut line = String::new();
+                stdin.lock().read_line(&mut line)?;
+                line.trim_end_matches(['\r', '\n']).to_owned()
+            };
+            let store = vkdg_admin::session::SessionStore::with_password_file(
+                String::new(),
+                admin_password_path(),
+                vec![],
+            );
+            store.set_password(&password).map_err(anyhow::Error::msg)?;
+            println!(
+                "Console password set in {}. Running gateways use it at the next sign-in.",
+                admin_password_path().display()
+            );
         }
     }
     Ok(())

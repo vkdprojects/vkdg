@@ -21,8 +21,10 @@ parking_lot      = { workspace = true }
 vkdg-provider-sdk = { workspace = true }
 vkdg-governance  = { workspace = true }
 rusqlite         = { workspace = true }
+argon2           = { workspace = true }
 
 [dev-dependencies]
+tempfile         = { workspace = true }
 futures          = { workspace = true }
 vkdg-operations  = { workspace = true }
 

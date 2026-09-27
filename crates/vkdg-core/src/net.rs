@@ -69,6 +69,42 @@ impl fmt::Display for IpNet {
     }
 }
 
+/// The client's address as a gateway should trust it.
+///
+/// `peer` is the TCP socket address. `X-Forwarded-For` (`forwarded_for`, one
+/// item per header value) is honored only when the peer is inside
+/// `trusted_proxies`; the chain is then walked from the right and the first hop
+/// that is not a proxy is the client. Anyone else could set the header to any
+/// address they like. IPv4-mapped IPv6 addresses are reported as IPv4. `None`
+/// only when there is no socket address at all (in-process calls).
+pub fn resolve_client_ip<'a>(
+    peer: Option<IpAddr>,
+    forwarded_for: impl IntoIterator<Item = &'a str>,
+    trusted_proxies: &[IpNet],
+) -> Option<IpAddr> {
+    let peer = peer?.to_canonical();
+    let trusted = |ip: IpAddr| trusted_proxies.iter().any(|n| n.contains(ip));
+    if !trusted(peer) {
+        return Some(peer);
+    }
+    let hops: Vec<IpAddr> = forwarded_for
+        .into_iter()
+        .flat_map(|v| v.split(','))
+        .filter_map(|h| h.trim().parse::<IpAddr>().ok())
+        .map(|h| h.to_canonical())
+        .collect();
+    // Each proxy appends the address it received from, so everything left of
+    // the rightmost non-proxy hop is client-controlled.
+    Some(
+        hops.iter()
+            .rev()
+            .find(|h| !trusted(**h))
+            .or_else(|| hops.first())
+            .copied()
+            .unwrap_or(peer),
+    )
+}
+
 /// Parse a config list, naming the offending entry (`field[i]`) on error.
 pub fn parse_ip_list(field: &str, entries: &[String]) -> Result<Vec<IpNet>, String> {
     entries

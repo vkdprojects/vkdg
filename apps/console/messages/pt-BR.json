@@ -220,5 +220,13 @@
   "key_enable": "Ativar",
   "key_disable_confirm": "Desativar esta chave? Clientes que a usam recebem 401 até você ativá-la de novo.",
   "key_disabled_toast": "Chave desativada.",
-  "key_enabled_toast": "Chave ativada."
+  "key_enabled_toast": "Chave ativada.",
+  "login_password_label": "Senha",
+  "login_new_password_label": "Nova senha do console",
+  "login_confirm_password_label": "Repita a senha",
+  "login_set_heading": "Defina uma senha do console",
+  "login_set_hint": "O token de inicialização vale uma vez só. Escolha uma senha (pelo menos 12 caracteres) para entrar daqui em diante.",
+  "login_set_submit": "Salvar senha",
+  "login_password_mismatch": "As senhas não conferem.",
+  "login_busy": "Entrando…"
 }

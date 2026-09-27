@@ -100,6 +100,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # crypto
 aes-gcm = "0.10"
 sha2             = "0.10"
+# Admin console password hashing (PHC string, memory-hard).
+argon2           = "=0.5.3"
 rand = "0.8"
 
 # cli

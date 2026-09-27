@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Security
+- Console sign-in: after the first sign-in with the bootstrap token, the console asks for a password (at least 12 characters), stored as an argon2id hash in `admin.password` next to `accounts.db` (`0600`; override with `VKDG_ADMIN_PASSWORD_FILE`). From then on the token is refused, even after a restart, and the password signs in any number of times. Before, the token worked once, so signing out locked the admin out until a restart. Recover with `vkdg admin set-password` on the host. Failed sign-ins are throttled per client address (5 per 15 min, resolved through `VKDG_TRUSTED_PROXIES` like the data plane) and globally (100 per 15 min), with 429 and `retry-after`. Sessions expire after 12 h unused; a restart still signs everyone out
 - **Breaking:** `/v1/messages`, `/v1/chat/completions` and `/v1/images/generations` now require a client API key (`x-api-key` or `Authorization: Bearer`), on every bind address including loopback: a loopback listener behind a reverse proxy is still public. Requests without a valid key get 401 in the client's wire format. `VKDG_DATA_AUTH=off` opts out explicitly and logs a warning at startup
 - API keys are persisted in `keys.db` (next to `accounts.db`, `0600`, override with `VKDG_KEYS_DB`). Only a SHA-256 hash and a display prefix (`vkdg_1a2b3c4d`) are stored. A key revoked from another process stops working within 5 s
 - The admin API's plaintext in-memory key store is gone: `/admin/v1/keys` manages the same keys `/v1/*` checks

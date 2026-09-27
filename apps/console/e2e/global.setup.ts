@@ -1,9 +1,9 @@
 import { expect, test as setup } from '@playwright/test';
-import { BOOTSTRAP_TOKEN, SESSION_FILE } from './env';
+import { ADMIN_PASSWORD, BOOTSTRAP_TOKEN, SESSION_FILE } from './env';
 
-// The bootstrap token signs in exactly once per gateway, so the suite signs in
-// here and every other test reuses the saved session cookie.
-setup('sign in with the bootstrap token', async ({ page }) => {
+// First run as an operator would do it: the bootstrap token once, then a
+// console password. Every other test reuses the saved session.
+setup('first run: bootstrap token, then set the console password', async ({ page }) => {
   await page.goto('/keys');
 
   // Signed out: bounced to the sign-in form, with no app navigation.
@@ -13,6 +13,11 @@ setup('sign in with the bootstrap token', async ({ page }) => {
 
   await page.getByLabel('Bootstrap token').fill(BOOTSTRAP_TOKEN);
   await page.getByRole('button', { name: 'Sign in' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Set a console password' })).toBeVisible();
+  await page.getByLabel('New console password').fill(ADMIN_PASSWORD);
+  await page.getByLabel('Repeat the password').fill(ADMIN_PASSWORD);
+  await page.getByRole('button', { name: 'Save password' }).click();
 
   // Signed in: the app shell appears without a reload.
   await expect(page.getByRole('link', { name: 'Keys' })).toBeVisible();

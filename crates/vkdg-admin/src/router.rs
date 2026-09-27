@@ -34,6 +34,11 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route("/admin/v1/session/me", get(crate::handlers::session::me))
         .route(
+            "/admin/v1/setup",
+            get(crate::handlers::session::setup_status)
+                .post(crate::handlers::session::setup_password),
+        )
+        .route(
             "/admin/v1/connections",
             get(crate::handlers::connections::list_connections),
         )

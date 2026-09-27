@@ -323,6 +323,42 @@ mod tests {
         assert_eq!(r.route_id, RouteId("r2".into()));
     }
 
+    // Combos are edited at runtime and config routes come from the file: a
+    // reload must not drop combos, and a combo edit must not drop the file's routes.
+    #[tokio::test]
+    async fn combo_routes_match_first_and_survive_config_reloads() {
+        let router = Router::new(vec![rr_route("cfg", "shared", "c-cfg")]);
+        let (f, h) = (EligibilityFilter::default(), RoutingHints::default());
+        router.replace_combo_routes(vec![rr_route("combo", "shared", "c-combo")]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(r.route_id, RouteId("combo".into()), "combo wins");
+
+        router.replace_routes(vec![
+            rr_route("cfg", "shared", "c-cfg"),
+            rr_route("cfg2", "other", "c2"),
+        ]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(r.route_id, RouteId("combo".into()), "reload kept the combo");
+
+        router.replace_combo_routes(vec![]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.route_id,
+            RouteId("cfg".into()),
+            "combo edit kept config routes"
+        );
+        assert!(router.route(&test_envelope("other"), &f, &h).await.is_ok());
+    }
+
     fn two_target_route(strategy: StrategyKind) -> RouteConfig {
         RouteConfig {
             id: RouteId("r".into()),

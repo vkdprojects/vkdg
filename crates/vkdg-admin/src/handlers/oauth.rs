@@ -653,7 +653,7 @@ mod tests {
             started_at: Arc::new(Instant::now()),
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
-            combo_resolver: None,
+            combos: None,
             catalog: None,
             logins: Some(LoginService::new(
                 Arc::new(registry),

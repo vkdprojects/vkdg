@@ -234,5 +234,22 @@
   "key_no_log": "Não guardar requisições no histórico",
   "key_no_log_hint": "O uso continua contando nos limites; nenhuma linha de requisição é salva.",
   "key_no_log_summary": "Sem histórico",
-  "request_cost": "Custo"
+  "request_cost": "Custo",
+  "combo_model": "Modelo no upstream",
+  "combo_model_hint": "O que o provider recebe quando a requisição chama este combo pelo id.",
+  "combo_model_required": "O modelo no upstream é obrigatório.",
+  "combo_name_required": "O nome é obrigatório.",
+  "combo_targets_required": "Escolha ao menos uma conexão de destino.",
+  "combo_targets_hint": "Conexões pelas quais o combo roteia, em ordem (a cadeia de fallback tenta de cima para baixo).",
+  "combo_no_connections": "Ainda não há conexões. Adicione uma em Conexões primeiro.",
+  "combo_budget_label": "Custo máximo por requisição (USD)",
+  "combo_budget_hint": "Vazio = sem limite. Requisições estimadas acima recebem 402 antes de chamar o upstream.",
+  "combo_saved": "Combo salvo. Vale a partir da próxima requisição.",
+  "combo_delete_confirm": "Apagar o combo {id}? O tráfego dele volta ao roteamento normal.",
+  "combo_edit_title": "Editar {id}",
+  "combo_edit_label": "Editar combo {id}",
+  "combo_delete_label": "Apagar combo {id}",
+  "combo_actions": "Ações",
+  "combo_empty_desc": "Um combo é um nome que os clientes chamam (ex.: coding-fast) e que roteia pelas suas conexões com estratégia própria.",
+  "common_edit": "Editar"
 }

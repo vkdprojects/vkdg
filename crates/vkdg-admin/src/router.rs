@@ -6,7 +6,6 @@ use axum::{
 };
 use std::sync::Arc;
 use std::time::Instant;
-use vkdg_combos::ComboResolver;
 use vkdg_config::ConfigRx;
 use vkdg_connections::ConnectionCatalog;
 
@@ -18,7 +17,8 @@ pub struct AdminState {
     /// Data-plane API keys. The same store instance `/v1/*` authenticates against.
     pub key_store: Arc<vkdg_governance::VirtualKeyStore>,
     pub request_log: Arc<RequestLog>,
-    pub combo_resolver: Option<Arc<ComboResolver>>,
+    /// Combo edits; `None` when the gateway runs without a data plane.
+    pub combos: Option<Arc<vkdg_combos::ComboService>>,
     pub catalog: Option<Arc<ConnectionCatalog>>,
     /// Provider login + account store; `None` disables `/oauth` and `/accounts`.
     pub logins: Option<Arc<crate::handlers::oauth::LoginService>>,
@@ -84,7 +84,12 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/combos",
-            get(crate::handlers::routes::list_combos),
+            get(crate::handlers::combos::list_combos).post(crate::handlers::combos::create_combo),
+        )
+        .route(
+            "/admin/v1/combos/{id}",
+            axum::routing::put(crate::handlers::combos::update_combo)
+                .delete(crate::handlers::combos::delete_combo),
         )
         .route(
             "/admin/v1/providers/oauth",

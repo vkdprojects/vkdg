@@ -1,3 +1,4 @@
+pub mod combos;
 pub mod connections;
 pub mod keys;
 pub mod oauth;

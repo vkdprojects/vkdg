@@ -176,6 +176,17 @@ pub(super) async fn run_pipeline_inner(
     };
     ctx.route_id = Some(route_result.route_id.0.clone());
     ctx.excluded = route_result.excluded.clone();
+    // A combo id (`coding-fast`) is not a model any provider knows. A request
+    // naming the combo itself is sent upstream as the combo's model, before any
+    // dispatch branch, so fusion and chain targets get the same name. A request
+    // that reached a combo through a pattern keeps the model it asked for.
+    if let (Some(id), Some(model)) = (&csr.combo_id, &csr.combo_model) {
+        if *id == ctx.envelope.model_requested {
+            if let Operation::Conversation(conv) = &mut operation {
+                conv.model = model.clone();
+            }
+        }
+    }
 
     // Route hooks run before any dispatch path, fusion and chains included.
     if !route_result.hooks.auth.is_empty() {
@@ -219,44 +230,24 @@ pub(super) async fn run_pipeline_inner(
         .await;
     }
 
-    // Priority: session pin > combo redirect > routed connection.
+    // Priority: session pin > routed connection. Combos route through the
+    // router as priority routes, so their strategy already chose the target.
     // Save the preferred connection before it is moved into the if-let so we
     // can detect rotation afterwards for context-relay.
     let session_preferred_saved = csr.session_preferred.clone();
-    let connection_id = if let Some(preferred) = csr.session_preferred {
+    let connection_id = match csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check
         // happens inside acquire() at step 3; here we just guard against stale pins
         // for connections that were removed from the catalog entirely).
-        if pipeline.catalog.get(&preferred).is_some() {
+        Some(preferred) if pipeline.catalog.get(&preferred).is_some() => {
             tracing::debug!(
                 session_key = ?ctx.envelope.session_key,
                 pinned = %preferred.0,
                 "session stickiness: using pinned connection",
             );
             preferred
-        } else if let Some(targets) = &csr.resolved_targets {
-            if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
-                targets[0].clone()
-            } else {
-                route_result.connection_id
-            }
-        } else {
-            route_result.connection_id
         }
-    } else if let Some(targets) = &csr.resolved_targets {
-        if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
-            tracing::debug!(
-                combo_id = %csr.combo_id.as_deref().unwrap_or(""),
-                routed   = %route_result.connection_id.0,
-                redirect = %targets[0].0,
-                "combo redirect: routed connection not in combo targets",
-            );
-            targets[0].clone()
-        } else {
-            route_result.connection_id
-        }
-    } else {
-        route_result.connection_id
+        _ => route_result.connection_id,
     };
     ctx.connection_id = Some(connection_id.clone());
     ctx.transition(AttemptState::AccountReserved);
@@ -285,7 +276,6 @@ pub(super) async fn run_pipeline_inner(
         let guard = conn.acquire().ok_or(VkdgError::NoEligibleConnection)?;
         (conn.config.clone(), guard)
     };
-
     // 4. Credential ────────────────────────────────────────────────────────────
     let credential = pipeline.credentials.get_token(&config).await?;
     ctx.transition(AttemptState::CredentialReady);
@@ -1029,6 +1019,7 @@ mod tests {
             cache: None,
             budget: None,
             mode_pack: None,
+            model: None,
         };
         let mut r = ProviderRegistry::empty();
         r.register(Arc::new(StubAdapter));
@@ -1104,6 +1095,7 @@ mod tests {
                 overflow: "strict".into(),
             }),
             mode_pack: None,
+            model: None,
         };
         let mut r = ProviderRegistry::empty();
         r.register(Arc::new(StubAdapter));
@@ -1338,5 +1330,101 @@ mod tests {
         let d = rec.decision.expect("decision recorded");
         assert_eq!(d.route_id.as_deref(), Some("guarded"));
         assert!(d.attempt_count >= 1);
+    }
+
+    /// Records what reached `prepare` (the last step before upstream), then
+    /// fails, so no network is needed.
+    struct Recording(Arc<std::sync::Mutex<Vec<(String, String)>>>);
+    impl ProviderAdapter for Recording {
+        fn id(&self) -> &str {
+            "openai"
+        }
+        fn display_name(&self) -> &str {
+            "Recording"
+        }
+        fn prepare(
+            &self,
+            op: &Operation,
+            cfg: &vkdg_connections::ConnectionConfig,
+            _credential: &vkdg_provider_sdk::Credential,
+        ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            if let Operation::Conversation(c) = op {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((cfg.id.0.clone(), c.model.clone()));
+            }
+            Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
+        }
+    }
+
+    // Found in review: a combo called by its id failed with NoEligibleConnection
+    // (routing ran before the combo), always went to targets[0] whatever its
+    // strategy, and sent the combo id itself upstream as the model.
+    #[tokio::test]
+    async fn a_combo_called_by_id_routes_with_its_strategy_and_sends_its_model() {
+        std::env::set_var("VKDG_TEST_COMBO_KEY", "k");
+        let conns = ["h1", "h2"]
+            .iter()
+            .map(|id| vkdg_connections::ConnectionConfig {
+                id: ConnectionId((*id).into()),
+                provider: vkdg_connections::ProviderKind::Custom {
+                    base_url: "http://127.0.0.1:1".into(),
+                },
+                auth: vkdg_connections::AuthKind::ApiKey {
+                    env_var: "VKDG_TEST_COMBO_KEY".into(),
+                },
+                models: vec!["m-*".into()],
+                max_concurrent: 10,
+                weight: 1,
+                tags: vec![],
+                capabilities: CapabilitySet::default(),
+            })
+            .collect();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(Recording(Arc::clone(&seen))));
+        let mut p = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(10)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        );
+        let dir = std::env::temp_dir().join(format!("vkdg-combo-{}", uuid::Uuid::new_v4()));
+        let resolver = Arc::new(vkdg_combos::ComboResolver::new(vec![]));
+        let svc = vkdg_combos::ComboService::open(
+            vkdg_combos::ComboStore::new(dir.join("combos.json")),
+            Arc::clone(&resolver),
+            Some(Arc::clone(&p.router)),
+        )
+        .unwrap();
+        svc.create(vkdg_combos::Combo {
+            id: "coding-fast".into(),
+            match_patterns: vec![],
+            strategy: StrategyKind::RoundRobin,
+            targets: vec![ConnectionId("h1".into()), ConnectionId("h2".into())],
+            model: Some("m-real".into()),
+            compression: None,
+            cache: None,
+            budget: None,
+            mode_pack: None,
+        })
+        .unwrap();
+        p.combo_resolver = Some(resolver);
+        let p = Arc::new(p);
+
+        for _ in 0..2 {
+            let _ =
+                run_conversation_pipeline(Arc::clone(&p), make_ctx("coding-fast"), make_conv_op())
+                    .await;
+        }
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "both calls reached a provider: {seen:?}");
+        assert!(seen.iter().all(|(_, m)| m == "m-real"), "{seen:?}");
+        assert_ne!(seen[0].0, seen[1].0, "round_robin rotates: {seen:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

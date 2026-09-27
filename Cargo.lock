@@ -4425,6 +4425,7 @@ dependencies = [
  "uuid",
  "vkdg-admin",
  "vkdg-cli",
+ "vkdg-combos",
  "vkdg-config",
  "vkdg-connections",
  "vkdg-core",
@@ -4543,7 +4544,11 @@ dependencies = [
 name = "vkdg-combos"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "vkdg-core",
  "vkdg-routing",
 ]

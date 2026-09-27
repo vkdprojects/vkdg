@@ -24,6 +24,11 @@ pub struct Combo {
     pub match_patterns: Vec<String>,
     pub strategy: StrategyKind,
     pub targets: Vec<ConnectionId>,
+    /// Model sent upstream when a request names the combo by its id. Required
+    /// for combos created in the admin API; a request that reaches the combo
+    /// through a pattern keeps the model it asked for.
+    #[serde(default)]
+    pub model: Option<String>,
     pub compression: Option<CompressionPolicy>,
     pub cache: Option<CachePolicy>,
     pub budget: Option<BudgetPolicy>,

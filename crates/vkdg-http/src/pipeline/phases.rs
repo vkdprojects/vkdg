@@ -11,10 +11,10 @@ use crate::PipelineState;
 // ── Pipeline phase helpers ────────────────────────────────────────────────────
 
 pub(super) struct ComboSessionResolution {
-    /// Combo target list; non-empty = combo matched with target overrides.
-    pub(super) resolved_targets: Option<Vec<ConnectionId>>,
     /// Combo id for debug tracing.
     pub(super) combo_id: Option<String>,
+    /// Upstream model of the matched combo, used when the request names it.
+    pub(super) combo_model: Option<String>,
     pub(super) effective_compressor_id: Option<String>,
     pub(super) compression_threshold: u32,
     pub(super) session_preferred: Option<ConnectionId>,
@@ -55,7 +55,7 @@ pub(super) async fn resolve_combo_and_session(
     };
 
     ComboSessionResolution {
-        resolved_targets: combo.as_ref().map(|c| c.targets.clone()),
+        combo_model: combo.as_ref().and_then(|c| c.model.clone()),
         combo_id: combo.map(|c| c.id.clone()),
         effective_compressor_id,
         compression_threshold,

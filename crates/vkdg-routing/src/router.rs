@@ -15,11 +15,32 @@ use crate::types::{EligibilityFilter, RouteConfig, RouteResult, RoutingHints, St
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub struct Router {
-    /// Swapped whole on config reload; a request routes against the snapshot it
-    /// read, never a half-applied one.
-    routes: RwLock<Arc<Vec<RouteConfig>>>,
+    /// Swapped whole on config reload or combo edit; a request routes against
+    /// the snapshot it read, never a half-applied one.
+    tables: RwLock<Tables>,
     /// Kept across reloads so round-robin positions do not reset.
     strategies: HashMap<String, Arc<dyn Strategy>>,
+}
+
+/// Combo routes (edited at runtime) and config routes (from the file), kept
+/// apart so replacing one never drops the other. Combos match first.
+#[derive(Default)]
+struct Tables {
+    combos: Arc<Vec<RouteConfig>>,
+    config: Arc<Vec<RouteConfig>>,
+    merged: Arc<Vec<RouteConfig>>,
+}
+
+impl Tables {
+    fn merge(&mut self) {
+        self.merged = Arc::new(
+            self.combos
+                .iter()
+                .chain(self.config.iter())
+                .cloned()
+                .collect(),
+        );
+    }
 }
 
 impl Router {
@@ -32,20 +53,36 @@ impl Router {
             "power_of_two_choices".into(),
             Arc::new(PowerOfTwoChoicesStrategy::new()),
         );
+        let mut tables = Tables {
+            config: Arc::new(routes),
+            ..Tables::default()
+        };
+        tables.merge();
         Self {
-            routes: RwLock::new(Arc::new(routes)),
+            tables: RwLock::new(tables),
             strategies,
         }
     }
 
-    /// Replace the route table from a new, already validated config snapshot.
+    /// Replace the config route table from a new, already validated snapshot.
+    /// Combo routes stay in force.
     pub fn replace_routes(&self, routes: Vec<RouteConfig>) {
-        *self.routes.write() = Arc::new(routes);
+        let mut t = self.tables.write();
+        t.config = Arc::new(routes);
+        t.merge();
     }
 
-    /// The route table currently in force.
+    /// Replace the combo routes. They match before config routes, so a combo
+    /// named like a model takes that model's traffic. Config routes stay.
+    pub fn replace_combo_routes(&self, routes: Vec<RouteConfig>) {
+        let mut t = self.tables.write();
+        t.combos = Arc::new(routes);
+        t.merge();
+    }
+
+    /// The route table currently in force: combos first, then config routes.
     pub fn routes(&self) -> Arc<Vec<RouteConfig>> {
-        Arc::clone(&self.routes.read())
+        Arc::clone(&self.tables.read().merged)
     }
 
     pub async fn route(

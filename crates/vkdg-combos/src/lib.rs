@@ -6,6 +6,12 @@
 
 pub mod plan;
 pub mod resolver;
+pub mod service;
+pub mod store;
 
 pub use plan::{BudgetPolicy, CachePolicy, Combo, CompressionPolicy};
-pub use resolver::ComboResolver;
+pub use resolver::{combo_route_id, ComboResolver};
+pub use service::{ComboError, ComboService};
+pub use store::ComboStore;
+/// Re-exported so combo callers need no direct routing dependency.
+pub use vkdg_routing::StrategyKind;

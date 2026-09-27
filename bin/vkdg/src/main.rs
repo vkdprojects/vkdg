@@ -423,6 +423,26 @@ async fn serve(
         p.request_log = Some(Arc::clone(&request_log));
     }
 
+    // Combos: one service for both builders (config file or env), shared by the
+    // pipeline (policies) and its router (routes) and the admin API (edits).
+    // A corrupt combos.json stops startup: serving without its combos would
+    // quietly send their traffic elsewhere.
+    let combos = match &mut pipeline {
+        Some(p) => {
+            let path = AccountStore::default_path().with_file_name("combos.json");
+            let resolver = Arc::new(vkdg_combos::ComboResolver::new(vec![]));
+            let svc = vkdg_combos::ComboService::open(
+                vkdg_combos::ComboStore::new(path),
+                Arc::clone(&resolver),
+                Some(Arc::clone(&p.router)),
+            )
+            .map_err(|e| anyhow::anyhow!("cannot load combos: {e}"))?;
+            p.combo_resolver = Some(resolver);
+            Some(Arc::new(svc))
+        }
+        None => None,
+    };
+
     // Extract catalog for admin API before pipeline is moved into AppState.
     let admin_catalog = pipeline.as_ref().map(|p| Arc::clone(&p.catalog));
 
@@ -487,7 +507,7 @@ async fn serve(
         started_at: std::sync::Arc::new(std::time::Instant::now()),
         key_store: Arc::clone(&key_store),
         request_log: Arc::clone(&request_log),
-        combo_resolver: None,
+        combos,
         catalog: admin_catalog,
         logins: account_store.map(|store| {
             vkdg_admin::handlers::oauth::LoginService::new(

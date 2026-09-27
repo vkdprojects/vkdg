@@ -192,14 +192,35 @@ export interface RequestSummary {
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';
 
+/** Strategies a combo can run. Snake-case strings; `scored`/`fusion` carry fields. */
+export type ComboStrategy =
+  | 'round_robin'
+  | 'fallback_chain'
+  | 'lowest_latency'
+  | 'power_of_two_choices'
+  | { fusion: { max_candidates: number | null } };
+
 export interface ComboSummary {
   id: string;
   match_patterns: string[];
-  strategy: string;
+  strategy: ComboStrategy | Record<string, unknown>;
   targets: string[];
+  /** Sent upstream when a request names the combo by id. */
+  model: string | null;
+  max_cost_microdollars: number | null;
   has_compression: boolean;
   has_cache: boolean;
   has_budget: boolean;
+}
+
+/** POST/PUT body. PUT keeps compression/cache, and the budget when omitted. */
+export interface ComboInput {
+  id?: string;
+  match_patterns: string[];
+  strategy: ComboStrategy;
+  targets: string[];
+  model: string;
+  max_cost_microdollars?: number;
 }
 
 export interface PluginSummary {
@@ -272,6 +293,11 @@ export const api = {
     req<RequestSummary>('GET', `/admin/v1/requests/${encodeURIComponent(id)}`),
   listCombos: () =>
     req<{ items: ComboSummary[]; total: number }>('GET', '/admin/v1/combos'),
+  createCombo: (c: ComboInput) => req<ComboSummary>('POST', '/admin/v1/combos', c),
+  updateCombo: (id: string, c: ComboInput) =>
+    req<ComboSummary>('PUT', `/admin/v1/combos/${encodeURIComponent(id)}`, c),
+  deleteCombo: (id: string) =>
+    req<void>('DELETE', `/admin/v1/combos/${encodeURIComponent(id)}`),
   listPlugins: () =>
     req<{ items: PluginSummary[]; total: number; directory: string }>('GET', '/admin/v1/plugins'),
   installPlugin: (manifest: string, wasmBase64?: string) =>

@@ -8,7 +8,7 @@ use vkdg_operations::{
     ContentBlock, ConversationRequest, ImageGenerateRequest, MessageContent, Operation, Role,
     VideoGenerateRequest,
 };
-use vkdg_provider_sdk::{PreparedRequest, ProviderAdapter, ProviderError};
+use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
 /// OpenAI provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
@@ -26,8 +26,9 @@ impl ProviderAdapter for OpenAIAdapter {
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         match operation {
             Operation::Conversation(req) => {
                 let body = build_body(req, config);
@@ -463,7 +464,7 @@ mod tests {
         let req = Operation::Conversation(simple_request());
         let adapter = OpenAIAdapter;
         let prepared = adapter
-            .prepare(&req, &openai_config(), "sk-test123")
+            .prepare(&req, &openai_config(), &Credential::bearer("sk-test123"))
             .unwrap();
         let auth = prepared
             .headers
@@ -565,7 +566,9 @@ mod tests {
             user: None,
         });
         let adapter = OpenAIAdapter;
-        let prepared = adapter.prepare(&op, &openai_config(), "sk-test").unwrap();
+        let prepared = adapter
+            .prepare(&op, &openai_config(), &Credential::bearer("sk-test"))
+            .unwrap();
         assert!(
             prepared.url.contains("/v1/images/generations"),
             "url must contain /v1/images/generations, got: {}",
@@ -588,7 +591,9 @@ mod tests {
             webhook_url: None,
         });
         let adapter = OpenAIAdapter;
-        let prepared = adapter.prepare(&op, &openai_config(), "sk-test").unwrap();
+        let prepared = adapter
+            .prepare(&op, &openai_config(), &Credential::bearer("sk-test"))
+            .unwrap();
         assert!(
             prepared.url.contains("/v1/videos/generations"),
             "url must contain /v1/videos/generations, got: {}",

@@ -11,10 +11,17 @@ vkdg-operations   = { workspace = true }
 serde             = { workspace = true }
 serde_json        = { workspace = true }
 uuid              = { workspace = true }
-crc32fast         = "1.4"
+crc32fast         = { workspace = true }
 bytes             = { workspace = true }
 http              = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
+thiserror         = { workspace = true }
+sha2              = { workspace = true }
+futures           = { workspace = true }
+reqwest           = { workspace = true }
+
+[dev-dependencies]
+aws-smithy-eventstream = "=0.61.4"
+aws-smithy-types       = "=1.8.1"
 
 [lib]
 doctest = false

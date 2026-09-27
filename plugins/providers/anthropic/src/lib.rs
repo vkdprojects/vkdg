@@ -7,7 +7,7 @@ use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
-use vkdg_provider_sdk::{PreparedRequest, ProviderAdapter, ProviderError};
+use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
 pub struct AnthropicAdapter;
 
@@ -24,8 +24,9 @@ impl ProviderAdapter for AnthropicAdapter {
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),

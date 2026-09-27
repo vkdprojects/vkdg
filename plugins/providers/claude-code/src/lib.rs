@@ -10,13 +10,17 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError,
-    TokenPair,
+    Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
+    ProviderError, TokenPair,
 };
 
 pub struct ClaudeCodeAdapter;
 
 impl ProviderAdapter for ClaudeCodeAdapter {
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        Some(self)
+    }
+
     fn id(&self) -> &str {
         "claude-code"
     }
@@ -29,8 +33,9 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),

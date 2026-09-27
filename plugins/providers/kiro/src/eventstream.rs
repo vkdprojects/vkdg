@@ -1,37 +1,38 @@
-//! AWS Event Stream–derived binary framing parser for Kiro's wire protocol.
+//! AWS EventStream binary framing (`application/vnd.amazon.eventstream`), as used
+//! by Kiro / CodeWhisperer `generateAssistantResponse`.
 //!
-//! Frame format (verified byte-for-byte against a real Kiro API capture):
-//! - total_len: u32 BE — headers_len + payload_len + 4 (message_crc size).
-//!   NOTE: this does NOT include the 8-byte prelude fields (total_len +
-//!   headers_len) or the 4-byte prelude_crc, unlike the generic AWS Event
-//!   Stream spec's `total_length` field.
-//! - headers_len: u32 BE
-//! - prelude_crc: u32 BE (not validated)
-//! - headers: headers_len bytes, see below
-//! - payload: (total_len - headers_len - 4) bytes
-//! - message_crc: u32 BE (not validated)
+//! Message layout (all integers big-endian):
+//! - prelude: `total_len: u32` (whole message, including prelude and trailing CRC),
+//!   `headers_len: u32`, `prelude_crc: u32` (CRC32 of bytes `0..8`)
+//! - headers: `headers_len` bytes of `name_len: u8, name, type: u8, value`
+//! - payload: `total_len - headers_len - 16` bytes
+//! - `message_crc: u32` (CRC32 of bytes `0..total_len - 4`)
 //!
-//! Header entry format:
-//! - name_len: u8
-//! - name: [u8; name_len]
-//! - value_type: u8
-//! - value: depends on value_type
-//!   - String (7): NO length prefix. Runs to the end of the header block
-//!     (consumes all remaining bytes up to headers_len). Confirmed against
-//!     two real frames with different string lengths (16 and 22 bytes) —
-//!     Kiro omits the u16 BE length the generic AWS spec defines for string
-//!     header values.
-//!   - Int32 (3): i32 BE, 4 bytes
-//!   - Int64 (4): i64 BE, 8 bytes
-//!   - ByteArray (5): u16 BE length + bytes (spec-compliant, unverified
-//!     against real Kiro data — Kiro only ever sends String headers)
+//! Both CRCs are validated. A corrupted stream cannot be resynchronised reliably,
+//! so the first error poisons the parser.
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
+
+const PRELUDE_LEN: usize = 12;
+const CRC_LEN: usize = 4;
+const MIN_MESSAGE_LEN: usize = PRELUDE_LEN + CRC_LEN;
+/// Upper bound on a single message; matches the AWS SDK limit (16 MiB).
+const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame {
     pub headers: Vec<FrameHeader>,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
+}
+
+impl Frame {
+    /// Value of a string header, if present.
+    pub fn header_str(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find_map(|h| match &h.value {
+            HeaderValue::String(s) if h.name == name => Some(s.as_str()),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,270 +41,181 @@ pub struct FrameHeader {
     pub value: HeaderValue,
 }
 
+/// AWS EventStream header value; discriminants follow the wire type byte.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HeaderValue {
     Bool(bool),
-    Byte(u8),
-    Int16(u16),
+    Byte(i8),
+    Int16(i16),
     Int32(i32),
     Int64(i64),
-    ByteArray(Vec<u8>),
+    ByteArray(Bytes),
     String(String),
+    /// Milliseconds since the Unix epoch.
     Timestamp(i64),
     Uuid([u8; 16]),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FrameError {
+    #[error("invalid message length {0}")]
+    InvalidLength(usize),
+    #[error("headers length {headers_len} exceeds message length {total_len}")]
+    HeadersOverflow {
+        headers_len: usize,
+        total_len: usize,
+    },
+    #[error("prelude CRC mismatch: frame {expected:#010x}, computed {computed:#010x}")]
+    PreludeCrc { expected: u32, computed: u32 },
+    #[error("message CRC mismatch: frame {expected:#010x}, computed {computed:#010x}")]
+    MessageCrc { expected: u32, computed: u32 },
+    #[error("malformed header: {0}")]
+    MalformedHeader(&'static str),
+    #[error("unknown header value type {0}")]
+    UnknownHeaderType(u8),
+    #[error("stream ended inside a frame ({0} trailing bytes)")]
+    Truncated(usize),
+}
+
+/// Incremental parser; accepts arbitrary chunk boundaries.
+#[derive(Debug, Default)]
 pub struct EventStreamParser {
-    buffer: Vec<u8>,
-    pos: usize,
+    buffer: BytesMut,
+    failed: bool,
 }
 
 impl EventStreamParser {
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-            pos: 0,
-        }
+        Self::default()
     }
 
-    pub fn feed(&mut self, chunk: Bytes) -> Vec<Frame> {
-        // Append new chunk to buffer
-        self.buffer.extend_from_slice(&chunk);
-
+    /// Appends bytes and returns every complete frame now available, in order.
+    ///
+    /// An error is the last item: the parser is then poisoned and yields nothing
+    /// further, since a corrupted stream cannot be resynchronised reliably.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<Result<Frame, FrameError>> {
         let mut frames = Vec::new();
-
-        // Try to parse as many frames as possible
-        while let Some(frame) = self.parse_next_frame() {
-            frames.push(frame);
+        if self.failed {
+            return frames;
         }
-
-        // Reset buffer for next feed
-        if self.pos > 0 {
-            self.buffer.drain(..self.pos);
-            self.pos = 0;
-        }
-
-        frames
-    }
-
-    /// Parse next frame. Returns None if buffer incomplete.
-    fn parse_next_frame(&mut self) -> Option<Frame> {
-        if self.buffer.len() - self.pos < 8 {
-            return None;
-        }
-
-        let start = self.pos;
-
-        let total_len = u32::from_be_bytes([
-            self.buffer[self.pos],
-            self.buffer[self.pos + 1],
-            self.buffer[self.pos + 2],
-            self.buffer[self.pos + 3],
-        ]) as usize;
-
-        let headers_len = u32::from_be_bytes([
-            self.buffer[self.pos + 4],
-            self.buffer[self.pos + 5],
-            self.buffer[self.pos + 6],
-            self.buffer[self.pos + 7],
-        ]) as usize;
-
-        // total_len = headers_len + payload_len + message_crc(4); reject frames
-        // where that doesn't leave room for the message_crc.
-        if total_len < headers_len + 4 {
-            self.pos = start;
-            return None;
-        }
-        let payload_len = total_len - headers_len - 4;
-
-        // Bytes needed from `start`: prelude(8) + prelude_crc(4) + headers_len + payload_len + message_crc(4)
-        let frame_total = 16 + headers_len + payload_len;
-        if self.buffer.len() - start < frame_total {
-            self.pos = start;
-            return None;
-        }
-
-        self.pos += 8; // consumed total_len + headers_len fields
-        self.pos += 4; // skip prelude_crc
-
-        let headers = self.parse_headers(headers_len)?;
-
-        let payload = self.buffer[self.pos..self.pos + payload_len].to_vec();
-        self.pos += payload_len;
-
-        self.pos += 4; // skip message_crc
-
-        Some(Frame { headers, payload })
-    }
-
-    fn parse_headers(&mut self, len: usize) -> Option<Vec<FrameHeader>> {
-        let end = self.pos + len;
-        if end > self.buffer.len() {
-            return None;
-        }
-
-        let mut headers = Vec::new();
-        while self.pos < end {
-            // Kiro header entry: name_len(1) + name(N) + value_type(1) + value.
-            // No leading header_type byte (deviates from generic AWS Event
-            // Stream headers, which prefix each entry with a type byte).
-            let name_len = self.buffer[self.pos] as usize;
-            self.pos += 1;
-
-            if self.pos + name_len > end {
-                return None;
+        self.buffer.extend_from_slice(chunk);
+        loop {
+            match self.next_frame() {
+                Ok(Some(frame)) => frames.push(Ok(frame)),
+                Ok(None) => return frames,
+                Err(err) => {
+                    self.failed = true;
+                    self.buffer.clear();
+                    frames.push(Err(err));
+                    return frames;
+                }
             }
-
-            let name =
-                String::from_utf8_lossy(&self.buffer[self.pos..self.pos + name_len]).to_string();
-            self.pos += name_len;
-
-            if self.pos >= end {
-                return None;
-            }
-
-            // Value type — determines how to parse the value
-            let value_type = self.buffer[self.pos];
-            self.pos += 1;
-
-            let value = match value_type {
-                0 => {
-                    let v = self.buffer[self.pos] != 0;
-                    self.pos += 1;
-                    HeaderValue::Bool(v)
-                }
-                1 => {
-                    let v = self.buffer[self.pos];
-                    self.pos += 1;
-                    HeaderValue::Byte(v)
-                }
-                2 => {
-                    let v = u16::from_be_bytes([self.buffer[self.pos], self.buffer[self.pos + 1]]);
-                    self.pos += 2;
-                    HeaderValue::Int16(v)
-                }
-                3 => {
-                    let v = i32::from_be_bytes([
-                        self.buffer[self.pos],
-                        self.buffer[self.pos + 1],
-                        self.buffer[self.pos + 2],
-                        self.buffer[self.pos + 3],
-                    ]);
-                    self.pos += 4;
-                    HeaderValue::Int32(v)
-                }
-                4 => {
-                    let v = i64::from_be_bytes([
-                        self.buffer[self.pos],
-                        self.buffer[self.pos + 1],
-                        self.buffer[self.pos + 2],
-                        self.buffer[self.pos + 3],
-                        self.buffer[self.pos + 4],
-                        self.buffer[self.pos + 5],
-                        self.buffer[self.pos + 6],
-                        self.buffer[self.pos + 7],
-                    ]);
-                    self.pos += 8;
-                    HeaderValue::Int64(v)
-                }
-                5 => {
-                    let len = u16::from_be_bytes([self.buffer[self.pos], self.buffer[self.pos + 1]])
-                        as usize;
-                    self.pos += 2;
-                    if self.pos + len > end {
-                        return None;
-                    }
-                    let v = self.buffer[self.pos..self.pos + len].to_vec();
-                    self.pos += len;
-                    HeaderValue::ByteArray(v)
-                }
-                7 => {
-                    // Kiro String value: no length prefix, no NUL terminator.
-                    // Consumes all remaining bytes in the header block.
-                    let v = String::from_utf8_lossy(&self.buffer[self.pos..end]).to_string();
-                    self.pos = end;
-                    HeaderValue::String(v)
-                }
-                8 => {
-                    let v = i64::from_be_bytes([
-                        self.buffer[self.pos],
-                        self.buffer[self.pos + 1],
-                        self.buffer[self.pos + 2],
-                        self.buffer[self.pos + 3],
-                        self.buffer[self.pos + 4],
-                        self.buffer[self.pos + 5],
-                        self.buffer[self.pos + 6],
-                        self.buffer[self.pos + 7],
-                    ]);
-                    self.pos += 8;
-                    HeaderValue::Timestamp(v)
-                }
-                10 => {
-                    let mut uuid = [0u8; 16];
-                    uuid.copy_from_slice(&self.buffer[self.pos..self.pos + 16]);
-                    self.pos += 16;
-                    HeaderValue::Uuid(uuid)
-                }
-                _ => {
-                    self.pos = end;
-                    break;
-                }
-            };
-
-            headers.push(FrameHeader { name, value });
         }
-
-        Some(headers)
     }
 
-    pub fn reset(&mut self) {
+    /// Checks that the stream ended on a frame boundary.
+    pub fn finish(&mut self) -> Result<(), FrameError> {
+        if self.failed || self.buffer.is_empty() {
+            return Ok(());
+        }
+        let trailing = self.buffer.len();
+        self.failed = true;
         self.buffer.clear();
-        self.pos = 0;
+        Err(FrameError::Truncated(trailing))
+    }
+
+    fn next_frame(&mut self) -> Result<Option<Frame>, FrameError> {
+        if self.buffer.len() < PRELUDE_LEN {
+            return Ok(None);
+        }
+        let total_len = be_u32(&self.buffer[0..4]) as usize;
+        let headers_len = be_u32(&self.buffer[4..8]) as usize;
+        let expected = be_u32(&self.buffer[8..12]);
+        let computed = crc32fast::hash(&self.buffer[0..8]);
+        if expected != computed {
+            return Err(FrameError::PreludeCrc { expected, computed });
+        }
+        if !(MIN_MESSAGE_LEN..=MAX_MESSAGE_LEN).contains(&total_len) {
+            return Err(FrameError::InvalidLength(total_len));
+        }
+        if headers_len > total_len - MIN_MESSAGE_LEN {
+            return Err(FrameError::HeadersOverflow {
+                headers_len,
+                total_len,
+            });
+        }
+        if self.buffer.len() < total_len {
+            return Ok(None);
+        }
+
+        let body_end = total_len - CRC_LEN;
+        let expected = be_u32(&self.buffer[body_end..total_len]);
+        let computed = crc32fast::hash(&self.buffer[..body_end]);
+        if expected != computed {
+            return Err(FrameError::MessageCrc { expected, computed });
+        }
+
+        let mut message = self.buffer.split_to(total_len).freeze();
+        message.advance(PRELUDE_LEN);
+        let headers = parse_headers(message.split_to(headers_len))?;
+        message.truncate(message.len() - CRC_LEN);
+        Ok(Some(Frame {
+            headers,
+            payload: message,
+        }))
     }
 }
 
-impl Default for EventStreamParser {
-    fn default() -> Self {
-        Self::new()
-    }
+fn be_u32(b: &[u8]) -> u32 {
+    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_single_frame() {
-        // Minimal valid frame with one header, no payload
-        let mut data = Vec::new();
-
-        let header_data = vec![
-            4, // name_len
-            b't', b'e', b's', b't', // name "test"
-            7,    // value_type = String
-            b'h', b'e', b'l', b'l', b'o', // value "hello" (no length prefix, no NUL)
-        ];
-
-        let headers_len = header_data.len() as u32;
-        let payload_len: u32 = 0;
-        // total_len = headers_len + payload_len + message_crc(4)
-        let total_len = headers_len + payload_len + 4;
-
-        data.extend_from_slice(&total_len.to_be_bytes());
-        data.extend_from_slice(&headers_len.to_be_bytes());
-        data.extend_from_slice(&0u32.to_be_bytes()); // prelude_crc
-        data.extend_from_slice(&header_data);
-        data.extend_from_slice(&0u32.to_be_bytes()); // message_crc
-
-        let mut parser = EventStreamParser::new();
-        let frames = parser.feed(Bytes::from(data));
-
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].headers.len(), 1);
-        assert_eq!(frames[0].headers[0].name, "test");
-        assert_eq!(
-            frames[0].headers[0].value,
-            HeaderValue::String("hello".to_string())
-        );
+fn take(buf: &mut Bytes, n: usize, what: &'static str) -> Result<Bytes, FrameError> {
+    if buf.len() < n {
+        return Err(FrameError::MalformedHeader(what));
     }
+    Ok(buf.split_to(n))
+}
+
+fn take_array<const N: usize>(buf: &mut Bytes, what: &'static str) -> Result<[u8; N], FrameError> {
+    let bytes = take(buf, N, what)?;
+    let mut out = [0u8; N];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+fn utf8(bytes: Bytes, what: &'static str) -> Result<String, FrameError> {
+    String::from_utf8(bytes.to_vec()).map_err(|_| FrameError::MalformedHeader(what))
+}
+
+fn parse_headers(mut buf: Bytes) -> Result<Vec<FrameHeader>, FrameError> {
+    let mut headers = Vec::new();
+    while !buf.is_empty() {
+        let name_len = take_array::<1>(&mut buf, "name length")?[0] as usize;
+        let name = utf8(take(&mut buf, name_len, "name")?, "name is not UTF-8")?;
+        let value = match take_array::<1>(&mut buf, "value type")?[0] {
+            0 => HeaderValue::Bool(true),
+            1 => HeaderValue::Bool(false),
+            2 => HeaderValue::Byte(i8::from_be_bytes(take_array(&mut buf, "byte")?)),
+            3 => HeaderValue::Int16(i16::from_be_bytes(take_array(&mut buf, "int16")?)),
+            4 => HeaderValue::Int32(i32::from_be_bytes(take_array(&mut buf, "int32")?)),
+            5 => HeaderValue::Int64(i64::from_be_bytes(take_array(&mut buf, "int64")?)),
+            6 => {
+                let len = u16::from_be_bytes(take_array(&mut buf, "bytes length")?) as usize;
+                HeaderValue::ByteArray(take(&mut buf, len, "bytes value")?)
+            }
+            7 => {
+                let len = u16::from_be_bytes(take_array(&mut buf, "string length")?) as usize;
+                HeaderValue::String(utf8(
+                    take(&mut buf, len, "string value")?,
+                    "string is not UTF-8",
+                )?)
+            }
+            8 => HeaderValue::Timestamp(i64::from_be_bytes(take_array(&mut buf, "timestamp")?)),
+            9 => HeaderValue::Uuid(take_array(&mut buf, "uuid")?),
+            other => return Err(FrameError::UnknownHeaderType(other)),
+        };
+        headers.push(FrameHeader { name, value });
+    }
+    Ok(headers)
 }

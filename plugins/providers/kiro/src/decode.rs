@@ -1,197 +1,326 @@
-//! Decode Kiro EventStream frames to ConversationEvent.
+//! Maps Kiro (CodeWhisperer `generateAssistantResponse`) EventStream frames to
+//! [`ConversationEvent`]s. Mirrors OmniRoute's `transformEventStreamToSSE`.
+//!
+//! Kiro has no explicit terminal event: `Completed` (and synthesized `Usage`) are
+//! emitted from [`KiroEventDecoder::finish`] at end of stream.
 
-use crate::eventstream::Frame;
-use serde_json;
-use vkdg_operations::{ConversationEvent, StopReason};
+use std::collections::HashMap;
 
-/// Maps Kiro EventStream frames to ConversationEvent.
-pub fn frame_to_event(frame: &Frame) -> Option<ConversationEvent> {
-    // Extract event-type: first from headers, fallback to payload JSON
-    let event_type = extract_event_type(frame)?;
+use serde_json::Value;
+use vkdg_core::{RequestId, VkdgError};
+use vkdg_operations::{ConversationEvent, StopReason, UsageCount};
 
-    match event_type.as_str() {
-        "messageStart" | "message_start" => Some(ConversationEvent::Started {
-            request_id: vkdg_core::RequestId::new(),
-        }),
-        "contentBlockDelta" | "content_block_delta" => {
-            // Extract text from delta.text nested path
-            let delta = extract_delta_text(&frame.payload)?;
-            let index = extract_json_usize(&frame.payload, "index").unwrap_or(0) as u32;
-            Some(ConversationEvent::OutputDelta { delta, index })
-        }
-        "messageDelta" | "message_delta" => {
-            let stop_reason = extract_nested_string(&frame.payload, "delta", "stop_reason")
-                .and_then(|s| match s.as_str() {
-                    "end_turn" => Some(StopReason::EndTurn),
-                    "max_tokens" => Some(StopReason::MaxTokens),
-                    "stop_sequence" => Some(StopReason::StopSequence),
-                    "tool_use" => Some(StopReason::ToolUse),
-                    _ => None,
-                })
-                .unwrap_or(StopReason::EndTurn);
-            Some(ConversationEvent::Completed { stop_reason })
-        }
-        "metadataEvent" | "metadata" => {
-            let stop_reason = extract_json_string(&frame.payload, "stopReason")
-                .and_then(|s| match s.as_str() {
-                    "END_TURN" => Some(StopReason::EndTurn),
-                    "MAX_TOKENS" => Some(StopReason::MaxTokens),
-                    "STOP_SEQUENCE" => Some(StopReason::StopSequence),
-                    "TOOL_USE" => Some(StopReason::ToolUse),
-                    _ => None,
-                })
-                .unwrap_or(StopReason::EndTurn);
-            Some(ConversationEvent::Completed { stop_reason })
-        }
-        "initial-response" => Some(ConversationEvent::Started {
-            request_id: vkdg_core::RequestId::new(),
-        }),
-        "assistantResponseEvent" => {
-            let content = extract_json_string(&frame.payload, "content")?;
-            Some(ConversationEvent::OutputDelta {
-                delta: content,
-                index: 0,
-            })
-        }
-        "contextUsageEvent" => {
-            let usage_pct = extract_json_f64(&frame.payload, "contextUsagePercentage")?;
-            let output_tokens = (usage_pct * 1000.0) as u32;
-            Some(ConversationEvent::Usage {
-                input_tokens: vkdg_operations::UsageCount::Estimated(0),
-                output_tokens: vkdg_operations::UsageCount::Estimated(output_tokens),
-            })
-        }
-        "meteringEvent" => {
-            // Metering events don't map to conversation events
-            None
-        }
-        _ => None,
-    }
+use crate::eventstream::{Frame, FrameError};
+
+/// Context window used to turn `contextUsagePercentage` into tokens when the
+/// model's own limit is unknown (OmniRoute `KIRO_DEFAULT_MAX_INPUT_TOKENS`).
+const DEFAULT_MAX_INPUT_TOKENS: u64 = 200_000;
+
+#[derive(Debug, Default)]
+pub struct KiroEventDecoder {
+    started: bool,
+    terminated: bool,
+    /// toolUseId → stream index, in first-seen order.
+    tool_indices: HashMap<String, u32>,
+    /// Object-form tool inputs: the latest object is canonical; emitted once.
+    buffered_tool_inputs: Vec<(String, u32, String)>,
+    generated_tool_ids: u32,
+    output_chars: u64,
+    context_usage_pct: f64,
+    reported_usage: Option<(u32, u32)>,
 }
 
-/// Extract event-type from frame (headers first, fallback to payload)
-fn extract_event_type(frame: &Frame) -> Option<String> {
-    // Try headers first
-    if let Some(header) = frame.headers.iter().find(|h| h.name == ":event-type") {
-        if let crate::eventstream::HeaderValue::String(s) = &header.value {
-            return Some(s.clone());
+impl KiroEventDecoder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn on_frame(&mut self, frame: &Frame, out: &mut Vec<ConversationEvent>) {
+        if self.terminated {
+            return;
         }
-        if let crate::eventstream::HeaderValue::ByteArray(b) = &header.value {
-            if let Ok(s) = std::str::from_utf8(b) {
-                return Some(s.to_string());
+        if !self.started {
+            self.started = true;
+            out.push(ConversationEvent::Started {
+                request_id: RequestId::new(),
+            });
+        }
+
+        let payload = parse_payload(&frame.payload);
+        match frame.header_str(":message-type") {
+            Some("exception") | Some("error") => {
+                // AWS names the failure in a header; the Kiro plane puts an
+                // `error_code` in the payload instead.
+                let kind = frame
+                    .header_str(":exception-type")
+                    .or_else(|| frame.header_str(":error-code"))
+                    .or_else(|| error_code(&payload))
+                    .unwrap_or("UnknownException");
+                let message = error_message(&payload).unwrap_or_default();
+                self.fail(out, exception_status(kind), format!("{kind}: {message}"));
+                return;
+            }
+            _ => {}
+        }
+
+        match frame.header_str(":event-type").unwrap_or_default() {
+            "assistantResponseEvent" => {
+                if let Some(content) = str_field(&payload, "content").filter(|c| !c.is_empty()) {
+                    self.output_chars += content.chars().count() as u64;
+                    out.push(ConversationEvent::OutputDelta {
+                        delta: content.to_owned(),
+                        index: 0,
+                    });
+                }
+            }
+            "codeEvent" => {
+                if let Some(content) = str_field(&payload, "content").filter(|c| !c.is_empty()) {
+                    out.push(ConversationEvent::OutputDelta {
+                        delta: content.to_owned(),
+                        index: 0,
+                    });
+                }
+            }
+            // Reasoning text carries its own field name (`text`), not `content`.
+            // It goes out as ReasoningDelta so clients can render or hide it,
+            // never merged into the visible answer.
+            "reasoningContentEvent" => {
+                if let Some(text) = str_field(&payload, "text").filter(|t| !t.is_empty()) {
+                    out.push(ConversationEvent::ReasoningDelta {
+                        delta: text.to_owned(),
+                        index: 0,
+                    });
+                }
+            }
+            "toolUseEvent" => self.on_tool_use(payload, out),
+            "messageStopEvent" => self.flush_buffered_tool_inputs(out),
+            "contextUsageEvent" => {
+                // The Kiro plane sends snake_case here, unlike its other events.
+                if let Some(pct) = ["context_usage_percentage", "contextUsagePercentage"]
+                    .iter()
+                    .find_map(|k| payload.get(*k).and_then(Value::as_f64))
+                    .filter(|p| *p > 0.0)
+                {
+                    self.context_usage_pct = pct;
+                }
+            }
+            "metadataEvent" | "messageMetadataEvent" | "metricsEvent" => self.on_metrics(&payload),
+            "invalidStateEvent" => {
+                let message = error_message(&payload).unwrap_or("invalid state");
+                self.fail(out, 502, format!("invalidStateEvent: {message}"));
+            }
+            // meteringEvent (credits), codeReferenceEvent, supplementaryWebLinksEvent,
+            // followupPromptEvent and unknown events carry nothing to forward.
+            _ => {}
+        }
+    }
+
+    /// Surfaces a framing error; the stream is unusable afterwards.
+    pub fn on_frame_error(&mut self, err: FrameError, out: &mut Vec<ConversationEvent>) {
+        self.fail(out, 502, format!("kiro eventstream: {err}"));
+    }
+
+    /// End of upstream stream: flush tool inputs, usage, and the terminal event.
+    pub fn finish(&mut self, out: &mut Vec<ConversationEvent>) {
+        if self.terminated {
+            return;
+        }
+        if !self.started {
+            self.fail(out, 502, "kiro stream ended without any event".to_owned());
+            return;
+        }
+        self.terminated = true;
+        self.flush_buffered_tool_inputs(out);
+        if let Some((input_tokens, output_tokens)) = self.usage() {
+            out.push(ConversationEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens: vkdg_operations::UsageCount::Unknown,
+                cache_creation_tokens: vkdg_operations::UsageCount::Unknown,
+            });
+        }
+        let stop_reason = if self.tool_indices.is_empty() {
+            StopReason::EndTurn
+        } else {
+            StopReason::ToolUse
+        };
+        out.push(ConversationEvent::Completed { stop_reason });
+    }
+
+    fn fail(&mut self, out: &mut Vec<ConversationEvent>, code: u16, message: String) {
+        self.terminated = true;
+        out.push(ConversationEvent::Failed {
+            error: VkdgError::UpstreamError { code, message },
+        });
+    }
+
+    fn on_tool_use(&mut self, payload: Value, out: &mut Vec<ConversationEvent>) {
+        let uses = match payload {
+            Value::Array(items) => items,
+            Value::Object(_) => vec![payload],
+            _ => return,
+        };
+        for tool_use in uses {
+            let Some(name) = str_field(&tool_use, "name")
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            else {
+                self.fail(
+                    out,
+                    502,
+                    "invalid Kiro toolUseEvent: missing tool name".to_owned(),
+                );
+                return;
+            };
+            let id = match str_field(&tool_use, "toolUseId").filter(|id| !id.is_empty()) {
+                Some(id) => id.to_owned(),
+                None => {
+                    self.generated_tool_ids += 1;
+                    format!("call_kiro_{}", self.generated_tool_ids)
+                }
+            };
+            let next = self.tool_indices.len() as u32;
+            let index = *self.tool_indices.entry(id.clone()).or_insert_with(|| {
+                out.push(ConversationEvent::ToolCallDelta {
+                    tool_use_id: id.clone(),
+                    name: name.to_owned(),
+                    input_delta: String::new(),
+                    index: next,
+                });
+                next
+            });
+            match tool_use.get("input") {
+                Some(Value::String(fragment)) if !fragment.is_empty() => {
+                    out.push(ConversationEvent::ToolCallDelta {
+                        tool_use_id: id,
+                        name: String::new(),
+                        input_delta: fragment.clone(),
+                        index,
+                    });
+                }
+                Some(obj @ Value::Object(_)) => {
+                    let canonical = obj.to_string();
+                    match self
+                        .buffered_tool_inputs
+                        .iter_mut()
+                        .find(|(i, ..)| *i == id)
+                    {
+                        Some(entry) => entry.2 = canonical,
+                        None => self.buffered_tool_inputs.push((id, index, canonical)),
+                    }
+                }
+                _ => {}
+            }
+            // `stop: true` closes this call: the input will not grow, so clients
+            // can parse and dispatch it without waiting for end of stream.
+            if tool_use.get("stop").and_then(Value::as_bool) == Some(true) {
+                self.flush_buffered_tool_inputs(out);
+                out.push(ConversationEvent::ToolCallEnd { index });
             }
         }
     }
 
-    // Fallback: extract from payload JSON
-    let value: serde_json::Value = serde_json::from_slice(&frame.payload).ok()?;
-    value.get("type")?.as_str().map(|s| s.to_string())
-}
-
-/// Extract delta.text from content_block_delta payload
-fn extract_delta_text(payload: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-
-    // Try nested path: delta.text
-    if let Some(delta) = value.get("delta") {
-        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-            return Some(text.to_string());
+    fn flush_buffered_tool_inputs(&mut self, out: &mut Vec<ConversationEvent>) {
+        for (tool_use_id, index, input_delta) in self.buffered_tool_inputs.drain(..) {
+            out.push(ConversationEvent::ToolCallDelta {
+                tool_use_id,
+                name: String::new(),
+                input_delta,
+                index,
+            });
         }
     }
 
-    // Fallback: direct text field
-    value
-        .get("text")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
-}
-
-fn extract_json_string(payload: &[u8], key: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    value.get(key).and_then(|v| v.as_str()).map(String::from)
-}
-
-fn extract_nested_string(payload: &[u8], parent: &str, child: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    value
-        .get(parent)
-        .and_then(|p| p.get(child))
-        .and_then(|v| v.as_str())
-        .map(String::from)
-}
-
-fn extract_json_usize(payload: &[u8], key: &str) -> Option<usize> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    value.get(key).and_then(|v| v.as_u64()).map(|v| v as usize)
-}
-
-fn extract_json_f64(payload: &[u8], key: &str) -> Option<f64> {
-    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    value.get(key).and_then(|v| v.as_f64())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bytes;
-
-    #[test]
-    fn test_extract_delta_text() {
-        let payload = br#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}"#;
-        let result = extract_delta_text(payload);
-        assert_eq!(result, Some("hello".to_string()));
+    fn on_metrics(&mut self, payload: &Value) {
+        let metrics = payload
+            .get("metricsEvent")
+            .or_else(|| payload.get("usage"))
+            .or_else(|| payload.get("metadataEvent").and_then(|m| m.get("usage")))
+            .unwrap_or(payload);
+        let read = |keys: &[&str]| {
+            keys.iter()
+                .find_map(|k| metrics.get(*k).and_then(Value::as_u64))
+                .unwrap_or(0)
+        };
+        let input = read(&["inputTokens", "prompt_tokens"]);
+        let output = read(&["outputTokens", "completion_tokens"]);
+        if input > 0 || output > 0 {
+            self.reported_usage = Some((saturate(input), saturate(output)));
+        }
     }
 
-    #[test]
-    fn test_metadata_event_end_turn() {
-        let payload = br#"{"stopReason":"END_TURN"}"#;
-        let result = extract_json_string(payload, "stopReason");
-        assert_eq!(result, Some("END_TURN".to_string()));
+    /// Reported counts if Kiro sent any; otherwise OmniRoute's `ensureKiroUsage`
+    /// estimate: output ≈ chars/4, total ≈ context% × window, input = total − output.
+    fn usage(&self) -> Option<(UsageCount, UsageCount)> {
+        if let Some((input, output)) = self.reported_usage {
+            return Some((UsageCount::Reported(input), UsageCount::Reported(output)));
+        }
+        let output = if self.output_chars > 0 {
+            (self.output_chars / 4).max(1)
+        } else {
+            0
+        };
+        let total = (self.context_usage_pct * DEFAULT_MAX_INPUT_TOKENS as f64 / 100.0) as u64;
+        if total == 0 && output == 0 {
+            return None;
+        }
+        let input = total.saturating_sub(output);
+        Some((
+            UsageCount::Estimated(saturate(input)),
+            UsageCount::Estimated(saturate(output)),
+        ))
     }
+}
 
-    /// End-to-end test: parse real fixture through EventStreamParser -> frame_to_event -> ConversationEvent
-    #[test]
-    fn test_e2e_fixture_parsing() {
-        let fixture = include_bytes!("../tests/fixtures/generate_assistant_response.eventstream");
+fn parse_payload(bytes: &[u8]) -> Value {
+    serde_json::from_slice(bytes).unwrap_or(Value::Null)
+}
 
-        // Parse frames through EventStreamParser
-        let mut parser = crate::eventstream::EventStreamParser::new();
-        let frames = parser.feed(bytes::Bytes::from(fixture.to_vec()));
+fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
 
-        // Should parse all 6 frames
-        assert_eq!(frames.len(), 6, "Expected 6 frames from fixture");
+/// Error text from either shape: the Kiro plane sends `error_message`, while AWS
+/// exception frames send `message`.
+fn error_message(payload: &Value) -> Option<&str> {
+    [
+        "error_message",
+        "errorMessage",
+        "message",
+        "Message",
+        "reason",
+    ]
+    .iter()
+    .find_map(|k| str_field(payload, k))
+}
 
-        // Map frames to ConversationEvent using frame_to_event
-        let events: Vec<_> = frames.iter().filter_map(frame_to_event).collect();
+/// Error code from a `:message-type: error` payload, which the Kiro data plane
+/// uses instead of the AWS `:exception-type` header.
+fn error_code(payload: &Value) -> Option<&str> {
+    ["error_code", "errorCode"]
+        .iter()
+        .find_map(|k| str_field(payload, k))
+}
 
-        // Should get at least the assistant responses and completion
-        let output_deltas: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                ConversationEvent::OutputDelta { delta, .. } => Some(delta.clone()),
-                _ => None,
-            })
-            .collect();
-
-        // Should have 2 OutputDelta events: "hello" and " from kiro"
-        assert_eq!(
-            output_deltas.len(),
-            2,
-            "Expected 2 OutputDelta events, got {:?}",
-            output_deltas
-        );
-        assert_eq!(output_deltas[0], "hello");
-        assert_eq!(output_deltas[1], " from kiro");
-
-        // Should have at least 1 Completed event (messageDelta and/or metadataEvent)
-        let completed_count = events
-            .iter()
-            .filter(|e| matches!(e, ConversationEvent::Completed { .. }))
-            .count();
-        assert!(
-            completed_count >= 1,
-            "Expected at least 1 Completed event, got {}",
-            completed_count
-        );
+/// HTTP status for an upstream failure, covering both the AWS exception names and
+/// the Kiro plane's own error codes.
+fn exception_status(kind: &str) -> u16 {
+    match kind {
+        // AWS exception types.
+        "ThrottlingException" | "ServiceQuotaExceededException" => 429,
+        "ValidationException" => 400,
+        "AccessDeniedException" => 403,
+        "ResourceNotFoundException" => 404,
+        // Kiro data-plane error codes.
+        "RATE_LIMIT_EXCEEDED" => 429,
+        // Quota is exhausted until the next cycle, so it is not a retryable 429.
+        "MONTHLY_REQUEST_COUNT" => 402,
+        "CONTENT_LENGTH_EXCEEDS_THRESHOLD" | "BAD_REQUEST" => 400,
+        "INVALID_BEARER_TOKEN" => 401,
+        _ => 502,
     }
+}
+
+fn saturate(n: u64) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }

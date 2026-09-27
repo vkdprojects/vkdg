@@ -117,6 +117,9 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
         tracing::error!("data-plane route mounted without require_api_key");
         return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
     };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_oai_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId(identity.key_id.clone()),
@@ -182,6 +185,9 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
         tracing::error!("data-plane route mounted without require_api_key");
         return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
     };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_oai_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId(identity.key_id.clone()),

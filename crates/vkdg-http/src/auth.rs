@@ -19,6 +19,7 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde_json::json;
+use vkdg_core::VkdgError;
 use vkdg_governance::{KeyScope, VirtualKeyStore};
 
 /// Who is calling, as established by [`require_api_key`].
@@ -30,6 +31,8 @@ pub struct ClientIdentity {
     /// Client address from the socket, or from `X-Forwarded-For` only when the
     /// socket peer is a trusted proxy. See [`crate::resolve_client_ip`].
     pub client_ip: Option<std::net::IpAddr>,
+    /// Model patterns the key may call; empty = every model.
+    pub allowed_models: Arc<[String]>,
 }
 
 impl ClientIdentity {
@@ -39,6 +42,19 @@ impl ClientIdentity {
             key_id: "anonymous".into(),
             tenant_id: "default".into(),
             client_ip,
+            allowed_models: Arc::from([]),
+        }
+    }
+
+    /// Check the requested model against the key's list. Ingress calls this once
+    /// the body is decoded: the model is not known before that.
+    pub fn check_model(&self, model: &str) -> Result<(), VkdgError> {
+        if self.allowed_models.is_empty()
+            || vkdg_core::glob::matches_any(&self.allowed_models, model)
+        {
+            Ok(())
+        } else {
+            Err(VkdgError::Unauthorized)
         }
     }
 }
@@ -127,6 +143,14 @@ pub async fn require_api_key(
         }
     };
 
+    if !key.permits_ip(client_ip) {
+        return reject(
+            &path,
+            StatusCode::FORBIDDEN,
+            "this API key is not allowed from this address",
+        );
+    }
+
     let scope = scope_for(&path);
     if !key.allows(scope) {
         return reject(
@@ -140,6 +164,7 @@ pub async fn require_api_key(
         key_id: key.id.0,
         tenant_id: key.tenant_id,
         client_ip,
+        allowed_models: key.allowed_models.into(),
     });
     next.run(req).await
 }
@@ -266,7 +291,11 @@ mod tests {
     async fn both_header_styles_authenticate_and_carry_identity() {
         let store = store();
         let (key, raw) = store
-            .create("ci", "acme", KeyScope::DEFAULT.to_vec())
+            .create({
+                let mut n = vkdg_governance::NewKey::named("ci");
+                n.tenant_id = "acme".into();
+                n
+            })
             .unwrap();
         let app = app(DataAuth::required(store));
         let expected = format!("{}|acme", key.id.0);
@@ -291,9 +320,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_key_is_rejected() {
         let store = store();
-        let (key, raw) = store
-            .create("ci", "default", KeyScope::DEFAULT.to_vec())
-            .unwrap();
+        let (key, raw) = store.create(vkdg_governance::NewKey::named("ci")).unwrap();
         store.revoke(&key.id).unwrap();
         let (s, body) = call(
             app(DataAuth::required(store)),
@@ -313,7 +340,11 @@ mod tests {
     async fn key_without_image_scope_cannot_generate_images() {
         let store = store();
         let (_key, raw) = store
-            .create("chat-only", "default", vec![KeyScope::DataInference])
+            .create({
+                let mut n = vkdg_governance::NewKey::named("chat-only");
+                n.scopes = vec![KeyScope::DataInference];
+                n
+            })
             .unwrap();
         let app = app(DataAuth::required(store));
         let bearer = format!("Bearer {raw}");
@@ -336,5 +367,37 @@ mod tests {
     async fn explicit_opt_out_serves_anonymously() {
         let (s, body) = call(app(DataAuth::disabled()), "/v1/messages", &[]).await;
         assert_eq!((s, body.as_str()), (StatusCode::OK, "anonymous|default"));
+    }
+
+    // Plausible wrong impl: per-key IP list stored but never enforced.
+    #[tokio::test]
+    async fn key_used_outside_its_ip_list_is_forbidden() {
+        let store = store();
+        let mut spec = vkdg_governance::NewKey::named("office");
+        spec.allowed_ips = vec!["10.0.0.0/8".parse().unwrap()];
+        let (_k, raw) = store.create(spec).unwrap();
+        // In-process calls have no socket address: the list cannot be satisfied.
+        let (s, body) = call(
+            app(DataAuth::required(store)),
+            "/v1/messages",
+            &[("x-api-key", &raw)],
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    #[test]
+    fn model_outside_the_key_list_is_rejected() {
+        let id = ClientIdentity {
+            key_id: "k".into(),
+            tenant_id: "t".into(),
+            client_ip: None,
+            allowed_models: Arc::from(["claude-*".to_owned()]),
+        };
+        assert!(id.check_model("claude-sonnet-4.5").is_ok());
+        assert!(matches!(
+            id.check_model("gpt-4o"),
+            Err(VkdgError::Unauthorized)
+        ));
     }
 }

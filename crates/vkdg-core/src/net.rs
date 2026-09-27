@@ -17,6 +17,12 @@ pub struct IpNet {
 }
 
 impl IpNet {
+    /// `::/128`, the unspecified address: a range no client is ever in.
+    pub const UNSPECIFIED_V6: Self = Self {
+        addr: IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        prefix: 128,
+    };
+
     /// True when `ip` is inside this range. IPv4 never matches an IPv6 range
     /// and vice versa.
     pub fn contains(&self, ip: IpAddr) -> bool {

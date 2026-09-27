@@ -15,7 +15,7 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
-use vkdg_governance::{KeyScope, VirtualKey, VirtualKeyId};
+use vkdg_governance::{KeyScope, NewKey, VirtualKey, VirtualKeyId};
 
 #[derive(Deserialize)]
 pub struct CreateKeyBody {
@@ -23,6 +23,14 @@ pub struct CreateKeyBody {
     /// Defaults to every data-plane scope.
     pub scopes: Option<Vec<KeyScope>>,
     pub tenant_id: Option<String>,
+    /// RFC 3339 instant after which the key stops working.
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Model patterns (`claude-*`); empty or absent = every model.
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    /// Addresses or CIDR ranges; empty or absent = anywhere.
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -44,7 +52,10 @@ struct KeySummary {
     created_at: String,
     last_used_at: Option<String>,
     revoked_at: Option<String>,
-    /// `active` or `revoked`.
+    expires_at: Option<String>,
+    allowed_models: Vec<String>,
+    allowed_ips: Vec<String>,
+    /// `active`, `expired`, or `revoked`.
     status: &'static str,
 }
 
@@ -59,7 +70,16 @@ impl From<&VirtualKey> for KeySummary {
             created_at: k.created_at.to_rfc3339(),
             last_used_at: k.last_used_at.map(|t| t.to_rfc3339()),
             revoked_at: k.revoked_at.map(|t| t.to_rfc3339()),
-            status: if k.is_revoked() { "revoked" } else { "active" },
+            expires_at: k.expires_at.map(|t| t.to_rfc3339()),
+            allowed_models: k.allowed_models.clone(),
+            allowed_ips: k.allowed_ips.iter().map(ToString::to_string).collect(),
+            status: if k.is_revoked() {
+                "revoked"
+            } else if k.is_expired_at(chrono::Utc::now()) {
+                "expired"
+            } else {
+                "active"
+            },
         }
     }
 }
@@ -72,6 +92,14 @@ struct KeyListResponse {
 
 fn unauthorized() -> Response {
     AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized()).into_response()
+}
+
+fn invalid(message: impl Into<String>) -> Response {
+    AdminErrorResponse(
+        StatusCode::BAD_REQUEST,
+        AdminError::new("invalid_input", message.into()),
+    )
+    .into_response()
 }
 
 fn store_failure(e: &vkdg_governance::KeyStoreError) -> Response {
@@ -120,8 +148,22 @@ pub async fn create_key(
         )
         .into_response();
     }
-    let tenant = body.tenant_id.as_deref().unwrap_or("default");
-    match state.key_store.create(name, tenant, scopes) {
+    let allowed_ips = match vkdg_core::net::parse_ip_list("allowed_ips", &body.allowed_ips) {
+        Ok(ips) => ips,
+        Err(msg) => return invalid(msg),
+    };
+    if body.expires_at.is_some_and(|t| t <= chrono::Utc::now()) {
+        return invalid("expires_at must be in the future");
+    }
+    let spec = NewKey {
+        name: name.to_owned(),
+        tenant_id: body.tenant_id.unwrap_or_else(|| "default".into()),
+        scopes,
+        expires_at: body.expires_at,
+        allowed_models: body.allowed_models,
+        allowed_ips,
+    };
+    match state.key_store.create(spec) {
         Ok((key, raw)) => (
             StatusCode::CREATED,
             Json(CreatedKeyResponse {
@@ -199,6 +241,9 @@ mod tests {
             name: name.into(),
             scopes,
             tenant_id: None,
+            expires_at: None,
+            allowed_models: vec![],
+            allowed_ips: vec![],
         })
     }
 
@@ -285,5 +330,41 @@ mod tests {
         assert_eq!(none.status(), StatusCode::BAD_REQUEST);
         let missing = revoke_key(State(state), h, Path("no-such-id".into())).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn limits_are_validated_stored_and_listed() {
+        let state = make_state();
+        let h = authed_headers(&state);
+        let mk = |ips: Vec<&str>, exp: Option<chrono::DateTime<chrono::Utc>>| {
+            Json(CreateKeyBody {
+                name: "scoped".into(),
+                scopes: None,
+                tenant_id: None,
+                expires_at: exp,
+                allowed_models: vec!["claude-*".into()],
+                allowed_ips: ips.into_iter().map(Into::into).collect(),
+            })
+        };
+        let bad_ip = create_key(State(state.clone()), h.clone(), mk(vec!["192.168."], None)).await;
+        assert_eq!(bad_ip.status(), StatusCode::BAD_REQUEST);
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        let bad_exp = create_key(State(state.clone()), h.clone(), mk(vec![], Some(past))).await;
+        assert_eq!(bad_exp.status(), StatusCode::BAD_REQUEST);
+
+        let future = chrono::Utc::now() + chrono::Duration::days(7);
+        let ok = create_key(
+            State(state.clone()),
+            h.clone(),
+            mk(vec!["10.0.0.0/8"], Some(future)),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::CREATED);
+        let v = json(list_keys(State(state), h).await).await;
+        let item = &v["items"][0];
+        assert_eq!(item["allowed_models"][0], "claude-*");
+        assert_eq!(item["allowed_ips"][0], "10.0.0.0/8");
+        assert!(item["expires_at"].is_string());
+        assert_eq!(item["status"], "active");
     }
 }

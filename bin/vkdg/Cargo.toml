@@ -48,6 +48,7 @@ vkdg-config      = { workspace = true }
 vkdg-admin       = { workspace = true }
 vkdg-governance  = { workspace = true }
 uuid             = { workspace = true }
+chrono           = { workspace = true }
 rust-embed  = { workspace = true }
 axum-embed  = { workspace = true }
 inquire     = { workspace = true }

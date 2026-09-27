@@ -52,6 +52,9 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
         tracing::error!("data-plane route mounted without require_api_key");
         return vkdg_error_to_anthropic_response(VkdgError::Unauthenticated);
     };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_anthropic_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
         client_id: ClientId(identity.key_id.clone()),

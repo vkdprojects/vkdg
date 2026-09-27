@@ -7,5 +7,5 @@
 pub mod key;
 pub mod store;
 
-pub use key::{hash_token, KeyScope, VirtualKey, VirtualKeyId, TOKEN_PREFIX};
+pub use key::{hash_token, KeyScope, NewKey, VirtualKey, VirtualKeyId, TOKEN_PREFIX};
 pub use store::{KeyStoreError, VirtualKeyStore, DEFAULT_CACHE_TTL};

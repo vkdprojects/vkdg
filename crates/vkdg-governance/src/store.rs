@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::key::{hash_token, KeyScope, VirtualKey, VirtualKeyId};
+use crate::key::{hash_token, KeyScope, NewKey, VirtualKey, VirtualKeyId};
 
 /// How long a successful lookup is trusted before re-reading SQLite.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -57,7 +57,15 @@ pub struct VirtualKeyStore {
 }
 
 const SELECT: &str = "SELECT id, name, tenant_id, token_hash, prefix, scopes, created_at, \
-                      last_used_at, revoked_at FROM keys";
+                      last_used_at, revoked_at, expires_at, allowed_models, allowed_ips FROM keys";
+
+/// Columns added after the first release, with their definitions. `init` adds
+/// any that an existing `keys.db` lacks, so upgrades need no manual step.
+const LATER_COLUMNS: &[(&str, &str)] = &[
+    ("expires_at", "TEXT"),
+    ("allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
+    ("allowed_ips", "TEXT NOT NULL DEFAULT '[]'"),
+];
 
 impl VirtualKeyStore {
     /// Open (or create) the store at `path`. The file is created `0600` on Unix
@@ -102,6 +110,16 @@ impl VirtualKeyStore {
              );",
         )
         .map_err(sql("init"))?;
+        for (name, def) in LATER_COLUMNS {
+            let present = conn
+                .prepare("SELECT 1 FROM pragma_table_info('keys') WHERE name = ?1")
+                .and_then(|mut st| st.exists([name]))
+                .map_err(sql("migrate"))?;
+            if !present {
+                conn.execute(&format!("ALTER TABLE keys ADD COLUMN {name} {def}"), [])
+                    .map_err(sql("migrate"))?;
+            }
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             cache: Mutex::new(HashMap::new()),
@@ -110,18 +128,15 @@ impl VirtualKeyStore {
     }
 
     /// Mint and persist a key. Returns the record and the raw token (shown once).
-    pub fn create(
-        &self,
-        name: &str,
-        tenant_id: &str,
-        scopes: Vec<KeyScope>,
-    ) -> Result<(VirtualKey, String)> {
-        let (key, raw) = VirtualKey::new(name.to_owned(), tenant_id.to_owned(), scopes);
+    pub fn create(&self, spec: NewKey) -> Result<(VirtualKey, String)> {
+        let (key, raw) = VirtualKey::new(spec);
+        let ips: Vec<String> = key.allowed_ips.iter().map(ToString::to_string).collect();
         self.conn
             .lock()
             .execute(
-                "INSERT INTO keys (id, name, tenant_id, token_hash, prefix, scopes, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO keys (id, name, tenant_id, token_hash, prefix, scopes, created_at,
+                                   expires_at, allowed_models, allowed_ips)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     key.id.0,
                     key.name,
@@ -130,6 +145,9 @@ impl VirtualKeyStore {
                     key.prefix,
                     encode_scopes(&key.scopes),
                     key.created_at.to_rfc3339(),
+                    key.expires_at.map(|t| t.to_rfc3339()),
+                    json(&key.allowed_models),
+                    json(&ips),
                 ],
             )
             .map_err(sql("insert"))?;
@@ -147,6 +165,11 @@ impl VirtualKeyStore {
             let mut cache = self.cache.lock();
             match cache.get(&hash) {
                 Some(hit) if now.duration_since(hit.at) < self.ttl => {
+                    // Expiry is a wall-clock fact, not a cache decision.
+                    if hit.key.is_expired_at(Utc::now()) {
+                        cache.remove(&hash);
+                        return Ok(None);
+                    }
                     return Ok(Some(hit.key.clone()));
                 }
                 // Expired: drop it so the map only ever holds live, valid keys.
@@ -157,7 +180,10 @@ impl VirtualKeyStore {
             }
         }
 
-        let Some(mut key) = self.get_by_hash(&hash)?.filter(|k| !k.is_revoked()) else {
+        let Some(mut key) = self
+            .get_by_hash(&hash)?
+            .filter(|k| !k.is_revoked() && !k.is_expired_at(Utc::now()))
+        else {
             return Ok(None);
         };
         self.touch(&mut key)?;
@@ -231,7 +257,11 @@ impl VirtualKeyStore {
 }
 
 fn encode_scopes(scopes: &[KeyScope]) -> String {
-    serde_json::to_string(scopes).unwrap_or_else(|_| "[]".to_owned())
+    json(scopes)
+}
+
+fn json<T: serde::Serialize + ?Sized>(v: &T) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "[]".to_owned())
 }
 
 fn parse_time(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -254,8 +284,21 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
         created_at: parse_time(Some(created)).unwrap_or_else(Utc::now),
         last_used_at: parse_time(row.get(7)?),
         revoked_at: parse_time(row.get(8)?),
+        expires_at: parse_time(row.get(9)?),
+        allowed_models: serde_json::from_str(&row.get::<_, String>(10)?).unwrap_or_default(),
+        // A stored range that no longer parses would widen the key if dropped;
+        // replace the whole list with one that matches nothing instead.
+        allowed_ips: {
+            let raw: Vec<String> =
+                serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or_default();
+            let parsed: Option<Vec<_>> = raw.iter().map(|s| s.parse().ok()).collect();
+            parsed.unwrap_or_else(|| vec![NOTHING])
+        },
     })
 }
+
+/// A range no client address can be in: `::/128` is the unspecified address.
+const NOTHING: vkdg_core::net::IpNet = vkdg_core::net::IpNet::UNSPECIFIED_V6;
 
 fn sql(op: &'static str) -> impl Fn(rusqlite::Error) -> KeyStoreError {
     move |source| KeyStoreError::Sqlite { op, source }
@@ -291,15 +334,11 @@ fn create_private_file(_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn scopes() -> Vec<KeyScope> {
-        KeyScope::DEFAULT.to_vec()
-    }
-
     // Plausible wrong impl: lookup compares the raw token, or accepts a prefix.
     #[test]
     fn only_the_exact_raw_token_authenticates() {
         let store = VirtualKeyStore::in_memory().unwrap();
-        let (key, raw) = store.create("ci", "default", scopes()).unwrap();
+        let (key, raw) = store.create(NewKey::named("ci")).unwrap();
         assert_eq!(store.authenticate(&raw).unwrap().unwrap().id, key.id);
         assert!(store.authenticate(&key.prefix).unwrap().is_none());
         assert!(store.authenticate(&key.token_hash).unwrap().is_none());
@@ -310,7 +349,7 @@ mod tests {
     #[test]
     fn revoked_key_stops_authenticating_in_the_same_process_at_once() {
         let store = VirtualKeyStore::in_memory().unwrap();
-        let (key, raw) = store.create("ci", "default", scopes()).unwrap();
+        let (key, raw) = store.create(NewKey::named("ci")).unwrap();
         assert!(store.authenticate(&raw).unwrap().is_some());
         assert!(store.revoke(&key.id).unwrap());
         assert!(store.authenticate(&raw).unwrap().is_none());
@@ -328,7 +367,7 @@ mod tests {
             .with_cache_ttl(Duration::ZERO);
         let cli = VirtualKeyStore::open(&path).unwrap();
 
-        let (key, raw) = cli.create("ci", "default", scopes()).unwrap();
+        let (key, raw) = cli.create(NewKey::named("ci")).unwrap();
         assert!(
             gateway.authenticate(&raw).unwrap().is_some(),
             "created elsewhere"
@@ -353,7 +392,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.db");
         let store = VirtualKeyStore::open(&path).unwrap();
-        let (_key, raw) = store.create("ci", "default", scopes()).unwrap();
+        let (_key, raw) = store.create(NewKey::named("ci")).unwrap();
         drop(store);
         let mut bytes = std::fs::read(&path).unwrap();
         for wal in ["keys.db-wal", "keys.db-shm"] {
@@ -391,5 +430,66 @@ mod tests {
                 .is_none());
         }
         assert_eq!(store.cache.lock().len(), 0);
+    }
+
+    // Plausible wrong impl: expiry is stored but never checked on the hot path,
+    // or a cached hit outlives it.
+    #[test]
+    fn expired_key_stops_authenticating() {
+        let store = VirtualKeyStore::in_memory()
+            .unwrap()
+            .with_cache_ttl(Duration::from_secs(60));
+        let mut spec = NewKey::named("short");
+        spec.expires_at = Some(Utc::now() + chrono::Duration::milliseconds(300));
+        let (_key, raw) = store.create(spec).unwrap();
+        assert!(store.authenticate(&raw).unwrap().is_some());
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert!(
+            store.authenticate(&raw).unwrap().is_none(),
+            "expired, even while cached"
+        );
+    }
+
+    #[test]
+    fn limits_round_trip_through_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        let mut spec = NewKey::named("scoped");
+        spec.allowed_models = vec!["claude-*".into()];
+        spec.allowed_ips = vec![
+            "10.0.0.0/8".parse().unwrap(),
+            "2001:db8::/32".parse().unwrap(),
+        ];
+        spec.expires_at = Some(Utc::now() + chrono::Duration::days(1));
+        VirtualKeyStore::open(&path)
+            .unwrap()
+            .create(spec.clone())
+            .unwrap();
+        let k = &VirtualKeyStore::open(&path).unwrap().list().unwrap()[0];
+        assert_eq!(k.allowed_models, spec.allowed_models);
+        assert_eq!(k.allowed_ips, spec.allowed_ips);
+        assert!(k.expires_at.is_some());
+    }
+
+    // Upgrading a keys.db created before these columns existed.
+    #[test]
+    fn old_store_gains_the_new_columns_and_keeps_its_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE keys (id TEXT PRIMARY KEY, name TEXT NOT NULL, tenant_id TEXT NOT NULL,
+                  token_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, scopes TEXT NOT NULL,
+                  created_at TEXT NOT NULL, last_used_at TEXT, revoked_at TEXT);
+                 INSERT INTO keys VALUES ('k1','old','default','h','vkdg_x','[\"data_inference\"]',
+                  '2026-01-01T00:00:00Z',NULL,NULL);",
+            )
+            .unwrap();
+        }
+        let keys = VirtualKeyStore::open(&path).unwrap().list().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert!(keys[0].allowed_models.is_empty() && keys[0].allowed_ips.is_empty());
+        VirtualKeyStore::open(&path).unwrap(); // idempotent
     }
 }

@@ -160,6 +160,15 @@ enum KeysSub {
         /// Restrict to chat endpoints (no image generation).
         #[arg(long)]
         inference_only: bool,
+        /// Only these model patterns, repeatable: `--model 'claude-*'`.
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Only from these addresses or CIDR ranges, repeatable: `--ip 10.0.0.0/8`.
+        #[arg(long = "ip")]
+        ips: Vec<String>,
+        /// Stop working after this many days.
+        #[arg(long)]
+        expires_in_days: Option<u32>,
     },
     /// List keys (prefix only; raw keys are never shown again).
     List,
@@ -900,13 +909,25 @@ fn cmd_keys(sub: KeysSub) -> Result<()> {
             name,
             tenant,
             inference_only,
+            models,
+            ips,
+            expires_in_days,
         } => {
             let scopes = if inference_only {
                 vec![KeyScope::DataInference]
             } else {
                 KeyScope::DEFAULT.to_vec()
             };
-            let (key, raw) = store.create(&name, &tenant, scopes)?;
+            let (key, raw) = store.create(vkdg_governance::NewKey {
+                name,
+                tenant_id: tenant,
+                scopes,
+                expires_at: expires_in_days
+                    .map(|d| chrono::Utc::now() + chrono::Duration::days(i64::from(d))),
+                allowed_models: models,
+                allowed_ips: vkdg_core::net::parse_ip_list("--ip", &ips)
+                    .map_err(anyhow::Error::msg)?,
+            })?;
             // stdout carries only the secret so `$(vkdg keys create ci)` works;
             // the context goes to stderr.
             eprintln!(

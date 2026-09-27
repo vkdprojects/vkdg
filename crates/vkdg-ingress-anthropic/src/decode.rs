@@ -145,6 +145,7 @@ mod tests {
             key_id: "key-test".into(),
             tenant_id: "default".into(),
             client_ip: None,
+            allowed_models: std::sync::Arc::from([]),
         });
         handle_messages(State(state), req).await
     }

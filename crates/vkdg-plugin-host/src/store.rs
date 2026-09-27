@@ -44,6 +44,9 @@ pub enum StoreError {
     Unsupported(String),
 }
 
+/// A plugin directory name and whether its manifest parsed.
+type ScannedDir = (String, Result<InstalledPlugin, StoreError>);
+
 /// An installed plugin.
 #[derive(Debug, Clone)]
 pub struct InstalledPlugin {
@@ -74,6 +77,16 @@ impl InstalledPlugin {
             cpu_timeout_ms: None,
         }
     }
+}
+
+fn load_provider(
+    plugin: &InstalledPlugin,
+    path: &Path,
+) -> Result<crate::WasmProviderAdapter, String> {
+    let manifest = plugin.host_manifest();
+    let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let instance = crate::WasmPluginInstance::from_bytes(&bytes, &manifest)?;
+    crate::WasmProviderAdapter::new(std::sync::Arc::new(instance), &manifest)
 }
 
 /// Maps a published kind onto the host's role enum.
@@ -124,23 +137,20 @@ impl PluginStore {
     /// One broken plugin must not stop the gateway: each result is returned so
     /// the caller registers the good ones and logs the rest by name.
     pub fn load_providers(&self) -> Vec<(String, Result<crate::WasmProviderAdapter, String>)> {
-        let installed = match self.list() {
+        let scanned = match self.scan() {
             Ok(list) => list,
             Err(e) => return vec![(self.root.display().to_string(), Err(e.to_string()))],
         };
-        installed
+        scanned
             .into_iter()
-            .filter(|p| role_for(&p.manifest) == PluginRole::Provider)
-            .filter_map(|p| {
-                let path = p.wasm_path()?;
-                let manifest = p.host_manifest();
-                let loaded = std::fs::read(&path)
-                    .map_err(|e| format!("read {}: {e}", path.display()))
-                    .and_then(|bytes| crate::WasmPluginInstance::from_bytes(&bytes, &manifest))
-                    .and_then(|instance| {
-                        crate::WasmProviderAdapter::new(std::sync::Arc::new(instance), &manifest)
-                    });
-                Some((p.manifest.name.clone(), loaded))
+            .filter_map(|(dir, parsed)| match parsed {
+                // Reported under its directory name; the rest still load.
+                Err(e) => Some((dir, Err(e.to_string()))),
+                Ok(p) if role_for(&p.manifest) != PluginRole::Provider => None,
+                Ok(p) => {
+                    let path = p.wasm_path()?;
+                    Some((p.manifest.name.clone(), load_provider(&p, &path)))
+                }
             })
             .collect()
     }
@@ -148,28 +158,38 @@ impl PluginStore {
     /// Installed plugins, sorted by name. Directories without a manifest are
     /// incomplete installs and are skipped.
     pub fn list(&self) -> Result<Vec<InstalledPlugin>, StoreError> {
+        self.scan()?.into_iter().map(|(_, p)| p).collect()
+    }
+
+    /// Every plugin directory with its parse result, sorted by directory name.
+    /// One unreadable manifest is one `Err` entry, never a failure of the scan.
+    fn scan(&self) -> Result<Vec<ScannedDir>, StoreError> {
         if !self.root.is_dir() {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
-        let entries = fs::read_dir(&self.root).map_err(io)?;
-        for entry in entries {
+        for entry in fs::read_dir(&self.root).map_err(io)? {
             let dir = entry.map_err(io)?.path();
-            if !dir.is_dir() {
-                continue;
-            }
             let manifest_path = dir.join(MANIFEST_FILE);
-            if !manifest_path.is_file() {
+            if !dir.is_dir() || !manifest_path.is_file() {
                 continue;
             }
-            let yaml = fs::read_to_string(&manifest_path).map_err(io)?;
+            let name = dir
+                .file_name()
+                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
             // A manifest that no longer validates is reported, not hidden: the
             // operator needs to know an installed plugin will not load.
-            let manifest = RegistryManifest::from_yaml(&yaml)
-                .map_err(|e| StoreError::Manifest(format!("{}: {e}", manifest_path.display())))?;
-            found.push(InstalledPlugin { manifest, dir });
+            let parsed = fs::read_to_string(&manifest_path)
+                .map_err(io)
+                .and_then(|yaml| {
+                    RegistryManifest::from_yaml(&yaml).map_err(|e| {
+                        StoreError::Manifest(format!("{}: {e}", manifest_path.display()))
+                    })
+                })
+                .map(|manifest| InstalledPlugin { manifest, dir });
+            found.push((name, parsed));
         }
-        found.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+        found.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(found)
     }
 

@@ -241,3 +241,32 @@ fn installed_providers_load_and_broken_ones_are_reported_by_name() {
     use vkdg_provider_sdk::ProviderAdapter;
     assert_eq!(adapter.id(), "community");
 }
+
+/// Refutes: one bad manifest on disk disables every plugin in the store.
+#[test]
+fn one_bad_manifest_does_not_stop_the_others_from_loading() {
+    let root = temp_root("badmanifest");
+    let store = PluginStore::new(&root);
+    let bytes = component();
+    store
+        .install(&wasm_manifest("good", &sha256_of(&bytes)), Some(&bytes))
+        .expect("install");
+    fs::create_dir_all(root.join("mangled")).unwrap();
+    fs::write(
+        root.join("mangled").join("manifest.yaml"),
+        b"name: [unclosed",
+    )
+    .unwrap();
+
+    let loaded = store.load_providers();
+    let good = loaded
+        .iter()
+        .find(|(n, _)| n == "good")
+        .expect("good plugin reported");
+    assert!(good.1.is_ok(), "the valid plugin must still load");
+    let bad = loaded
+        .iter()
+        .find(|(n, _)| n == "mangled")
+        .expect("bad dir reported by name");
+    assert!(bad.1.is_err());
+}

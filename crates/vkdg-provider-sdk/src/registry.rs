@@ -11,21 +11,35 @@ use crate::{ProviderAdapter, ProviderError};
 ///
 /// Populated at startup with built-in providers.
 /// Operators can add custom providers via [`register`][Self::register].
+///
+/// The table is swapped whole by [`ProviderRegistry::replace`] when plugins are
+/// installed or removed, so every holder of the same `Arc` sees the change.
 pub struct ProviderRegistry {
-    adapters: HashMap<String, Arc<dyn ProviderAdapter>>,
+    adapters: parking_lot::RwLock<Arc<AdapterTable>>,
 }
+
+type AdapterTable = HashMap<String, Arc<dyn ProviderAdapter>>;
 
 impl ProviderRegistry {
     pub fn empty() -> Self {
         Self {
-            adapters: HashMap::new(),
+            adapters: parking_lot::RwLock::new(Arc::default()),
         }
+    }
+
+    fn table(&self) -> Arc<AdapterTable> {
+        Arc::clone(&self.adapters.read())
+    }
+
+    /// Take `other`'s adapters (built-ins plus freshly loaded plugins).
+    pub fn replace(&self, other: ProviderRegistry) {
+        *self.adapters.write() = other.adapters.into_inner();
     }
 
     /// Register a provider adapter. [`id()`][ProviderAdapter::id] is used as the key.
     /// Overwrites if already registered.
     pub fn register(&mut self, adapter: Arc<dyn ProviderAdapter>) {
-        self.adapters.insert(adapter.id().to_string(), adapter);
+        Arc::make_mut(self.adapters.get_mut()).insert(adapter.id().to_string(), adapter);
     }
 
     /// Register an adapter only if its id is free.
@@ -35,23 +49,24 @@ impl ProviderRegistry {
     /// must not silently replace the built-in one.
     pub fn try_register(&mut self, adapter: Arc<dyn ProviderAdapter>) -> Result<(), String> {
         let id = adapter.id().to_owned();
-        if self.adapters.contains_key(&id) {
+        let table = Arc::make_mut(self.adapters.get_mut());
+        if table.contains_key(&id) {
             return Err(format!("provider id '{id}' is already registered"));
         }
-        self.adapters.insert(id, adapter);
+        table.insert(id, adapter);
         Ok(())
     }
 
     /// Look up by provider id (e.g. "anthropic", "openai", "gemini").
     pub fn get(&self, id: &str) -> Option<Arc<dyn ProviderAdapter>> {
-        self.adapters.get(id).cloned()
+        self.adapters.read().get(id).cloned()
     }
 
     /// Highest list price any registered provider declares for `model`.
     /// Used before routing, when the serving provider is not yet known, so a
     /// budget check errs toward refusing. Order-independent.
     pub fn max_price(&self, model: &str) -> Option<vkdg_core::pricing::ModelPrice> {
-        self.adapters
+        self.table()
             .values()
             .filter_map(|a| vkdg_core::pricing::price_for(a.prices(), model))
             .max_by_key(|p| (p.input_per_mtok, p.output_per_mtok))
@@ -59,17 +74,17 @@ impl ProviderRegistry {
     }
 
     /// All registered provider ids.
-    pub fn ids(&self) -> Vec<&str> {
-        self.adapters.keys().map(|s| s.as_str()).collect()
+    pub fn ids(&self) -> Vec<String> {
+        self.table().keys().cloned().collect()
     }
 
     /// Number of registered providers.
     pub fn len(&self) -> usize {
-        self.adapters.len()
+        self.table().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.adapters.is_empty()
+        self.table().is_empty()
     }
 }
 
@@ -175,6 +190,24 @@ mod price_tests {
         fn prices(&self) -> &[ModelPrice] {
             self.1
         }
+    }
+
+    // Installing a provider plugin used to need a restart: every holder of the
+    // registry Arc (pipeline, credential refresh, admin) must see the swap.
+    #[test]
+    fn replace_is_seen_through_every_shared_handle() {
+        let live = Arc::new(ProviderRegistry::empty());
+        let held_elsewhere = Arc::clone(&live);
+        assert!(held_elsewhere.get("community").is_none());
+        let mut next = ProviderRegistry::empty();
+        next.register(Arc::new(Priced("community", &[])));
+        live.replace(next);
+        assert!(held_elsewhere.get("community").is_some());
+        live.replace(ProviderRegistry::empty());
+        assert!(
+            held_elsewhere.get("community").is_none(),
+            "removed plugin is gone"
+        );
     }
 
     // Before routing the provider is unknown: a budget check must assume the

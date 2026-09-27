@@ -255,10 +255,10 @@ pub async fn list_oauth_providers(State(state): State<AdminState>, headers: Head
             "account store is not configured",
         );
     };
-    let mut ids: Vec<&str> = svc.registry.ids();
+    let mut ids: Vec<String> = svc.registry.ids();
     ids.sort_unstable();
     let items: Vec<serde_json::Value> = ids
-        .into_iter()
+        .iter()
         .filter_map(|id| svc.registry.get(id))
         .filter(|a| a.oauth().is_some())
         .map(|a| serde_json::json!({ "id": a.id(), "display_name": a.display_name() }))
@@ -654,6 +654,7 @@ mod tests {
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combos: None,
+            reload_plugins: None,
             catalog: None,
             logins: Some(LoginService::new(
                 Arc::new(registry),

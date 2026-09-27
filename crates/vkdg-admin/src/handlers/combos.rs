@@ -259,6 +259,7 @@ mod tests {
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combos: Some(Arc::new(svc)),
+            reload_plugins: None,
             catalog: Some(catalog),
             logins: None,
         }

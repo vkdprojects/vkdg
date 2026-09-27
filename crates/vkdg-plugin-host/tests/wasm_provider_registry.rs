@@ -93,7 +93,7 @@ fn wasm_plugin_resolves_through_the_same_registry() {
         .expect("a WASM plugin must resolve by id like any provider");
     assert_eq!(resolved.id(), "community-provider");
     assert!(
-        registry.ids().contains(&"community-provider"),
+        registry.ids().iter().any(|i| i == "community-provider"),
         "plugin must be listed alongside compiled providers"
     );
 }

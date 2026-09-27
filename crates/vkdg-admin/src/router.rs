@@ -22,7 +22,13 @@ pub struct AdminState {
     pub catalog: Option<Arc<ConnectionCatalog>>,
     /// Provider login + account store; `None` disables `/oauth` and `/accounts`.
     pub logins: Option<Arc<crate::handlers::oauth::LoginService>>,
+    /// Reload installed plugins into the running data plane after an install
+    /// or removal. `None` = plugin changes apply at the next restart.
+    pub reload_plugins: Option<PluginReload>,
 }
+
+/// Rebuilds the live provider and hook registries from the plugin directory.
+pub type PluginReload = Arc<dyn Fn() + Send + Sync>;
 
 pub fn build_admin_router(state: AdminState) -> Router {
     Router::new()

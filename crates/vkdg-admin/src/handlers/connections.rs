@@ -125,6 +125,7 @@ mod tests {
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
+            reload_plugins: None,
             catalog: None,
             logins: None,
         }
@@ -170,6 +171,7 @@ mod tests {
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
+            reload_plugins: None,
             catalog: None,
             logins: None,
         };
@@ -232,6 +234,7 @@ mod tests {
             key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
+            reload_plugins: None,
             catalog: Some(catalog),
             logins: None,
         };

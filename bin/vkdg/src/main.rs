@@ -446,6 +446,19 @@ async fn serve(
     // Extract catalog for admin API before pipeline is moved into AppState.
     let admin_catalog = pipeline.as_ref().map(|p| Arc::clone(&p.catalog));
 
+    // Plugin install/removal in the admin API rebuilds the same registries the
+    // pipeline, credential refresh and config reload read, so it applies
+    // without a restart.
+    let reload_plugins: Option<vkdg_admin::router::PluginReload> = pipeline.as_ref().map(|p| {
+        let providers = Arc::clone(&p.provider_registry);
+        let hooks = Arc::clone(&p.hooks);
+        Arc::new(move || {
+            providers.replace(load_provider_registry());
+            hooks.replace(build_hook_registry());
+            tracing::info!("plugins reloaded");
+        }) as vkdg_admin::router::PluginReload
+    });
+
     let mut state = AppState::new(server_config.clone());
     if let Some(p) = pipeline {
         state = state.with_pipeline(Arc::new(p));
@@ -508,6 +521,7 @@ async fn serve(
         key_store: Arc::clone(&key_store),
         request_log: Arc::clone(&request_log),
         combos,
+        reload_plugins,
         catalog: admin_catalog,
         logins: account_store.map(|store| {
             vkdg_admin::handlers::oauth::LoginService::new(
@@ -726,6 +740,12 @@ fn build_pipeline_from_env(
 }
 
 fn build_provider_registry() -> Arc<ProviderRegistry> {
+    Arc::new(load_provider_registry())
+}
+
+/// Built-ins first, then installed WASM providers. Called at startup and on
+/// every plugin install/removal.
+fn load_provider_registry() -> ProviderRegistry {
     let mut r = ProviderRegistry::empty();
     r.register(Arc::new(AnthropicAdapter));
     r.register(Arc::new(OpenAIAdapter));
@@ -764,7 +784,7 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
             Err(e) => tracing::warn!(plugin = %name, error = %e, "WASM provider plugin refused"),
         }
     }
-    Arc::new(r)
+    r
 }
 
 /// Credential manager with account auth enabled when the store opened.

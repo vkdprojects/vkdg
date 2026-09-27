@@ -145,15 +145,19 @@ pub async fn install_plugin(
     // The store verifies the checksum and compiles the component before writing,
     // so a bad upload cannot replace a working plugin.
     match store.install(&manifest, wasm.as_deref()) {
-        Ok(installed) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({
-                "name": installed.manifest.name,
-                "version": installed.manifest.version,
-                "directory": installed.dir.display().to_string(),
-            })),
-        )
-            .into_response(),
+        Ok(installed) => {
+            reload(&state).await;
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "name": installed.manifest.name,
+                    "version": installed.manifest.version,
+                    "directory": installed.dir.display().to_string(),
+                    "live": state.reload_plugins.is_some(),
+                })),
+            )
+                .into_response()
+        }
         Err(e) => bad_request(e.to_string()),
     }
 }
@@ -168,12 +172,27 @@ pub async fn remove_plugin(
     }
     let store = PluginStore::from_env();
     match store.remove(&name) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            // Routes still naming a removed auth plugin now deny: a missing hook
+            // fails closed, it is never skipped.
+            reload(&state).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
+    }
+}
+
+/// Apply the plugin directory to the running gateway, off the async workers
+/// (loading compiles WASM).
+async fn reload(state: &AdminState) {
+    if let Some(f) = state.reload_plugins.clone() {
+        if let Err(e) = tokio::task::spawn_blocking(move || f()).await {
+            eprintln!("plugin reload panicked; previous plugins stay loaded: {e}");
+        }
     }
 }
 

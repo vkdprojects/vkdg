@@ -39,7 +39,16 @@ pub struct RequestRecord {
     pub started_at_ms: i64,
     pub duration_ms: Option<i64>,
     pub decision: Option<DecisionInfo>,
+    /// Tokens the response reported, read from the body the client received.
+    /// Absent until the body finishes, or when the provider reported none.
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
 }
+
+/// Status of a row whose response body is still being sent.
+pub const STATUS_PENDING: &str = "pending";
 
 /// Request history for the admin API, persisted in SQLite so it survives a
 /// restart. Holds metadata only: never prompts, responses, or credentials
@@ -111,6 +120,41 @@ impl RequestLog {
         if let Err(e) = written {
             // Logging must never fail a request; the operator sees it here.
             eprintln!("request log write failed: {e}");
+        }
+    }
+
+    /// Settle a row once its response body is done: record the tokens it
+    /// reported and, for a row still `pending`, the final status (`completed`
+    /// when the body ran to the end, `cancelled` when the client hung up) and
+    /// the duration including the stream. Unknown ids are ignored.
+    pub fn finish(&self, id: &str, input_tokens: u64, output_tokens: u64, body_ended: bool) {
+        let conn = self.conn.lock();
+        let Ok(json) = conn.query_row(
+            "SELECT record FROM requests WHERE request_id = ?1",
+            [id],
+            |r| r.get::<_, String>(0),
+        ) else {
+            return;
+        };
+        let Ok(mut r) = serde_json::from_str::<RequestRecord>(&json) else {
+            return;
+        };
+        if input_tokens + output_tokens > 0 {
+            r.input_tokens = Some(input_tokens);
+            r.output_tokens = Some(output_tokens);
+        }
+        if r.status == STATUS_PENDING {
+            r.status = if body_ended { "completed" } else { "cancelled" }.into();
+            r.duration_ms = Some(chrono::Utc::now().timestamp_millis() - r.started_at_ms);
+        }
+        let Ok(json) = serde_json::to_string(&r) else {
+            return;
+        };
+        if let Err(e) = conn.execute(
+            "UPDATE requests SET status = ?2, record = ?3 WHERE request_id = ?1",
+            rusqlite::params![id, r.status, json],
+        ) {
+            eprintln!("request log update failed: {e}");
         }
     }
 
@@ -266,6 +310,8 @@ mod tests {
             started_at_ms: 1000,
             duration_ms: Some(42),
             decision: None,
+            input_tokens: None,
+            output_tokens: None,
         });
         state.request_log.push(RequestRecord {
             request_id: "req-2".into(),
@@ -277,6 +323,8 @@ mod tests {
             started_at_ms: 2000,
             duration_ms: None,
             decision: None,
+            input_tokens: None,
+            output_tokens: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -307,6 +355,8 @@ mod tests {
             started_at_ms: 0,
             duration_ms: Some(1),
             decision: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 
@@ -336,5 +386,30 @@ mod tests {
         let (one, more) = log.list(1, None);
         assert_eq!((one.len(), more), (1, true));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Streaming rows were written when headers left, so they said `completed`
+    // with no tokens even for a stream the client abandoned halfway.
+    #[test]
+    fn finish_settles_pending_rows_only() {
+        let log = RequestLog::new();
+        log.push(record("streamed", STATUS_PENDING));
+        log.push(record("dropped", STATUS_PENDING));
+        log.push(record("failed", "failed"));
+        log.finish("streamed", 11, 4, true);
+        log.finish("dropped", 11, 1, false);
+        log.finish("failed", 0, 0, true);
+        log.finish("unknown", 1, 1, true);
+
+        let r = log.get("streamed").unwrap();
+        assert_eq!(r.status, "completed");
+        assert_eq!((r.input_tokens, r.output_tokens), (Some(11), Some(4)));
+        assert!(r.duration_ms.unwrap() > 1, "duration covers the stream");
+        assert_eq!(log.get("dropped").unwrap().status, "cancelled");
+        let f = log.get("failed").unwrap();
+        assert_eq!((f.status.as_str(), f.input_tokens), ("failed", None));
+        assert_eq!(f.duration_ms, Some(1), "a settled row keeps its duration");
+        let (done, _) = log.list(10, Some("completed"));
+        assert_eq!(done.len(), 1, "status column follows the record");
     }
 }

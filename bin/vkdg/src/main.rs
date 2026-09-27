@@ -189,6 +189,9 @@ enum KeysSub {
         /// Requests per minute.
         #[arg(long)]
         rpm: Option<u32>,
+        /// Keep this key's requests out of the request history.
+        #[arg(long)]
+        no_log: bool,
     },
     /// List keys (prefix only; raw keys are never shown again).
     List,
@@ -1093,6 +1096,7 @@ fn cmd_keys(sub: KeysSub) -> Result<()> {
             expires_in_days,
             monthly_tokens,
             rpm,
+            no_log,
         } => {
             let scopes = if inference_only {
                 vec![KeyScope::DataInference]
@@ -1110,6 +1114,7 @@ fn cmd_keys(sub: KeysSub) -> Result<()> {
                     .map_err(anyhow::Error::msg)?,
                 monthly_token_limit: monthly_tokens,
                 requests_per_minute: rpm,
+                no_log,
             })?;
             // stdout carries only the secret so `$(vkdg keys create ci)` works;
             // the context goes to stderr.

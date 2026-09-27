@@ -1306,8 +1306,16 @@ mod tests {
         p.request_log = Some(Arc::clone(&log));
         let ctx = make_ctx("hooked");
         let id = ctx.envelope.request_id.0.to_string();
-        let _ = run_conversation_pipeline(Arc::new(p), ctx, make_conv_op()).await;
-        let rec = log.get(&id).expect("logged");
+        let resp = run_conversation_pipeline(Arc::new(p), ctx, make_conv_op()).await;
+        // The pipeline hands the row to the auth middleware; it writes nothing itself.
+        assert!(log.get(&id).is_none());
+        let rec = resp
+            .extensions()
+            .get::<crate::pipeline::PendingLog>()
+            .expect("row attached")
+            .record
+            .clone();
+        assert_eq!(rec.request_id, id);
         let d = rec.decision.expect("decision recorded");
         assert_eq!(d.route_id.as_deref(), Some("guarded"));
         assert!(d.attempt_count >= 1);

@@ -28,6 +28,7 @@ use vkdg_core::VkdgError;
 use vkdg_governance::{KeyScope, VirtualKeyId, VirtualKeyStore};
 
 use crate::metering::UsageMeter;
+use crate::pipeline::PendingLog;
 
 /// Who is calling, as established by [`require_api_key`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +150,7 @@ pub async fn require_api_key(
     let Some(store) = &auth.store else {
         req.extensions_mut()
             .insert(ClientIdentity::anonymous(client_ip));
-        return next.run(req).await;
+        return metered(next.run(req).await, None, true);
     };
 
     let Some(token) = presented_token(req.headers()) else {
@@ -239,6 +240,7 @@ pub async fn require_api_key(
     }
 
     let key_id = key.id.clone();
+    let log_history = !key.no_log;
     req.extensions_mut().insert(ClientIdentity {
         key_id: key.id.0,
         tenant_id: key.tenant_id,
@@ -246,7 +248,7 @@ pub async fn require_api_key(
         allowed_models: key.allowed_models.into(),
     });
     let response = next.run(req).await;
-    metered(response, Arc::clone(store), key_id)
+    metered(response, Some((Arc::clone(store), key_id)), log_history)
 }
 
 /// `retry-after` in whole seconds, at least 1, so clients back off instead of
@@ -274,35 +276,67 @@ fn until_next_month() -> Duration {
         .unwrap_or(Duration::from_secs(3600))
 }
 
-/// Count the response's tokens against the key once the body is done: at the
-/// end of the stream, or when the client hangs up, so a disconnect mid-stream
-/// is still charged for what was sent.
-fn metered(response: Response, store: Arc<VirtualKeyStore>, key_id: VirtualKeyId) -> Response {
+/// Settle the response once its body is done (at the end of the stream, or
+/// when the client hangs up, so a disconnect mid-stream is still charged for
+/// what was sent): count its tokens against the key and complete its request
+/// history row. The row is written here, when headers leave, and never for a
+/// `no_log` key.
+fn metered(
+    mut response: Response,
+    charge: Option<(Arc<VirtualKeyStore>, VirtualKeyId)>,
+    log_history: bool,
+) -> Response {
+    let history = response
+        .extensions_mut()
+        .remove::<PendingLog>()
+        .filter(|_| log_history)
+        .map(|p| {
+            let id = p.record.request_id.clone();
+            p.log.push(p.record);
+            (p.log, id)
+        });
+    if charge.is_none() && history.is_none() {
+        return response;
+    }
     let (parts, body) = response.into_parts();
     let stream = Metered {
         inner: body.into_data_stream(),
         meter: UsageMeter::default(),
-        charge: Some((store, key_id)),
+        settle: Some(Settle { charge, history }),
+        ended: false,
     };
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
+}
+
+struct Settle {
+    charge: Option<(Arc<VirtualKeyStore>, VirtualKeyId)>,
+    history: Option<(Arc<vkdg_admin::handlers::requests::RequestLog>, String)>,
 }
 
 struct Metered {
     inner: axum::body::BodyDataStream,
     meter: UsageMeter,
-    /// Taken on the first of end-of-stream or drop, so usage is recorded once.
-    charge: Option<(Arc<VirtualKeyStore>, VirtualKeyId)>,
+    /// Taken on the first of end-of-stream or drop, so it runs once.
+    settle: Option<Settle>,
+    /// The body ran to its end (as opposed to the client hanging up).
+    ended: bool,
 }
 
 impl Metered {
     fn record(&mut self) {
-        let Some((store, key_id)) = self.charge.take() else {
+        let Some(Settle { charge, history }) = self.settle.take() else {
             return;
         };
         let usage = self.meter.finish();
+        let ended = self.ended;
         let write = move || {
-            if let Err(e) = store.record_usage(&key_id, usage.input, usage.output) {
-                tracing::error!(error = %e, key = %key_id.0, "failed to record key usage");
+            if let Some((store, key_id)) = charge {
+                if let Err(e) = store.record_usage(&key_id, usage.input, usage.output) {
+                    tracing::error!(error = %e, key = %key_id.0, "failed to record key usage");
+                }
+            }
+            if let Some((log, id)) = history {
+                log.finish(&id, usage.input, usage.output, ended);
             }
         };
         // SQLite is blocking; keep it off the async workers.
@@ -320,7 +354,10 @@ impl Stream for Metered {
         let polled = Pin::new(&mut self.inner).poll_next(cx);
         match &polled {
             Poll::Ready(Some(Ok(chunk))) => self.meter.feed(chunk),
-            Poll::Ready(None) => self.record(),
+            Poll::Ready(None) => {
+                self.ended = true;
+                self.record();
+            }
             _ => {}
         }
         polled
@@ -659,5 +696,136 @@ mod tests {
         }
         let u = store.usage_this_month(&key.id).unwrap();
         assert_eq!((u.input_tokens, u.output_tokens, u.requests), (11, 4, 1));
+    }
+
+    fn pending(log: &Arc<vkdg_admin::handlers::requests::RequestLog>, id: &str) -> PendingLog {
+        PendingLog {
+            log: Arc::clone(log),
+            record: vkdg_admin::handlers::requests::RequestRecord {
+                request_id: id.into(),
+                model: "m".into(),
+                api_type: "anthropic".into(),
+                status: vkdg_admin::handlers::requests::STATUS_PENDING.into(),
+                connection_id: None,
+                key_id: None,
+                started_at_ms: chrono::Utc::now().timestamp_millis(),
+                duration_ms: Some(0),
+                decision: None,
+                input_tokens: None,
+                output_tokens: None,
+            },
+        }
+    }
+
+    /// A router whose handler streams an Anthropic usage pair and attaches the
+    /// history row the way the pipeline does.
+    fn logged_app(auth: DataAuth, log: &Arc<vkdg_admin::handlers::requests::RequestLog>) -> Router {
+        let log = Arc::clone(log);
+        let handler = move || {
+            let log = Arc::clone(&log);
+            async move {
+                let chunks = [
+                    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n",
+                    "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n",
+                ];
+                let stream = futures::stream::iter(
+                    chunks.map(|c| Ok::<_, std::io::Error>(bytes::Bytes::from(c))),
+                );
+                let mut r = axum::response::Response::new(axum::body::Body::from_stream(stream));
+                r.extensions_mut().insert(pending(&log, "req-1"));
+                r
+            }
+        };
+        Router::new()
+            .route("/v1/messages", post(handler))
+            .route_layer(axum::middleware::from_fn_with_state(auth, require_api_key))
+    }
+
+    async fn settled(
+        log: &vkdg_admin::handlers::requests::RequestLog,
+        id: &str,
+    ) -> Option<vkdg_admin::handlers::requests::RequestRecord> {
+        for _ in 0..50 {
+            match log.get(id) {
+                Some(r) if r.status != vkdg_admin::handlers::requests::STATUS_PENDING => {
+                    return Some(r)
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        log.get(id)
+    }
+
+    // The history row was written when headers left: a stream always read
+    // `completed` with no tokens.
+    #[tokio::test]
+    async fn streamed_history_row_gets_tokens_and_final_status() {
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let (store, _key, raw) = limited(|_| {});
+        let (s, _) = call(
+            logged_app(DataAuth::required(store), &log),
+            "/v1/messages",
+            &[("x-api-key", &raw)],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        let r = settled(&log, "req-1").await.expect("row written");
+        assert_eq!(r.status, "completed");
+        assert_eq!((r.input_tokens, r.output_tokens), (Some(11), Some(4)));
+    }
+
+    // Auth off has no key to charge, but history must still settle.
+    #[tokio::test]
+    async fn anonymous_history_row_is_settled_too() {
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let (s, _) = call(logged_app(DataAuth::disabled(), &log), "/v1/messages", &[]).await;
+        assert_eq!(s, StatusCode::OK);
+        let r = settled(&log, "req-1").await.expect("row written");
+        assert_eq!((r.status.as_str(), r.output_tokens), ("completed", Some(4)));
+    }
+
+    #[tokio::test]
+    async fn no_log_key_leaves_no_history_but_is_still_charged() {
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let (store, key, raw) = limited(|s| s.no_log = true);
+        let (s, _) = call(
+            logged_app(DataAuth::required(Arc::clone(&store)), &log),
+            "/v1/messages",
+            &[("x-api-key", &raw)],
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        for _ in 0..50 {
+            if store.usage_this_month(&key.id).unwrap().requests > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(store.usage_this_month(&key.id).unwrap().output_tokens, 4);
+        assert!(log.get("req-1").is_none(), "no row, not even briefly");
+    }
+
+    // A client that hangs up mid-stream must not show as completed.
+    #[tokio::test]
+    async fn abandoned_stream_is_recorded_as_cancelled() {
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let (store, _key, raw) = limited(|_| {});
+        let resp = logged_app(DataAuth::required(store), &log)
+            .oneshot(
+                http::Request::post("/v1/messages")
+                    .header("x-api-key", &raw)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            log.get("req-1").map(|r| r.status),
+            Some(vkdg_admin::handlers::requests::STATUS_PENDING.to_string()),
+            "row exists while the body is in flight"
+        );
+        drop(resp);
+        let r = settled(&log, "req-1").await.expect("row written");
+        assert_eq!(r.status, "cancelled");
     }
 }

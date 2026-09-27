@@ -23,6 +23,7 @@
   const filterOptions = $derived([
     { value: 'all', label: m.request_filter_all() },
     { value: 'completed', label: m.request_status_completed() },
+    { value: 'cancelled', label: m.request_status_cancelled() },
     { value: 'failed', label: m.request_status_failed() },
   ]);
 
@@ -35,6 +36,15 @@
   };
 
   const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+  /** `in → out`; a dash when the response reported no usage (or is still streaming). */
+  function fmtTokens(r: RequestSummary): string {
+    if (r.input_tokens == null && r.output_tokens == null) return '—';
+    return m.request_tokens_value({
+      input: (r.input_tokens ?? 0).toLocaleString(),
+      output: (r.output_tokens ?? 0).toLocaleString(),
+    });
+  }
 
   function fmtDuration(ms: number | null | undefined): string {
     if (ms == null) return m.common_pending();
@@ -148,6 +158,7 @@
             <th scope="col">{m.request_status()}</th>
             <th scope="col">{m.request_connection()}</th>
             <th scope="col">{m.request_duration()}</th>
+            <th scope="col">{m.request_tokens()}</th>
           </tr>
         </thead>
         <tbody>
@@ -169,6 +180,7 @@
               <td><Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} /></td>
               <td class="mono">{r.connection_id ?? m.common_none()}</td>
               <td>{fmtDuration(r.duration_ms)}</td>
+              <td class="mono">{fmtTokens(r)}</td>
             </tr>
           {/each}
         </tbody>
@@ -203,6 +215,7 @@
             <dt>{m.request_connection()}</dt><dd class="mono">{d.connection_id ?? m.common_none()}</dd>
             <dt>{m.request_started()}</dt><dd>{new Date(d.started_at_ms).toLocaleString()}</dd>
             <dt>{m.request_duration()}</dt><dd>{fmtDuration(d.duration_ms)}</dd>
+            <dt>{m.request_tokens()}</dt><dd class="mono">{fmtTokens(d)}</dd>
           </dl>
 
           <h3 class="drawer-subtitle">{m.request_decision()}</h3>

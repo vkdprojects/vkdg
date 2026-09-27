@@ -74,7 +74,7 @@ pub struct VirtualKeyStore {
 
 const SELECT: &str = "SELECT id, name, tenant_id, token_hash, prefix, scopes, created_at, \
                       last_used_at, revoked_at, expires_at, allowed_models, allowed_ips, \
-                      monthly_token_limit, requests_per_minute, disabled_at FROM keys";
+                      monthly_token_limit, requests_per_minute, disabled_at, no_log FROM keys";
 
 /// Columns added after the first release, with their definitions. `init` adds
 /// any that an existing `keys.db` lacks, so upgrades need no manual step.
@@ -85,6 +85,7 @@ const LATER_COLUMNS: &[(&str, &str)] = &[
     ("monthly_token_limit", "INTEGER"),
     ("requests_per_minute", "INTEGER"),
     ("disabled_at", "TEXT"),
+    ("no_log", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 impl VirtualKeyStore {
@@ -164,8 +165,8 @@ impl VirtualKeyStore {
             .execute(
                 "INSERT INTO keys (id, name, tenant_id, token_hash, prefix, scopes, created_at,
                                    expires_at, allowed_models, allowed_ips,
-                                   monthly_token_limit, requests_per_minute)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                                   monthly_token_limit, requests_per_minute, no_log)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     key.id.0,
                     key.name,
@@ -179,6 +180,7 @@ impl VirtualKeyStore {
                     json(&ips),
                     key.monthly_token_limit.map(to_i64),
                     key.requests_per_minute,
+                    key.no_log,
                 ],
             )
             .map_err(sql("insert"))?;
@@ -311,12 +313,16 @@ impl VirtualKeyStore {
         if let Some(v) = patch.requests_per_minute {
             key.requests_per_minute = v;
         }
+        if let Some(v) = patch.no_log {
+            key.no_log = v;
+        }
         let ips: Vec<String> = key.allowed_ips.iter().map(ToString::to_string).collect();
         self.conn
             .lock()
             .execute(
                 "UPDATE keys SET name = ?2, scopes = ?3, expires_at = ?4, allowed_models = ?5,
-                     allowed_ips = ?6, monthly_token_limit = ?7, requests_per_minute = ?8
+                     allowed_ips = ?6, monthly_token_limit = ?7, requests_per_minute = ?8,
+                     no_log = ?9
                  WHERE id = ?1",
                 params![
                     key.id.0,
@@ -327,6 +333,7 @@ impl VirtualKeyStore {
                     json(&ips),
                     key.monthly_token_limit.map(to_i64),
                     key.requests_per_minute,
+                    key.no_log,
                 ],
             )
             .map_err(sql("update"))?;
@@ -466,6 +473,7 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
         monthly_token_limit: row.get::<_, Option<i64>>(12)?.map(|v| v.max(0) as u64),
         requests_per_minute: row.get(13)?,
         disabled_at: policy_time(row, 14)?,
+        no_log: row.get(15)?,
     })
 }
 

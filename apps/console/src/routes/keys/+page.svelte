@@ -21,6 +21,7 @@
   let allowedIps = $state('');
   let monthlyTokens = $state<number | null>(null);
   let rpm = $state<number | null>(null);
+  let noLog = $state(false);
 
   const splitList = (v: string) => v.split(/[\n,]/).map((x) => x.trim()).filter(Boolean);
 
@@ -35,6 +36,7 @@
     if (ips.length) out.allowed_ips = ips;
     if (monthlyTokens != null) out.monthly_token_limit = monthlyTokens;
     if (rpm != null) out.requests_per_minute = rpm;
+    if (noLog) out.no_log = true;
     return out;
   }
 
@@ -61,6 +63,7 @@
   let editIps = $state('');
   let editTokens = $state<number | null>(null);
   let editRpm = $state<number | null>(null);
+  let editNoLog = $state(false);
 
   /** Local `YYYY-MM-DD` for a date input, matching how create sets end-of-day. */
   function toDateInput(iso: string | null | undefined): string {
@@ -77,6 +80,7 @@
     editIps = k.allowed_ips.join(', ');
     editTokens = k.monthly_token_limit ?? null;
     editRpm = k.requests_per_minute ?? null;
+    editNoLog = k.no_log;
     editError = '';
     editOpen = true;
   }
@@ -98,6 +102,7 @@
     if (tokens !== (k.monthly_token_limit ?? null)) p.monthly_token_limit = tokens;
     const rpmVal = editRpm ?? null;
     if (rpmVal !== (k.requests_per_minute ?? null)) p.requests_per_minute = rpmVal;
+    if (editNoLog !== k.no_log) p.no_log = editNoLog;
     return p;
   }
 
@@ -187,6 +192,7 @@
       allowedIps = '';
       monthlyTokens = null;
       rpm = null;
+      noLog = false;
       const res = await api.listKeys();
       keys = res.items;
     } catch (err) {
@@ -266,6 +272,11 @@
           </div>
         </div>
         <span id="key-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={noLog} aria-describedby="key-no-log-hint" />
+          <span>{m.key_no_log()}</span>
+        </label>
+        <span id="key-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
       </fieldset>
 
       <!-- Backend 400s (bad CIDR, bad date…) render here, next to the form. -->
@@ -324,12 +335,13 @@
               </td>
               <td class="date-cell">{k.expires_at ? formatDate(k.expires_at) : m.key_never()}</td>
               <td class="restrictions-cell">
-                {#if k.allowed_models.length === 0 && k.allowed_ips.length === 0 && !k.monthly_token_limit && !k.requests_per_minute}
+                {#if k.allowed_models.length === 0 && k.allowed_ips.length === 0 && !k.monthly_token_limit && !k.requests_per_minute && !k.no_log}
                   {m.key_no_restrictions()}
                 {:else}
                   {#if k.allowed_models.length}<div>{m.key_models_count({ list: k.allowed_models.join(', ') })}</div>{/if}
                   {#if k.allowed_ips.length}<div>{m.key_ips_count({ list: k.allowed_ips.join(', ') })}</div>{/if}
                   {#if k.requests_per_minute}<div>{m.key_rpm_summary({ rpm: k.requests_per_minute })}</div>{/if}
+                  {#if k.no_log}<div>{m.key_no_log_summary()}</div>{/if}
                 {/if}
               </td>
               <td class="usage-cell">
@@ -435,6 +447,11 @@
           </div>
         </div>
         <span id="edit-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
+        <label class="check-row">
+          <input type="checkbox" bind:checked={editNoLog} aria-describedby="edit-no-log-hint" />
+          <span>{m.key_no_log()}</span>
+        </label>
+        <span id="edit-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
 
         {#if editError}
           <p class="error-msg" role="alert">{editError}</p>
@@ -540,6 +557,14 @@
   .hint {
     font-size: 0.75rem;
     color: var(--text-3);
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 0.875rem;
   }
 
   .restrictions-cell {

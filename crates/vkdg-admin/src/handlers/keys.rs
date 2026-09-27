@@ -35,6 +35,9 @@ pub struct CreateKeyBody {
     pub monthly_token_limit: Option<u64>,
     /// Requests per minute; absent = unlimited.
     pub requests_per_minute: Option<u32>,
+    /// Keep this key's requests out of the request history.
+    #[serde(default)]
+    pub no_log: bool,
 }
 
 #[derive(Serialize)]
@@ -61,6 +64,7 @@ struct KeySummary {
     allowed_ips: Vec<String>,
     monthly_token_limit: Option<u64>,
     requests_per_minute: Option<u32>,
+    no_log: bool,
     /// Tokens and requests this calendar month (UTC); absent if unreadable.
     usage_this_month: Option<UsageSummary>,
     /// `active`, `expired`, or `revoked`.
@@ -83,6 +87,7 @@ impl From<&VirtualKey> for KeySummary {
             allowed_ips: k.allowed_ips.iter().map(ToString::to_string).collect(),
             monthly_token_limit: k.monthly_token_limit,
             requests_per_minute: k.requests_per_minute,
+            no_log: k.no_log,
             usage_this_month: None,
             status: if k.is_revoked() {
                 "revoked"
@@ -199,6 +204,7 @@ pub async fn create_key(
         allowed_ips,
         monthly_token_limit: body.monthly_token_limit,
         requests_per_minute: body.requests_per_minute,
+        no_log: body.no_log,
     };
     match state.key_store.create(spec) {
         Ok((key, raw)) => (
@@ -227,6 +233,7 @@ pub struct UpdateKeyBody {
     pub monthly_token_limit: Option<Option<u64>>,
     #[serde(default, deserialize_with = "present")]
     pub requests_per_minute: Option<Option<u32>>,
+    pub no_log: Option<bool>,
 }
 
 /// Distinguishes an absent field (`None`) from an explicit `null` (`Some(None)`).
@@ -279,6 +286,7 @@ pub async fn update_key(
         allowed_ips,
         monthly_token_limit: body.monthly_token_limit,
         requests_per_minute: body.requests_per_minute,
+        no_log: body.no_log,
     };
     match state.key_store.update(&VirtualKeyId(id.clone()), patch) {
         Ok(Some(key)) => Json(KeySummary::from(&key)).into_response(),
@@ -415,6 +423,7 @@ mod tests {
             allowed_ips: vec![],
             monthly_token_limit: None,
             requests_per_minute: None,
+            no_log: false,
         })
     }
 
@@ -517,6 +526,7 @@ mod tests {
                 allowed_ips: ips.into_iter().map(Into::into).collect(),
                 monthly_token_limit: None,
                 requests_per_minute: None,
+                no_log: false,
             })
         };
         let bad_ip = create_key(State(state.clone()), h.clone(), mk(vec!["192.168."], None)).await;

@@ -228,5 +228,10 @@
   "login_set_hint": "O token de inicialização vale uma vez só. Escolha uma senha (pelo menos 12 caracteres) para entrar daqui em diante.",
   "login_set_submit": "Salvar senha",
   "login_password_mismatch": "As senhas não conferem.",
-  "login_busy": "Entrando…"
+  "login_busy": "Entrando…",
+  "request_tokens": "Tokens",
+  "request_tokens_value": "{input} entrada / {output} saída",
+  "key_no_log": "Não guardar requisições no histórico",
+  "key_no_log_hint": "O uso continua contando nos limites; nenhuma linha de requisição é salva.",
+  "key_no_log_summary": "Sem histórico"
 }

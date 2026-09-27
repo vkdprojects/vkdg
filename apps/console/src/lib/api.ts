@@ -71,6 +71,8 @@ export interface ClientKey {
   allowed_ips: string[];
   monthly_token_limit?: number | null;
   requests_per_minute?: number | null;
+  /** Requests from this key are kept out of the request history. */
+  no_log: boolean;
   /** Tokens and requests this calendar month (UTC). */
   usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
   status: 'active' | 'disabled' | 'expired' | 'revoked';
@@ -85,6 +87,7 @@ export interface KeyLimits {
   allowed_ips?: string[];
   monthly_token_limit?: number;
   requests_per_minute?: number;
+  no_log?: boolean;
 }
 
 /**
@@ -99,6 +102,7 @@ export interface KeyPatch {
   allowed_ips?: string[];
   monthly_token_limit?: number | null;
   requests_per_minute?: number | null;
+  no_log?: boolean;
 }
 
 /** Returned once by createKey and regenerateKey; `key` is never shown again. */
@@ -173,15 +177,18 @@ export interface RequestSummary {
   request_id: string;
   model: string;
   api_type: string;
-  /** `completed` or `failed`. */
+  /** `pending` while the body streams, then `completed`, `cancelled` or `failed`. */
   status: string;
   connection_id: string | null;
   started_at_ms: number;
   duration_ms: number | null;
   decision?: RequestDecision | null;
+  /** Reported by the response; absent while streaming or when not reported. */
+  input_tokens?: number | null;
+  output_tokens?: number | null;
 }
 
-export type RequestStatusFilter = 'all' | 'completed' | 'failed';
+export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';
 
 export interface ComboSummary {
   id: string;

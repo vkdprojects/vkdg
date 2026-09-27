@@ -58,6 +58,9 @@ pub struct VirtualKey {
     pub monthly_token_limit: Option<u64>,
     /// Requests this key may start per minute.
     pub requests_per_minute: Option<u32>,
+    /// Keep this key's requests out of the request history. Usage is still
+    /// counted against its limits.
+    pub no_log: bool,
 }
 
 /// Changes to an existing key's policy. `None` leaves a field as it is; for
@@ -71,6 +74,7 @@ pub struct KeyPatch {
     pub allowed_ips: Option<Vec<IpNet>>,
     pub monthly_token_limit: Option<Option<u64>>,
     pub requests_per_minute: Option<Option<u32>>,
+    pub no_log: Option<bool>,
 }
 
 /// What a new key may do. `Default` is a key with every data-plane scope and no
@@ -85,6 +89,7 @@ pub struct NewKey {
     pub allowed_ips: Vec<IpNet>,
     pub monthly_token_limit: Option<u64>,
     pub requests_per_minute: Option<u32>,
+    pub no_log: bool,
 }
 
 impl NewKey {
@@ -98,6 +103,7 @@ impl NewKey {
             allowed_ips: vec![],
             monthly_token_limit: None,
             requests_per_minute: None,
+            no_log: false,
         }
     }
 }
@@ -135,6 +141,7 @@ impl VirtualKey {
             allowed_ips: spec.allowed_ips,
             monthly_token_limit: spec.monthly_token_limit,
             requests_per_minute: spec.requests_per_minute,
+            no_log: spec.no_log,
         };
         (key, raw)
     }

@@ -420,6 +420,7 @@ async fn serve(
             "/v1/images/generations",
             post(vkdg_ingress_openai::handle_image_generations),
         )
+        .route("/v1/models", get(vkdg_http::models::list_models))
         // Applies to the /v1 routes above only; /health and /info stay public.
         .route_layer(axum::middleware::from_fn_with_state(
             data_auth,

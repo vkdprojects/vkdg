@@ -6,6 +6,7 @@ pub mod external_service;
 pub mod frontdoor;
 pub mod hooks;
 pub mod metering;
+pub mod models;
 pub mod pipeline;
 pub mod provider;
 pub mod server;

@@ -590,7 +590,8 @@ fn build_pipeline_from_snapshot(
         ip_policy: Some(Arc::new(vkdg_core::net::IpPolicy::new(
             snap.ip_rules.as_ref().clone(),
         ))),
-        latency_tracker: None,
+        // Feeds lowest_latency / power_of_two_choices; without it they have no data.
+        latency_tracker: Some(vkdg_connections::LatencyTracker::new()),
         memory_store: None,
         eval_enabled: false,
         relay_enabled: false,

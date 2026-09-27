@@ -15,13 +15,26 @@ use serde_json::Value;
 /// Tokens a response reported. Zero means "not reported".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenUsage {
+    /// All input tokens, cached ones included.
     pub input: u64,
     pub output: u64,
+    /// Part of `input` read from / written to the prompt cache (Anthropic).
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 impl TokenUsage {
     pub fn total(&self) -> u64 {
         self.input + self.output
+    }
+
+    pub fn billed(&self) -> vkdg_core::pricing::BilledTokens {
+        vkdg_core::pricing::BilledTokens {
+            input: self.input,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            output: self.output,
+        }
     }
 }
 
@@ -85,12 +98,16 @@ impl UsageMeter {
             .flatten()
         {
             let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-            let input = n("input_tokens").max(n("prompt_tokens"))
-                + n("cache_read_input_tokens")
-                + n("cache_creation_input_tokens");
+            let (read, write) = (
+                n("cache_read_input_tokens"),
+                n("cache_creation_input_tokens"),
+            );
+            let input = n("input_tokens").max(n("prompt_tokens")) + read + write;
             let output = n("output_tokens").max(n("completion_tokens"));
             self.usage.input = self.usage.input.max(input);
             self.usage.output = self.usage.output.max(output);
+            self.usage.cache_read = self.usage.cache_read.max(read);
+            self.usage.cache_write = self.usage.cache_write.max(write);
         }
     }
 }
@@ -125,7 +142,9 @@ mod tests {
             u,
             TokenUsage {
                 input: 112,
-                output: 42
+                output: 42,
+                cache_read: 100,
+                ..TokenUsage::default()
             }
         );
     }
@@ -141,7 +160,8 @@ mod tests {
             u,
             TokenUsage {
                 input: 7,
-                output: 3
+                output: 3,
+                ..TokenUsage::default()
             }
         );
     }
@@ -152,14 +172,16 @@ mod tests {
             meter(&["{\"usage\":{\"input_tokens\":5,", "\"output_tokens\":9}}"]),
             TokenUsage {
                 input: 5,
-                output: 9
+                output: 9,
+                ..TokenUsage::default()
             }
         );
         assert_eq!(
             meter(&["{\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":4}}"]),
             TokenUsage {
                 input: 2,
-                output: 4
+                output: 4,
+                ..TokenUsage::default()
             }
         );
     }
@@ -175,7 +197,8 @@ mod tests {
             m.finish(),
             TokenUsage {
                 input: 30,
-                output: 0
+                output: 0,
+                ..TokenUsage::default()
             }
         );
     }

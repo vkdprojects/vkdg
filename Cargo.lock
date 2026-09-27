@@ -4793,6 +4793,7 @@ dependencies = [
  "http",
  "serde_json",
  "vkdg-connections",
+ "vkdg-core",
  "vkdg-operations",
  "vkdg-provider-sdk",
 ]

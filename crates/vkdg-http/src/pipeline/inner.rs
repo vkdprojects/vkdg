@@ -86,8 +86,18 @@ pub(super) async fn run_pipeline_inner(
             } else {
                 0
             };
-            // Rough rate: $3/M tokens = 3 microdollars per token.
-            let estimated_cost_microdollars = estimated_tokens * 3;
+            // Input-only estimate at the highest price any provider lists for
+            // the model; $3/M when none does, so an unpriced model still counts.
+            let model = match &operation {
+                Operation::Conversation(c) => c.model.as_str(),
+                _ => ctx.envelope.model_requested.as_str(),
+            };
+            let per_mtok = pipeline
+                .provider_registry
+                .max_price(model)
+                .map_or(3_000_000, |p| p.input_per_mtok);
+            let estimated_cost_microdollars =
+                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000) as u64;
             if estimated_cost_microdollars > max_cost {
                 return Err(VkdgError::BudgetExceeded {
                     estimated_usd: estimated_cost_microdollars as f64 / 1_000_000.0,
@@ -372,6 +382,15 @@ pub(super) async fn run_pipeline_inner(
     let prepared = adapter
         .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
+    // Priced on the model actually sent upstream. A custom endpoint borrows the
+    // OpenAI adapter for its wire format, not OpenAI's prices.
+    ctx.price = match (&config.provider, &operation) {
+        (vkdg_connections::ProviderKind::Custom { .. }, _) => None,
+        (_, Operation::Conversation(conv)) => {
+            vkdg_core::pricing::price_for(adapter.prices(), &conv.model).cloned()
+        }
+        _ => None,
+    };
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
         method: http::Method::POST,

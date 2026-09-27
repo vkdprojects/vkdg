@@ -47,6 +47,17 @@ impl ProviderRegistry {
         self.adapters.get(id).cloned()
     }
 
+    /// Highest list price any registered provider declares for `model`.
+    /// Used before routing, when the serving provider is not yet known, so a
+    /// budget check errs toward refusing. Order-independent.
+    pub fn max_price(&self, model: &str) -> Option<vkdg_core::pricing::ModelPrice> {
+        self.adapters
+            .values()
+            .filter_map(|a| vkdg_core::pricing::price_for(a.prices(), model))
+            .max_by_key(|p| (p.input_per_mtok, p.output_per_mtok))
+            .cloned()
+    }
+
     /// All registered provider ids.
     pub fn ids(&self) -> Vec<&str> {
         self.adapters.keys().map(|s| s.as_str()).collect()
@@ -137,5 +148,46 @@ mod try_register_tests {
             .try_register(Arc::new(Named("community", "plugin")))
             .is_ok());
         assert!(r.get("community").is_some());
+    }
+}
+
+#[cfg(test)]
+mod price_tests {
+    use super::*;
+    use vkdg_core::pricing::ModelPrice;
+
+    struct Priced(&'static str, &'static [ModelPrice]);
+    impl ProviderAdapter for Priced {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn display_name(&self) -> &str {
+            self.0
+        }
+        fn prepare(
+            &self,
+            _: &vkdg_operations::Operation,
+            _: &vkdg_connections::ConnectionConfig,
+            _: &vkdg_connections::Credential,
+        ) -> Result<crate::PreparedRequest, ProviderError> {
+            Err(ProviderError::UnsupportedOperation)
+        }
+        fn prices(&self) -> &[ModelPrice] {
+            self.1
+        }
+    }
+
+    // Before routing the provider is unknown: a budget check must assume the
+    // dearest one, whatever order the registry holds them in.
+    #[test]
+    fn max_price_is_the_dearest_listing() {
+        const CHEAP: &[ModelPrice] = &[ModelPrice::new("m-*", 1_000_000, 2_000_000)];
+        const DEAR: &[ModelPrice] = &[ModelPrice::new("m-*", 4_000_000, 8_000_000)];
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(Priced("a", CHEAP)));
+        r.register(Arc::new(Priced("b", DEAR)));
+        r.register(Arc::new(Priced("sub", &[])));
+        assert_eq!(r.max_price("m-1").unwrap().input_per_mtok, 4_000_000);
+        assert!(r.max_price("other").is_none());
     }
 }

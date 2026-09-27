@@ -293,7 +293,7 @@ fn metered(
         .map(|p| {
             let id = p.record.request_id.clone();
             p.log.push(p.record);
-            (p.log, id)
+            (p.log, id, p.price)
         });
     if charge.is_none() && history.is_none() {
         return response;
@@ -310,7 +310,11 @@ fn metered(
 
 struct Settle {
     charge: Option<(Arc<VirtualKeyStore>, VirtualKeyId)>,
-    history: Option<(Arc<vkdg_admin::handlers::requests::RequestLog>, String)>,
+    history: Option<(
+        Arc<vkdg_admin::handlers::requests::RequestLog>,
+        String,
+        Option<vkdg_core::pricing::ModelPrice>,
+    )>,
 }
 
 struct Metered {
@@ -335,8 +339,8 @@ impl Metered {
                     tracing::error!(error = %e, key = %key_id.0, "failed to record key usage");
                 }
             }
-            if let Some((log, id)) = history {
-                log.finish(&id, usage.input, usage.output, ended);
+            if let Some((log, id, price)) = history {
+                log.finish(&id, usage.billed(), ended, price.as_ref());
             }
         };
         // SQLite is blocking; keep it off the async workers.
@@ -713,7 +717,11 @@ mod tests {
                 decision: None,
                 input_tokens: None,
                 output_tokens: None,
+                cost_microdollars: None,
             },
+            price: Some(vkdg_core::pricing::ModelPrice::new(
+                "m", 3_000_000, 15_000_000,
+            )),
         }
     }
 
@@ -772,6 +780,11 @@ mod tests {
         let r = settled(&log, "req-1").await.expect("row written");
         assert_eq!(r.status, "completed");
         assert_eq!((r.input_tokens, r.output_tokens), (Some(11), Some(4)));
+        assert_eq!(
+            r.cost_microdollars,
+            Some(93),
+            "priced from the attached list price"
+        );
     }
 
     // Auth off has no key to charge, but history must still settle.

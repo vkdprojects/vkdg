@@ -64,4 +64,11 @@ pub trait ProviderAdapter: Send + Sync {
     fn stream_decoder(&self) -> Option<Box<dyn ConversationStreamDecoder>> {
         None
     }
+
+    /// List prices per model, specific patterns first. Empty (the default)
+    /// means the provider bills some other way (subscription, free tier) and
+    /// its requests have no per-token cost, shown as unknown rather than $0.
+    fn prices(&self) -> &[vkdg_core::pricing::ModelPrice] {
+        &[]
+    }
 }

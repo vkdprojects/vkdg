@@ -249,5 +249,6 @@
   "request_tokens_value": "{input} in / {output} out",
   "key_no_log": "Keep requests out of history",
   "key_no_log_hint": "Usage still counts against the limits; no request row is stored.",
-  "key_no_log_summary": "Not logged"
+  "key_no_log_summary": "Not logged",
+  "request_cost": "Cost"
 }

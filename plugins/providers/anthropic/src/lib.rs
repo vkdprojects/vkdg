@@ -6,14 +6,37 @@ use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
+use vkdg_core::pricing::ModelPrice;
 use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
 pub struct AnthropicAdapter;
 
+/// Anthropic list prices (USD per million tokens, as microdollars), specific
+/// patterns first. Opus 4 and 4.1 are $15/$75, later Opus 4.x $5/$25. Names
+/// are matched with `.` read as `-`, so `claude-opus-4.5` is `claude-opus-4-5`.
+const PRICES: &[ModelPrice] = &[
+    ModelPrice::new("claude-opus-4-1*", 15_000_000, 75_000_000),
+    // Dated Opus 4 ids (`claude-opus-4-20250514`), not an "Opus 4.2".
+    ModelPrice::new("claude-opus-4-2025*", 15_000_000, 75_000_000),
+    ModelPrice::new("claude-opus-4-*", 5_000_000, 25_000_000),
+    ModelPrice::new("claude-opus-4*", 15_000_000, 75_000_000),
+    ModelPrice::new("claude-3-opus*", 15_000_000, 75_000_000),
+    ModelPrice::new("claude-sonnet-*", 3_000_000, 15_000_000),
+    ModelPrice::new("claude-3-7-sonnet*", 3_000_000, 15_000_000),
+    ModelPrice::new("claude-3-5-sonnet*", 3_000_000, 15_000_000),
+    ModelPrice::new("claude-haiku-4*", 1_000_000, 5_000_000),
+    ModelPrice::new("claude-3-5-haiku*", 800_000, 4_000_000),
+    ModelPrice::new("claude-3-haiku*", 250_000, 1_250_000),
+];
+
 impl ProviderAdapter for AnthropicAdapter {
     fn id(&self) -> &str {
         "anthropic"
+    }
+
+    fn prices(&self) -> &[ModelPrice] {
+        PRICES
     }
 
     fn display_name(&self) -> &str {
@@ -132,4 +155,26 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     }
 
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod price_tests {
+    use super::*;
+
+    // Clients send dotted names; a miss here bills Opus 4.5 at 3x.
+    #[test]
+    fn list_prices_for_dotted_dashed_and_dated_names() {
+        let p = |m: &str| {
+            vkdg_core::pricing::price_for(PRICES, m)
+                .map(|p| (p.input_per_mtok / 1_000, p.output_per_mtok / 1_000))
+        };
+        assert_eq!(p("claude-opus-4.5"), Some((5_000, 25_000)));
+        assert_eq!(p("claude-opus-4-5-20251101"), Some((5_000, 25_000)));
+        assert_eq!(p("claude-opus-4-20250514"), Some((15_000, 75_000)));
+        assert_eq!(p("claude-opus-4-1"), Some((15_000, 75_000)));
+        assert_eq!(p("claude-sonnet-4.5"), Some((3_000, 15_000)));
+        assert_eq!(p("claude-haiku-4.5"), Some((1_000, 5_000)));
+        assert_eq!(p("claude-3-5-haiku-20241022"), Some((800, 4_000)));
+        assert_eq!(p("gpt-4o"), None);
+    }
 }

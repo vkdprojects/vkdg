@@ -45,6 +45,10 @@ pub struct RequestRecord {
     pub input_tokens: Option<u64>,
     #[serde(default)]
     pub output_tokens: Option<u64>,
+    /// Cost in microdollars from the provider's list price; absent when the
+    /// provider declares no price for the model (subscription, free tier).
+    #[serde(default)]
+    pub cost_microdollars: Option<u64>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -127,7 +131,13 @@ impl RequestLog {
     /// reported and, for a row still `pending`, the final status (`completed`
     /// when the body ran to the end, `cancelled` when the client hung up) and
     /// the duration including the stream. Unknown ids are ignored.
-    pub fn finish(&self, id: &str, input_tokens: u64, output_tokens: u64, body_ended: bool) {
+    pub fn finish(
+        &self,
+        id: &str,
+        tokens: vkdg_core::pricing::BilledTokens,
+        body_ended: bool,
+        price: Option<&vkdg_core::pricing::ModelPrice>,
+    ) {
         let conn = self.conn.lock();
         let Ok(json) = conn.query_row(
             "SELECT record FROM requests WHERE request_id = ?1",
@@ -139,9 +149,10 @@ impl RequestLog {
         let Ok(mut r) = serde_json::from_str::<RequestRecord>(&json) else {
             return;
         };
-        if input_tokens + output_tokens > 0 {
-            r.input_tokens = Some(input_tokens);
-            r.output_tokens = Some(output_tokens);
+        if tokens.input + tokens.output > 0 {
+            r.input_tokens = Some(tokens.input);
+            r.output_tokens = Some(tokens.output);
+            r.cost_microdollars = price.map(|p| p.cost_microdollars(tokens));
         }
         if r.status == STATUS_PENDING {
             r.status = if body_ended { "completed" } else { "cancelled" }.into();
@@ -312,6 +323,7 @@ mod tests {
             decision: None,
             input_tokens: None,
             output_tokens: None,
+            cost_microdollars: None,
         });
         state.request_log.push(RequestRecord {
             request_id: "req-2".into(),
@@ -325,6 +337,7 @@ mod tests {
             decision: None,
             input_tokens: None,
             output_tokens: None,
+            cost_microdollars: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -357,6 +370,7 @@ mod tests {
             decision: None,
             input_tokens: None,
             output_tokens: None,
+            cost_microdollars: None,
         }
     }
 
@@ -396,16 +410,27 @@ mod tests {
         log.push(record("streamed", STATUS_PENDING));
         log.push(record("dropped", STATUS_PENDING));
         log.push(record("failed", "failed"));
-        log.finish("streamed", 11, 4, true);
-        log.finish("dropped", 11, 1, false);
-        log.finish("failed", 0, 0, true);
-        log.finish("unknown", 1, 1, true);
+        use vkdg_core::pricing::{BilledTokens, ModelPrice};
+        let t = |input, output| BilledTokens {
+            input,
+            output,
+            ..BilledTokens::default()
+        };
+        let price = ModelPrice::new("m", 3_000_000, 15_000_000);
+        log.finish("streamed", t(11, 4), true, Some(&price));
+        log.finish("dropped", t(11, 1), false, None);
+        log.finish("failed", t(0, 0), true, Some(&price));
+        log.finish("unknown", t(1, 1), true, None);
 
         let r = log.get("streamed").unwrap();
         assert_eq!(r.status, "completed");
         assert_eq!((r.input_tokens, r.output_tokens), (Some(11), Some(4)));
+        // 11 * $3/M + 4 * $15/M = 33 + 60 µ$.
+        assert_eq!(r.cost_microdollars, Some(93));
         assert!(r.duration_ms.unwrap() > 1, "duration covers the stream");
-        assert_eq!(log.get("dropped").unwrap().status, "cancelled");
+        let d = log.get("dropped").unwrap();
+        assert_eq!(d.status, "cancelled");
+        assert_eq!(d.cost_microdollars, None, "no price is unknown, not $0");
         let f = log.get("failed").unwrap();
         assert_eq!((f.status.as_str(), f.input_tokens), ("failed", None));
         assert_eq!(f.duration_ms, Some(1), "a settled row keeps its duration");

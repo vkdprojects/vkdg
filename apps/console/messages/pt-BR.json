@@ -233,5 +233,6 @@
   "request_tokens_value": "{input} entrada / {output} saída",
   "key_no_log": "Não guardar requisições no histórico",
   "key_no_log_hint": "O uso continua contando nos limites; nenhuma linha de requisição é salva.",
-  "key_no_log_summary": "Sem histórico"
+  "key_no_log_summary": "Sem histórico",
+  "request_cost": "Custo"
 }

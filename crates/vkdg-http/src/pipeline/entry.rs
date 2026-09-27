@@ -90,6 +90,9 @@ pub(super) fn emit_decision_record(
 pub struct PendingLog {
     pub log: Arc<vkdg_admin::handlers::requests::RequestLog>,
     pub record: vkdg_admin::handlers::requests::RequestRecord,
+    /// List price of the model on the connection that served it, from its
+    /// provider plugin. `None` = the provider declares no per-token price.
+    pub price: Option<vkdg_core::pricing::ModelPrice>,
 }
 
 fn pending_log(
@@ -122,6 +125,7 @@ fn pending_log(
     }
     .to_string();
     Some(PendingLog {
+        price: if ok { ctx.price.clone() } else { None },
         log: Arc::clone(log),
         record: RequestRecord {
             request_id: ctx.envelope.request_id.0.to_string(),
@@ -146,6 +150,7 @@ fn pending_log(
             }),
             input_tokens: None,
             output_tokens: None,
+            cost_microdollars: None,
         },
     })
 }

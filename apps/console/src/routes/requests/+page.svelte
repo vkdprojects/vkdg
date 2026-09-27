@@ -46,6 +46,13 @@
     });
   }
 
+  /** USD from microdollars; a dash when the provider lists no price (not $0). */
+  function fmtCost(micro: number | null | undefined): string {
+    if (micro == null) return '—';
+    const usd = micro / 1_000_000;
+    return `$${usd < 0.01 ? usd.toFixed(6) : usd.toFixed(4)}`;
+  }
+
   function fmtDuration(ms: number | null | undefined): string {
     if (ms == null) return m.common_pending();
     return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
@@ -159,6 +166,7 @@
             <th scope="col">{m.request_connection()}</th>
             <th scope="col">{m.request_duration()}</th>
             <th scope="col">{m.request_tokens()}</th>
+            <th scope="col">{m.request_cost()}</th>
           </tr>
         </thead>
         <tbody>
@@ -181,6 +189,7 @@
               <td class="mono">{r.connection_id ?? m.common_none()}</td>
               <td>{fmtDuration(r.duration_ms)}</td>
               <td class="mono">{fmtTokens(r)}</td>
+              <td class="mono">{fmtCost(r.cost_microdollars)}</td>
             </tr>
           {/each}
         </tbody>
@@ -216,6 +225,7 @@
             <dt>{m.request_started()}</dt><dd>{new Date(d.started_at_ms).toLocaleString()}</dd>
             <dt>{m.request_duration()}</dt><dd>{fmtDuration(d.duration_ms)}</dd>
             <dt>{m.request_tokens()}</dt><dd class="mono">{fmtTokens(d)}</dd>
+            <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>
           </dl>
 
           <h3 class="drawer-subtitle">{m.request_decision()}</h3>

@@ -15,6 +15,10 @@ pub struct PipelineCtx {
     pub route_id: Option<String>,
     /// Candidates the router left out, with why.
     pub excluded: Vec<ExcludedCandidate>,
+    /// List price of the model sent upstream, from the serving connection's
+    /// provider plugin. `None` = no per-token price (subscription, custom
+    /// endpoint, or a model the plugin does not list).
+    pub price: Option<crate::pricing::ModelPrice>,
 }
 
 impl PipelineCtx {
@@ -29,6 +33,7 @@ impl PipelineCtx {
             transitions: vec![(AttemptState::Received, Utc::now())],
             route_id: None,
             excluded: Vec::new(),
+            price: None,
         }
     }
 

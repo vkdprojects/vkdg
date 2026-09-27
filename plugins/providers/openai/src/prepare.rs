@@ -4,6 +4,7 @@ use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
+use vkdg_core::pricing::ModelPrice;
 use vkdg_operations::{
     ContentBlock, ConversationRequest, ImageGenerateRequest, MessageContent, Operation, Role,
     VideoGenerateRequest,
@@ -13,6 +14,24 @@ use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderEr
 /// OpenAI provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
 
+/// OpenAI list prices (USD per million tokens, as microdollars), specific
+/// patterns first; `.` in names is read as `-` (`gpt-4.1` is `gpt-4-1`).
+/// Cached input is not reported separately by the meter, so cost for
+/// prompt-cached traffic is an upper bound.
+const PRICES: &[ModelPrice] = &[
+    ModelPrice::new("gpt-5-nano*", 50_000, 400_000),
+    ModelPrice::new("gpt-5-mini*", 250_000, 2_000_000),
+    ModelPrice::new("gpt-5*", 1_250_000, 10_000_000),
+    ModelPrice::new("gpt-4-1-nano*", 100_000, 400_000),
+    ModelPrice::new("gpt-4-1-mini*", 400_000, 1_600_000),
+    ModelPrice::new("gpt-4-1*", 2_000_000, 8_000_000),
+    ModelPrice::new("gpt-4o-mini*", 150_000, 600_000),
+    ModelPrice::new("gpt-4o*", 2_500_000, 10_000_000),
+    ModelPrice::new("o4-mini*", 1_100_000, 4_400_000),
+    ModelPrice::new("o3-mini*", 1_100_000, 4_400_000),
+    ModelPrice::new("o3*", 2_000_000, 8_000_000),
+];
+
 impl ProviderAdapter for OpenAIAdapter {
     fn id(&self) -> &str {
         "openai"
@@ -20,6 +39,10 @@ impl ProviderAdapter for OpenAIAdapter {
 
     fn display_name(&self) -> &str {
         "OpenAI"
+    }
+
+    fn prices(&self) -> &[ModelPrice] {
+        PRICES
     }
 
     fn prepare(

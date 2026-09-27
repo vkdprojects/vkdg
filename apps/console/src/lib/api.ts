@@ -186,6 +186,8 @@ export interface RequestSummary {
   /** Reported by the response; absent while streaming or when not reported. */
   input_tokens?: number | null;
   output_tokens?: number | null;
+  /** Microdollars at the provider's list price; absent when it lists none. */
+  cost_microdollars?: number | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';

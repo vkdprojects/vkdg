@@ -306,7 +306,10 @@ impl StreamEncoder for AnthropicStreamEncoder {
                     "stop_reason": stop_reason_anthropic(&self.stop_reason),
                     "stop_sequence": Value::Null,
                 },
-                "usage": { "output_tokens": self.usage.output },
+                // Final, complete usage: `message_start` went out before the
+                // provider reported any, so this is where input and cache counts
+                // reach the client (and the gateway's own meter).
+                "usage": self.usage.to_anthropic(),
             }),
         ));
         out.extend(sse("message_stop", &json!({ "type": "message_stop" })));
@@ -481,5 +484,69 @@ impl OpenAiStreamEncoder {
             "usage": usage,
         });
         format!("data: {body}\n\n").into_bytes()
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::{ConversationEvent, StreamContext, StreamEncoder, UsageCount};
+
+    fn usage_event() -> ConversationEvent {
+        ConversationEvent::Usage {
+            input_tokens: UsageCount::Estimated(500),
+            output_tokens: UsageCount::Reported(3),
+            cache_read_tokens: UsageCount::Reported(40),
+            cache_creation_tokens: UsageCount::Unknown,
+        }
+    }
+
+    fn sse_json(bytes: &[u8], event_type: &str) -> serde_json::Value {
+        let text = String::from_utf8_lossy(bytes);
+        text.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .find(|v| {
+                v["type"] == event_type
+                    || (event_type == "usage"
+                        && v.get("usage").is_some()
+                        && v["choices"].as_array().is_some_and(Vec::is_empty))
+            })
+            .unwrap_or_else(|| panic!("no {event_type} in {text}"))
+    }
+
+    // Found live: Kiro key usage recorded input 0. message_start goes out before
+    // any usage is known, and message_delta carried output only, so the
+    // decoder's input count never reached the client or the meter.
+    #[test]
+    fn anthropic_message_delta_carries_the_full_final_usage() {
+        let rid = vkdg_core::RequestId::new();
+        let mut enc = AnthropicStreamEncoder::new(&StreamContext {
+            model: "m",
+            request_id: &rid,
+        });
+        let mut out = enc.encode(&usage_event());
+        out.extend(enc.finish());
+        let delta = sse_json(&out, "message_delta");
+        assert_eq!(delta["usage"]["input_tokens"], 500, "{delta}");
+        assert_eq!(delta["usage"]["output_tokens"], 3, "{delta}");
+        assert_eq!(delta["usage"]["cache_read_input_tokens"], 40, "{delta}");
+    }
+
+    #[test]
+    fn openai_final_usage_chunk_carries_prompt_tokens() {
+        let rid = vkdg_core::RequestId::new();
+        let mut enc = OpenAiStreamEncoder::new(&StreamContext {
+            model: "m",
+            request_id: &rid,
+        });
+        let mut out = enc.encode(&usage_event());
+        out.extend(enc.finish());
+        let chunk = sse_json(&out, "usage");
+        assert!(
+            chunk["usage"]["prompt_tokens"].as_u64().unwrap() >= 500,
+            "{chunk}"
+        );
+        assert_eq!(chunk["usage"]["completion_tokens"], 3, "{chunk}");
     }
 }

@@ -28,6 +28,20 @@ impl ProviderRegistry {
         self.adapters.insert(adapter.id().to_string(), adapter);
     }
 
+    /// Register an adapter only if its id is free.
+    ///
+    /// Used for out-of-tree plugins: an adapter receives the credentials of every
+    /// connection that names its id, so a plugin claiming `anthropic` or `kiro`
+    /// must not silently replace the built-in one.
+    pub fn try_register(&mut self, adapter: Arc<dyn ProviderAdapter>) -> Result<(), String> {
+        let id = adapter.id().to_owned();
+        if self.adapters.contains_key(&id) {
+            return Err(format!("provider id '{id}' is already registered"));
+        }
+        self.adapters.insert(id, adapter);
+        Ok(())
+    }
+
     /// Look up by provider id (e.g. "anthropic", "openai", "gemini").
     pub fn get(&self, id: &str) -> Option<Arc<dyn ProviderAdapter>> {
         self.adapters.get(id).cloned()
@@ -80,5 +94,48 @@ impl TokenRefresher for ProviderRegistry {
                     },
                 })
         })
+    }
+}
+
+#[cfg(test)]
+mod try_register_tests {
+    use super::*;
+    use crate::{PreparedRequest, ProviderError};
+    use vkdg_connections::{ConnectionConfig, Credential};
+    use vkdg_operations::Operation;
+
+    struct Named(&'static str, &'static str);
+
+    impl ProviderAdapter for Named {
+        fn id(&self) -> &str {
+            self.0
+        }
+        fn display_name(&self) -> &str {
+            self.1
+        }
+        fn prepare(
+            &self,
+            _: &Operation,
+            _: &ConnectionConfig,
+            _: &Credential,
+        ) -> Result<PreparedRequest, ProviderError> {
+            Err(ProviderError::UnsupportedOperation)
+        }
+    }
+
+    // A plugin claiming a built-in id would receive that provider's credentials.
+    #[test]
+    fn taken_id_is_refused_and_the_original_stays() {
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(Named("anthropic", "built-in")));
+        let err = r
+            .try_register(Arc::new(Named("anthropic", "impostor")))
+            .unwrap_err();
+        assert!(err.contains("anthropic"), "{err}");
+        assert_eq!(r.get("anthropic").unwrap().display_name(), "built-in");
+        assert!(r
+            .try_register(Arc::new(Named("community", "plugin")))
+            .is_ok());
+        assert!(r.get("community").is_some());
     }
 }

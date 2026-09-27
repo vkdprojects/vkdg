@@ -214,3 +214,30 @@ install:
     assert_eq!(store.list().expect("list").len(), 1);
     fs::remove_dir_all(&root).ok();
 }
+
+/// Refutes: installed providers sit on disk and never reach the gateway.
+#[test]
+fn installed_providers_load_and_broken_ones_are_reported_by_name() {
+    let root = temp_root("load");
+    let store = PluginStore::new(&root);
+    let bytes = component();
+    store
+        .install(
+            &wasm_manifest("community", &sha256_of(&bytes)),
+            Some(&bytes),
+        )
+        .expect("install");
+    // A second plugin whose component was corrupted after install.
+    store
+        .install(&wasm_manifest("broken", &sha256_of(&bytes)), Some(&bytes))
+        .expect("install");
+    fs::write(root.join("broken").join("plugin.wasm"), b"not wasm").unwrap();
+
+    let loaded = store.load_providers();
+    let names: Vec<&str> = loaded.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["broken", "community"]);
+    assert!(loaded[0].1.is_err());
+    let adapter = loaded[1].1.as_ref().expect("good plugin loads");
+    use vkdg_provider_sdk::ProviderAdapter;
+    assert_eq!(adapter.id(), "community");
+}

@@ -94,13 +94,21 @@ pub struct PluginStore {
 }
 
 impl PluginStore {
-    /// Store rooted at `$VKDG_PLUGINS_DIR`, else `~/.config/vkdg/plugins`.
+    /// Store rooted at `$VKDG_PLUGINS_DIR`, else `plugins/` next to
+    /// `$VKDG_ACCOUNTS_DB`, else `$HOME/.config/vkdg/plugins`, else
+    /// `/var/lib/vkdg/plugins`.
+    ///
+    /// Plugins must live on the same persistent volume as accounts and keys. A
+    /// container has no real home (`HOME` unset or `/`), and a relative path
+    /// resolves inside the image: both lose every install on redeploy.
     pub fn from_env() -> Self {
-        let root = std::env::var_os("VKDG_PLUGINS_DIR")
-            .map(PathBuf::from)
-            .or_else(|| dirs_config().map(|c| c.join("vkdg/plugins")))
-            .unwrap_or_else(|| PathBuf::from(".vkdg/plugins"));
-        Self { root }
+        Self {
+            root: default_root(
+                std::env::var_os("VKDG_PLUGINS_DIR"),
+                std::env::var_os("VKDG_ACCOUNTS_DB"),
+                std::env::var_os("HOME"),
+            ),
+        }
     }
 
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -109,6 +117,32 @@ impl PluginStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Load every installed provider plugin that ships a component.
+    ///
+    /// One broken plugin must not stop the gateway: each result is returned so
+    /// the caller registers the good ones and logs the rest by name.
+    pub fn load_providers(&self) -> Vec<(String, Result<crate::WasmProviderAdapter, String>)> {
+        let installed = match self.list() {
+            Ok(list) => list,
+            Err(e) => return vec![(self.root.display().to_string(), Err(e.to_string()))],
+        };
+        installed
+            .into_iter()
+            .filter(|p| role_for(&p.manifest) == PluginRole::Provider)
+            .filter_map(|p| {
+                let path = p.wasm_path()?;
+                let manifest = p.host_manifest();
+                let loaded = std::fs::read(&path)
+                    .map_err(|e| format!("read {}: {e}", path.display()))
+                    .and_then(|bytes| crate::WasmPluginInstance::from_bytes(&bytes, &manifest))
+                    .and_then(|instance| {
+                        crate::WasmProviderAdapter::new(std::sync::Arc::new(instance), &manifest)
+                    });
+                Some((p.manifest.name.clone(), loaded))
+            })
+            .collect()
     }
 
     /// Installed plugins, sorted by name. Directories without a manifest are
@@ -249,8 +283,53 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
-fn dirs_config() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+fn default_root(
+    plugins_dir: Option<std::ffi::OsString>,
+    accounts_db: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(dir) = plugins_dir {
+        return dir.into();
+    }
+    if let Some(parent) = accounts_db
+        .as_ref()
+        .and_then(|db| Path::new(db).parent())
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        return parent.join("plugins");
+    }
+    match home {
+        Some(h) if !h.is_empty() && h != "/" => Path::new(&h).join(".config/vkdg/plugins"),
+        _ => PathBuf::from("/var/lib/vkdg/plugins"),
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::default_root;
+    use std::path::PathBuf;
+
+    // A plugin installed into the image instead of the volume vanished on redeploy.
+    #[test]
+    fn plugins_follow_the_data_volume() {
+        let s = |v: &str| Some(v.into());
+        assert_eq!(
+            default_root(s("/p"), s("/data/accounts.db"), s("/home/u")),
+            PathBuf::from("/p")
+        );
+        assert_eq!(
+            default_root(None, s("/var/lib/vkdg/accounts.db"), None),
+            PathBuf::from("/var/lib/vkdg/plugins")
+        );
+        assert_eq!(
+            default_root(None, None, s("/home/u")),
+            PathBuf::from("/home/u/.config/vkdg/plugins")
+        );
+        for home in [None, s("/"), s("")] {
+            assert_eq!(
+                default_root(None, None, home),
+                PathBuf::from("/var/lib/vkdg/plugins")
+            );
+        }
+    }
 }

@@ -677,6 +677,23 @@ fn build_provider_registry() -> Arc<ProviderRegistry> {
     r.register(Arc::new(sambanova_provider()));
     r.register(Arc::new(cerebras_provider()));
     r.register(Arc::new(nvidia_nim_provider()));
+    // Installed WASM providers register after the built-ins and may only take
+    // a free id: an adapter receives the credentials of every connection that
+    // names it, so a plugin must never replace `anthropic` or `kiro`.
+    for (name, loaded) in vkdg_plugin_host::PluginStore::from_env().load_providers() {
+        let adapter = match loaded {
+            Ok(adapter) => adapter,
+            Err(e) => {
+                tracing::error!(plugin = %name, error = %e, "WASM provider plugin failed to load; skipped");
+                continue;
+            }
+        };
+        let provider = vkdg_provider_sdk::ProviderAdapter::id(&adapter).to_owned();
+        match r.try_register(Arc::new(adapter)) {
+            Ok(()) => tracing::info!(plugin = %name, %provider, "loaded WASM provider plugin"),
+            Err(e) => tracing::warn!(plugin = %name, error = %e, "WASM provider plugin refused"),
+        }
+    }
     Arc::new(r)
 }
 

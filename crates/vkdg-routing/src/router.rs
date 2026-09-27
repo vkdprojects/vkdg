@@ -6,7 +6,10 @@ use parking_lot::RwLock;
 use vkdg_core::{ConnectionId, ExcludedCandidate, RequestEnvelope, Result, VkdgError};
 
 use crate::scored::ScoredStrategy;
-use crate::strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
+use crate::strategy::{
+    FallbackChainStrategy, LowestLatencyStrategy, PowerOfTwoChoicesStrategy, RoundRobinStrategy,
+    Strategy,
+};
 use crate::types::{EligibilityFilter, RouteConfig, RouteResult, RoutingHints, StrategyKind};
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -24,6 +27,11 @@ impl Router {
         let mut strategies: HashMap<String, Arc<dyn Strategy>> = HashMap::new();
         strategies.insert("round_robin".into(), Arc::new(RoundRobinStrategy::new()));
         strategies.insert("fallback_chain".into(), Arc::new(FallbackChainStrategy));
+        strategies.insert("lowest_latency".into(), Arc::new(LowestLatencyStrategy));
+        strategies.insert(
+            "power_of_two_choices".into(),
+            Arc::new(PowerOfTwoChoicesStrategy::new()),
+        );
         Self {
             routes: RwLock::new(Arc::new(routes)),
             strategies,
@@ -128,26 +136,28 @@ impl Router {
             });
         }
 
+        let named = |name: &str| {
+            self.strategies
+                .get(name)
+                .cloned()
+                .ok_or_else(|| VkdgError::Internal(format!("{name} not registered")))
+        };
         let strategy: Arc<dyn Strategy> = match &route.strategy {
-            StrategyKind::RoundRobin => self
-                .strategies
-                .get("round_robin")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
-            StrategyKind::FallbackChain => self
-                .strategies
-                .get("fallback_chain")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("fallback_chain not registered".into()))?,
+            StrategyKind::RoundRobin => named("round_robin")?,
+            StrategyKind::FallbackChain => named("fallback_chain")?,
+            StrategyKind::LowestLatency => named("lowest_latency")?,
+            StrategyKind::PowerOfTwoChoices => named("power_of_two_choices")?,
             StrategyKind::Scored { mode_pack } => Arc::new(ScoredStrategy {
                 mode_pack: mode_pack.clone(),
             }),
-            // Other strategies fall back to round-robin until implemented.
-            _ => self
-                .strategies
-                .get("round_robin")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
+            // Config validation refuses these, so reaching here is a wiring bug:
+            // fail loudly rather than quietly route round-robin.
+            other => {
+                return Err(VkdgError::ConfigInvalid {
+                    field: format!("routes[{}].strategy", route.id.0),
+                    message: format!("strategy {other:?} is not implemented"),
+                })
+            }
         };
 
         let excluded: Vec<ExcludedCandidate> = filter

@@ -13,7 +13,10 @@ pub mod types;
 pub use router::Router;
 pub use scored::ScoredStrategy;
 pub use scorer::{rank_candidates, CandidateSignals, ScoringWeights};
-pub use strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
+pub use strategy::{
+    FallbackChainStrategy, LowestLatencyStrategy, PowerOfTwoChoicesStrategy, RoundRobinStrategy,
+    Strategy,
+};
 pub use types::{
     ChainStep, ConnectionWeight, EligibilityFilter, InjectMode, PluginHooks, RouteConfig, RouteId,
     RouteResult, RoutingHints, StrategyKind,
@@ -318,5 +321,61 @@ mod tests {
         ));
         let r = router.route(&test_envelope("bar-1"), &f, &h).await.unwrap();
         assert_eq!(r.route_id, RouteId("r2".into()));
+    }
+
+    fn two_target_route(strategy: StrategyKind) -> RouteConfig {
+        RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["*".into()],
+            strategy,
+            targets: vec![
+                vkdg_core::ConnectionId("slow".into()),
+                vkdg_core::ConnectionId("fast".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        }
+    }
+
+    fn latency_hints() -> RoutingHints {
+        let mut h = RoutingHints::default();
+        h.latency_p50_ms
+            .insert(vkdg_core::ConnectionId("slow".into()), 900);
+        h.latency_p50_ms
+            .insert(vkdg_core::ConnectionId("fast".into()), 80);
+        h
+    }
+
+    // Found in review: lowest_latency and power_of_two_choices parsed from config
+    // but silently routed round-robin.
+    #[tokio::test]
+    async fn latency_strategies_prefer_the_faster_target() {
+        for kind in [StrategyKind::LowestLatency, StrategyKind::PowerOfTwoChoices] {
+            let router = Router::new(vec![two_target_route(kind.clone())]);
+            for _ in 0..6 {
+                let r = router
+                    .route(
+                        &test_envelope("m"),
+                        &EligibilityFilter::default(),
+                        &latency_hints(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(r.connection_id.0, "fast", "{kind:?}");
+            }
+        }
+    }
+
+    // No latency data yet (cold start): still pick an eligible target.
+    #[tokio::test]
+    async fn latency_strategy_without_data_still_routes() {
+        let router = Router::new(vec![two_target_route(StrategyKind::LowestLatency)]);
+        let r = router
+            .route(
+                &test_envelope("m"),
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
+        assert!(r.is_ok());
     }
 }

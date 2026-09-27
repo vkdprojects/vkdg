@@ -230,11 +230,9 @@ fn build_routes(
 fn parse_strategy(s: &str) -> Option<StrategyKind> {
     match s {
         "round_robin" => Some(StrategyKind::RoundRobin),
-        "weighted" => Some(StrategyKind::Weighted),
         "lowest_latency" => Some(StrategyKind::LowestLatency),
         "power_of_two_choices" => Some(StrategyKind::PowerOfTwoChoices),
         "fallback_chain" => Some(StrategyKind::FallbackChain),
-        "last_known_good" => Some(StrategyKind::LastKnownGood),
         _ => None,
     }
 }

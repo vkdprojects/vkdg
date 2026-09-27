@@ -50,8 +50,7 @@ pub enum AuthDef {
 pub struct RouteDef {
     pub id: String,
     pub match_models: Vec<String>,
-    /// `"round_robin"` | `"weighted"` | `"fallback_chain"` | `"lowest_latency"`
-    /// | `"power_of_two_choices"` | `"last_known_good"`
+    /// `"round_robin"` | `"fallback_chain"` | `"lowest_latency"` | `"power_of_two_choices"`
     pub strategy: String,
     /// Connection ids.
     pub targets: Vec<String>,

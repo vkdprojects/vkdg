@@ -57,11 +57,9 @@ pub struct ChainStep {
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKind {
     RoundRobin,
-    Weighted,
     LowestLatency,
     PowerOfTwoChoices,
     FallbackChain,
-    LastKnownGood,
     /// Multi-factor scored strategy.
     /// mode_pack: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
     Scored {

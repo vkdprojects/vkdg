@@ -30,11 +30,9 @@
 
   const strategyOptions = [
     { value: 'round_robin', label: m.combo_strategy_round_robin() },
-    { value: 'weighted', label: m.combo_strategy_weighted() },
     { value: 'fallback_chain', label: m.combo_strategy_fallback_chain() },
     { value: 'lowest_latency', label: m.combo_strategy_lowest_latency() },
     { value: 'power_of_two_choices', label: m.combo_strategy_power_of_two_choices() },
-    { value: 'last_known_good', label: m.combo_strategy_last_known_good() },
     { value: 'fusion', label: m.combo_strategy_fusion() },
     { value: 'prompt_chain', label: m.combo_strategy_prompt_chain() },
     { value: 'auto', label: m.combo_strategy_auto() },

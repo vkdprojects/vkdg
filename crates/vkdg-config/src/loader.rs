@@ -37,13 +37,13 @@ fn validate(cfg: &GatewayConfig) -> Result<(), ConfigError> {
 
     // 2. Every route.targets references a known connection id.
     // 3. Every strategy string is known.
+    // Only strategies the router implements. Accepting a name and routing
+    // round-robin behind the operator's back is worse than refusing the file.
     let known_strategies: HashSet<&str> = [
         "round_robin",
-        "weighted",
         "lowest_latency",
         "power_of_two_choices",
         "fallback_chain",
-        "last_known_good",
     ]
     .into();
 
@@ -415,5 +415,19 @@ routes:
         }
         // Each save moved the version exactly once.
         assert_eq!(rx.borrow().version, 3);
+    }
+
+    // Parsed-but-ignored strategies silently routed round-robin.
+    #[test]
+    fn unimplemented_strategy_is_rejected() {
+        for name in ["weighted", "last_known_good"] {
+            let f = temp_yaml(&format!(
+                "listen: 0.0.0.0:8080\nconnections:\n  - id: c1\n    provider: anthropic\n    auth: {{ type: api_key, env_var: X }}\n    models: [\"*\"]\nroutes:\n  - id: r1\n    match_models: [\"*\"]\n    strategy: {name}\n    targets: [c1]\n"
+            ));
+            let err = load_and_validate(f.path().to_str().unwrap(), 1)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(name), "{name}: {err}");
+        }
     }
 }

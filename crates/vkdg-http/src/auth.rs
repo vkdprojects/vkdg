@@ -85,8 +85,9 @@ struct RateWindows(parking_lot::Mutex<HashMap<String, (Instant, u32)>>);
 impl RateWindows {
     const WINDOW: Duration = Duration::from_secs(60);
 
-    /// Count one request against `limit`; `false` when the window is full.
-    fn admit(&self, key_id: &str, limit: u32) -> bool {
+    /// Count one request against `limit`. When the window is full, returns how
+    /// long until it reopens.
+    fn admit(&self, key_id: &str, limit: u32) -> Result<(), Duration> {
         let now = Instant::now();
         let mut windows = self.0.lock();
         let (start, count) = windows.entry(key_id.to_owned()).or_insert((now, 0));
@@ -94,10 +95,10 @@ impl RateWindows {
             (*start, *count) = (now, 0);
         }
         if *count >= limit {
-            return false;
+            return Err(Self::WINDOW.saturating_sub(now.duration_since(*start)));
         }
         *count += 1;
-        true
+        Ok(())
     }
 }
 
@@ -200,12 +201,15 @@ pub async fn require_api_key(
     if let Some(limit) = key.monthly_token_limit {
         match store.usage_this_month(&key.id) {
             Ok(used) if used.tokens() >= limit => {
-                return reject_as(
-                    &path,
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "rate_limit_error",
-                    "insufficient_quota",
-                    "this API key has used its monthly token budget",
+                return with_retry_after(
+                    reject_as(
+                        &path,
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "rate_limit_error",
+                        "insufficient_quota",
+                        "this API key has used its monthly token budget",
+                    ),
+                    until_next_month(),
                 );
             }
             Ok(_) => {}
@@ -220,13 +224,16 @@ pub async fn require_api_key(
         }
     }
     if let Some(rpm) = key.requests_per_minute {
-        if !auth.rate.admit(&key.id.0, rpm) {
-            return reject_as(
-                &path,
-                StatusCode::TOO_MANY_REQUESTS,
-                "rate_limit_error",
-                "rate_limit_exceeded",
-                "this API key is over its requests-per-minute limit",
+        if let Err(wait) = auth.rate.admit(&key.id.0, rpm) {
+            return with_retry_after(
+                reject_as(
+                    &path,
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limit_error",
+                    "rate_limit_exceeded",
+                    "this API key is over its requests-per-minute limit",
+                ),
+                wait,
             );
         }
     }
@@ -240,6 +247,31 @@ pub async fn require_api_key(
     });
     let response = next.run(req).await;
     metered(response, Arc::clone(store), key_id)
+}
+
+/// `retry-after` in whole seconds, at least 1, so clients back off instead of
+/// retrying at once.
+fn with_retry_after(mut response: Response, wait: Duration) -> Response {
+    let secs = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+    if let Ok(v) = http::HeaderValue::from_str(&secs.max(1).to_string()) {
+        response.headers_mut().insert(http::header::RETRY_AFTER, v);
+    }
+    response
+}
+
+/// Time until the monthly budget window (calendar month, UTC) resets.
+fn until_next_month() -> Duration {
+    use chrono::{Datelike, TimeZone, Utc};
+    let now = Utc::now();
+    let (y, m) = if now.month() == 12 {
+        (now.year() + 1, 1)
+    } else {
+        (now.year(), now.month() + 1)
+    };
+    Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
+        .single()
+        .and_then(|next| (next - now).to_std().ok())
+        .unwrap_or(Duration::from_secs(3600))
 }
 
 /// Count the response's tokens against the key once the body is done: at the
@@ -557,8 +589,28 @@ mod tests {
             let (s, _) = call(app.clone(), "/v1/messages", &[("x-api-key", &raw)]).await;
             assert_eq!(s, StatusCode::OK);
         }
-        let (s, body) = call(app, "/v1/messages", &[("x-api-key", &raw)]).await;
-        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        let resp = app
+            .oneshot(
+                http::Request::post("/v1/messages")
+                    .header("x-api-key", &raw)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        // Clients back off on retry-after; without it they hammer the gateway.
+        let wait: u64 = resp.headers()["retry-after"]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["type"], "rate_limit_error", "{v}");
     }
 
     // The budget is checked before the request reaches the upstream.

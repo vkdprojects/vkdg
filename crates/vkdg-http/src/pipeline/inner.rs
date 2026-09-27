@@ -164,6 +164,9 @@ pub(super) async fn run_pipeline_inner(
         }
         Err(e) => return Err(e),
     };
+    ctx.route_id = Some(route_result.route_id.0.clone());
+    ctx.excluded = route_result.excluded.clone();
+
     // Route hooks run before any dispatch path, fusion and chains included.
     if !route_result.hooks.auth.is_empty() {
         pipeline
@@ -1291,5 +1294,22 @@ mod tests {
             "{}",
             seen[0]
         );
+    }
+
+    // The admin request log always recorded `decision: None`, so the console
+    // could never show which route handled a request or why targets were skipped.
+    #[tokio::test]
+    async fn request_log_records_the_routing_decision() {
+        let (p, _) = hooked_pipeline(StrategyKind::RoundRobin, &[]);
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let mut p = Arc::try_unwrap(p).ok().expect("sole owner");
+        p.request_log = Some(Arc::clone(&log));
+        let ctx = make_ctx("hooked");
+        let id = ctx.envelope.request_id.0.to_string();
+        let _ = run_conversation_pipeline(Arc::new(p), ctx, make_conv_op()).await;
+        let rec = log.get(&id).expect("logged");
+        let d = rec.decision.expect("decision recorded");
+        assert_eq!(d.route_id.as_deref(), Some("guarded"));
+        assert!(d.attempt_count >= 1);
     }
 }

@@ -66,13 +66,9 @@ pub(super) fn emit_decision_record(
         request_id: ctx.envelope.request_id.clone(),
         config_version: 0,
         client_id: ctx.envelope.client_id.clone(),
-        route_id: ctx
-            .connection_id
-            .as_ref()
-            .map(|c| c.0.clone())
-            .unwrap_or_else(|| "none".into()),
+        route_id: ctx.route_id.clone().unwrap_or_else(|| "none".into()),
         connection_chosen: ctx.connection_id.clone(),
-        candidates_excluded: vec![],
+        candidates_excluded: ctx.excluded.clone(),
         attempt_count: attempt,
         state_transitions: ctx.transitions.clone(),
         result,
@@ -81,7 +77,7 @@ pub(super) fn emit_decision_record(
 
     // Push to admin request log if wired.
     if let Some(log) = &pipeline.request_log {
-        use vkdg_admin::handlers::requests::RequestRecord;
+        use vkdg_admin::handlers::requests::{DecisionInfo, ExcludedInfo, RequestRecord};
         use vkdg_core::ApiType;
 
         let status = match outcome {
@@ -116,7 +112,18 @@ pub(super) fn emit_decision_record(
             key_id: Some(ctx.envelope.client_id.0.clone()),
             started_at_ms,
             duration_ms: Some(duration_ms),
-            decision: None,
+            decision: ctx.route_id.as_ref().map(|route| DecisionInfo {
+                route_id: Some(route.clone()),
+                attempt_count: attempt,
+                candidates_excluded: ctx
+                    .excluded
+                    .iter()
+                    .map(|c| ExcludedInfo {
+                        id: c.connection_id.0.clone(),
+                        reason: c.reason.clone(),
+                    })
+                    .collect(),
+            }),
         });
     }
 }

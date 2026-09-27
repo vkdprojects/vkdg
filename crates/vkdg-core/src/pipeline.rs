@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::{AttemptState, ConnectionId, RequestEnvelope, RequestId};
+use crate::{AttemptState, ConnectionId, ExcludedCandidate, RequestEnvelope, RequestId};
 
 // ── Pipeline context ──────────────────────────────────────────────────────────
 
@@ -11,6 +11,10 @@ pub struct PipelineCtx {
     pub connection_id: Option<ConnectionId>,
     pub committed: bool,
     pub transitions: Vec<(AttemptState, DateTime<Utc>)>,
+    /// Route the router chose (`auto` when no route matched).
+    pub route_id: Option<String>,
+    /// Candidates the router left out, with why.
+    pub excluded: Vec<ExcludedCandidate>,
 }
 
 impl PipelineCtx {
@@ -23,6 +27,8 @@ impl PipelineCtx {
             connection_id: None,
             committed: false,
             transitions: vec![(AttemptState::Received, Utc::now())],
+            route_id: None,
+            excluded: Vec::new(),
         }
     }
 

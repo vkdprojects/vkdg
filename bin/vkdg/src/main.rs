@@ -387,7 +387,7 @@ async fn serve(
     // routes before calling .with_state() once. This avoids the Router<S> type
     // mismatch that comes from calling .route() on an already-resolved Router<()>.
     let key_store = Arc::new(open_key_store()?);
-    let data_auth = data_auth_from_env(Arc::clone(&key_store));
+    let data_auth = data_auth_from_env(Arc::clone(&key_store))?;
     let router: Router = Router::new()
         .route(
             "/v1/messages",
@@ -572,7 +572,9 @@ fn build_pipeline_from_snapshot(
         session_registry: None,
         quota_tracker: None,
         global_system_prompt: snap.gateway.global_system_prompt.clone(),
-        ip_policy: None,
+        ip_policy: Some(Arc::new(vkdg_core::net::IpPolicy::new(
+            snap.ip_rules.as_ref().clone(),
+        ))),
         latency_tracker: None,
         memory_store: None,
         eval_enabled: false,
@@ -805,13 +807,14 @@ fn cmd_accounts(sub: AccountsSub) -> Result<()> {
 
 /// Apply every validated config snapshot to the live pipeline.
 ///
-/// Only config-derived parts are swapped: the route table and connection
-/// configs. Live state (in-flight counters, health, credentials, key store,
+/// Only config-derived parts are swapped: the route table, connection configs,
+/// and IP rules. Live state (in-flight counters, health, credentials, key store,
 /// trackers) is kept, so a reload never resets capacity accounting. The
 /// watcher already rejects invalid files, so this only ever sees valid ones.
 fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState) {
     let router = Arc::clone(&pipeline.router);
     let catalog = Arc::clone(&pipeline.catalog);
+    let ip_policy = pipeline.ip_policy.clone();
     // The first value is the startup snapshot, already applied.
     rx.mark_unchanged();
     tokio::spawn(async move {
@@ -819,6 +822,9 @@ fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState)
             let snap = Arc::clone(&rx.borrow_and_update());
             catalog.apply(snap.connections.as_ref().clone()).await;
             router.replace_routes(snap.routes.as_ref().clone());
+            if let Some(policy) = &ip_policy {
+                policy.replace(snap.ip_rules.as_ref().clone());
+            }
             tracing::info!(version = snap.version, "config applied to data plane");
         }
     });
@@ -844,8 +850,8 @@ fn open_key_store() -> Result<vkdg_governance::VirtualKeyStore> {
 /// Keys are required on every bind address. A loopback listener behind a
 /// reverse proxy is still public, which is exactly how an open relay happens.
 /// `VKDG_DATA_AUTH=off` is the only way out, and it is loud.
-fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> vkdg_http::DataAuth {
-    match std::env::var("VKDG_DATA_AUTH").as_deref() {
+fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> Result<vkdg_http::DataAuth> {
+    let auth = match std::env::var("VKDG_DATA_AUTH").as_deref() {
         Ok("off") => {
             tracing::warn!(
                 "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
@@ -867,20 +873,23 @@ fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> vkdg_http
             vkdg_http::DataAuth::required(store)
         }
     }
-    .with_trusted_proxies(trusted_proxies_from_env())
+    .with_trusted_proxies(trusted_proxies_from_env()?);
+    Ok(auth)
 }
 
 /// `VKDG_TRUSTED_PROXIES`: comma-separated proxies whose `X-Forwarded-For` is
 /// believed, e.g. `127.0.0.1,172.16.0.0/12` for a local nginx or Docker bridge.
-/// Empty (the default) means the socket address is the client.
-fn trusted_proxies_from_env() -> Vec<String> {
-    std::env::var("VKDG_TRUSTED_PROXIES")
-        .unwrap_or_default()
+/// Empty (the default) means the socket address is the client. An invalid
+/// entry stops startup: a typo here would silently trust nobody, or everybody.
+fn trusted_proxies_from_env() -> Result<Vec<vkdg_core::net::IpNet>> {
+    let raw = std::env::var("VKDG_TRUSTED_PROXIES").unwrap_or_default();
+    let entries: Vec<String> = raw
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
-        .collect()
+        .collect();
+    vkdg_core::net::parse_ip_list("VKDG_TRUSTED_PROXIES", &entries).map_err(anyhow::Error::msg)
 }
 
 fn cmd_keys(sub: KeysSub) -> Result<()> {

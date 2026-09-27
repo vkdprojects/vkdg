@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use vkdg_connections::{AuthKind, ConnectionConfig, ProviderKind};
+use vkdg_core::net::{parse_ip_list, IpRules};
 use vkdg_core::{CapabilitySet, ConnectionId};
 use vkdg_routing::{PluginHooks, RouteConfig, RouteId, StrategyKind};
 
@@ -19,6 +20,8 @@ pub struct ConfigSnapshot {
     pub connections: Arc<Vec<ConnectionConfig>>,
     pub routes: Arc<Vec<RouteConfig>>,
     pub limits: Arc<LimitsDef>,
+    /// `limits.ip_allowlist`/`ip_blocklist`, parsed once at load.
+    pub ip_rules: Arc<IpRules>,
     pub observe: Arc<ObserveDef>,
 }
 
@@ -43,6 +46,12 @@ impl ConfigSnapshot {
             log_level: None,
             log_format: None,
         }));
+        let ip_rules = Arc::new(IpRules {
+            allow: parse_ip_list("limits.ip_allowlist", &limits.ip_allowlist)
+                .map_err(ConfigError::Validation)?,
+            block: parse_ip_list("limits.ip_blocklist", &limits.ip_blocklist)
+                .map_err(ConfigError::Validation)?,
+        });
 
         Ok(Self {
             version,
@@ -50,6 +59,7 @@ impl ConfigSnapshot {
             connections: Arc::new(connections),
             routes: Arc::new(routes),
             limits,
+            ip_rules,
             observe,
         })
     }
@@ -77,6 +87,7 @@ impl ConfigSnapshot {
                 ip_allowlist: vec![],
                 ip_blocklist: vec![],
             }),
+            ip_rules: Arc::new(IpRules::default()),
             observe: Arc::new(ObserveDef {
                 otlp_endpoint: None,
                 log_level: None,

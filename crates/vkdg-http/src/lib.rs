@@ -11,7 +11,7 @@ pub mod sse;
 pub mod upstream;
 
 // Re-exports for stable public API
-pub use admission::{AdmissionGuard, IpPolicy};
+pub use admission::AdmissionGuard;
 pub use app_state::{AppState, PipelineState};
 pub use auth::{require_api_key, ClientIdentity, DataAuth};
 pub use dedup::DedupTable;

@@ -52,7 +52,7 @@ pub(super) async fn run_pipeline_inner(
     // Checked before admission so blocked IPs don't consume capacity slots.
     // An unknown client IP fails an allowlist instead of skipping it.
     if let Some(ip_policy) = &pipeline.ip_policy {
-        if !ip_policy.allows_opt(ctx.envelope.client_ip.as_deref()) {
+        if !ip_policy.allows(ctx.envelope.client_ip) {
             return Err(VkdgError::Unauthorized);
         }
     }

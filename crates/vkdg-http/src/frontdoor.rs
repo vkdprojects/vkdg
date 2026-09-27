@@ -1,7 +1,9 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use uuid::Uuid;
 
+use vkdg_core::net::IpNet;
 use vkdg_core::{ApiType, RequestEnvelope, RequestId};
 
 use crate::admission::AdmissionGuard;
@@ -88,44 +90,42 @@ pub fn extract_vkdg_overrides(headers: &http::HeaderMap, envelope: &mut RequestE
 /// The client's address as the gateway should trust it.
 ///
 /// `peer` is the TCP socket address. `X-Forwarded-For` is honored only when the
-/// peer is one of `trusted_proxies` (same syntax as `IpPolicy` entries); the
-/// chain is then walked from the right and the first untrusted hop is the
-/// client. Anyone else could set the header to any address they like.
+/// peer is inside `trusted_proxies`; the chain is then walked from the right and
+/// the first hop that is not a proxy is the client. Anyone else could set the
+/// header to any address they like. `None` only when there is no socket
+/// address at all (in-process calls).
 pub fn resolve_client_ip(
-    peer: Option<std::net::IpAddr>,
+    peer: Option<IpAddr>,
     headers: &http::HeaderMap,
-    trusted_proxies: &[String],
-) -> Option<String> {
-    let peer = peer?.to_string();
-    let trusted = |ip: &str| {
-        trusted_proxies
-            .iter()
-            .any(|entry| crate::admission::ip_matches(ip, entry))
-    };
-    if !trusted(&peer) {
+    trusted_proxies: &[IpNet],
+) -> Option<IpAddr> {
+    let peer = peer?;
+    let trusted = |ip: IpAddr| trusted_proxies.iter().any(|n| n.contains(ip));
+    if !trusted(peer) {
         return Some(peer);
     }
-    let hops: Vec<&str> = headers
+    let hops: Vec<IpAddr> = headers
         .get_all("x-forwarded-for")
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(','))
-        .map(str::trim)
-        .filter(|h| !h.is_empty())
+        .filter_map(|h| h.trim().parse().ok())
         .collect();
-    // Rightmost hop that is not one of our proxies; each proxy appends the
-    // address it received from, so hops to its left are client-controlled.
-    hops.iter()
-        .rev()
-        .find(|h| !trusted(h))
-        .or_else(|| hops.first())
-        .map_or(Some(peer), |h| Some((*h).to_owned()))
+    // Each proxy appends the address it received from, so everything left of
+    // the rightmost non-proxy hop is client-controlled.
+    Some(
+        hops.iter()
+            .rev()
+            .find(|h| !trusted(**h))
+            .or_else(|| hops.first())
+            .copied()
+            .unwrap_or(peer),
+    )
 }
 
 #[cfg(test)]
 mod client_ip_tests {
     use super::*;
-    use std::net::IpAddr;
 
     fn xff(v: &str) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();
@@ -135,41 +135,44 @@ mod client_ip_tests {
     fn ip(s: &str) -> Option<IpAddr> {
         Some(s.parse().unwrap())
     }
+    fn nets(entries: &[&str]) -> Vec<IpNet> {
+        entries.iter().map(|e| e.parse().unwrap()).collect()
+    }
 
     // The bypass: any client could claim an allowlisted address.
     #[test]
     fn spoofed_forwarded_for_from_untrusted_peer_is_ignored() {
         let got = resolve_client_ip(ip("203.0.113.9"), &xff("10.0.0.1"), &[]);
-        assert_eq!(got.as_deref(), Some("203.0.113.9"));
-        let got = resolve_client_ip(ip("203.0.113.9"), &xff("10.0.0.1"), &["127.0.0.1".into()]);
-        assert_eq!(got.as_deref(), Some("203.0.113.9"));
+        assert_eq!(got, ip("203.0.113.9"));
+        let got = resolve_client_ip(ip("203.0.113.9"), &xff("10.0.0.1"), &nets(&["127.0.0.1"]));
+        assert_eq!(got, ip("203.0.113.9"));
     }
 
     // Behind a trusted proxy, the client is the rightmost hop that is not a
     // proxy. The leftmost entry is whatever the client wrote.
     #[test]
     fn trusted_proxy_chain_is_walked_from_the_right() {
-        let trusted = vec!["127.0.0.1".to_owned(), "10.0.0.0/8".to_owned()];
+        let trusted = nets(&["127.0.0.1", "10.0.0.0/8"]);
         let got = resolve_client_ip(
             ip("127.0.0.1"),
             &xff("6.6.6.6, 198.51.100.7, 10.1.2.3"),
             &trusted,
         );
-        assert_eq!(got.as_deref(), Some("198.51.100.7"));
+        assert_eq!(got, ip("198.51.100.7"));
     }
 
     #[test]
     fn trusted_proxy_without_header_or_all_trusted_falls_back_sensibly() {
-        let trusted = vec!["127.0.0.1".to_owned(), "10.0.0.0/8".to_owned()];
+        let trusted = nets(&["127.0.0.1", "10.0.0.0/8"]);
         let none = http::HeaderMap::new();
         assert_eq!(
-            resolve_client_ip(ip("127.0.0.1"), &none, &trusted).as_deref(),
-            Some("127.0.0.1")
+            resolve_client_ip(ip("127.0.0.1"), &none, &trusted),
+            ip("127.0.0.1")
         );
         // Every hop is a proxy: the leftmost is the best remaining guess.
         assert_eq!(
-            resolve_client_ip(ip("127.0.0.1"), &xff("10.0.0.2, 10.0.0.3"), &trusted).as_deref(),
-            Some("10.0.0.2")
+            resolve_client_ip(ip("127.0.0.1"), &xff("10.0.0.2, 10.0.0.3"), &trusted),
+            ip("10.0.0.2")
         );
         // No socket address (in-process tests): nothing to trust.
         assert_eq!(resolve_client_ip(None, &xff("10.0.0.1"), &trusted), None);

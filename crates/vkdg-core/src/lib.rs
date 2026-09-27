@@ -80,7 +80,7 @@ pub struct RequestEnvelope {
     /// Extracted client IP address (from X-Forwarded-For, X-Real-IP, or peer).
     /// None when the ingress layer cannot determine the IP (e.g. unit tests).
     #[serde(default)]
-    pub client_ip: Option<String>,
+    pub client_ip: Option<std::net::IpAddr>,
 }
 // ── Decision record ───────────────────────────────────────────────────────────
 
@@ -222,4 +222,5 @@ impl CapabilitySet {
     }
 }
 
+pub mod net;
 pub mod pipeline;

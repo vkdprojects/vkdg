@@ -341,4 +341,30 @@ routes:
 
         drop(tx);
     }
+
+    // The old dotted-prefix form silently matched nothing; on an allowlist that
+    // locks everyone out, on a blocklist it blocks no one. Reject it at load, so
+    // a reload with it keeps the current snapshot (invariant 7).
+    #[test]
+    fn invalid_ip_list_entry_is_rejected_with_its_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.yaml");
+        std::fs::write(
+            &path,
+            "listen: 0.0.0.0:8080\nconnections: []\nroutes: []\nlimits:\n  ip_allowlist: [\"10.0.0.0/8\", \"192.168.\"]\n",
+        )
+        .unwrap();
+        let err = load_and_validate(path.to_str().unwrap(), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("limits.ip_allowlist[1]"), "{err}");
+
+        std::fs::write(
+            &path,
+            "listen: 0.0.0.0:8080\nconnections: []\nroutes: []\nlimits:\n  ip_blocklist: [\"2001:db8::/32\"]\n",
+        )
+        .unwrap();
+        let snap = load_and_validate(path.to_str().unwrap(), 1).unwrap();
+        assert!(!snap.ip_rules.allows(Some("2001:db8::1".parse().unwrap())));
+    }
 }

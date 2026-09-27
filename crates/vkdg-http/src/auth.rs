@@ -29,12 +29,12 @@ pub struct ClientIdentity {
     pub tenant_id: String,
     /// Client address from the socket, or from `X-Forwarded-For` only when the
     /// socket peer is a trusted proxy. See [`crate::resolve_client_ip`].
-    pub client_ip: Option<String>,
+    pub client_ip: Option<std::net::IpAddr>,
 }
 
 impl ClientIdentity {
     /// Identity used only when auth is explicitly disabled.
-    fn anonymous(client_ip: Option<String>) -> Self {
+    fn anonymous(client_ip: Option<std::net::IpAddr>) -> Self {
         Self {
             key_id: "anonymous".into(),
             tenant_id: "default".into(),
@@ -47,8 +47,8 @@ impl ClientIdentity {
 #[derive(Clone)]
 pub struct DataAuth {
     store: Option<Arc<VirtualKeyStore>>,
-    /// Proxies whose `X-Forwarded-For` is believed (`IpPolicy` entry syntax).
-    trusted_proxies: Arc<[String]>,
+    /// Proxies whose `X-Forwarded-For` is believed.
+    trusted_proxies: Arc<[vkdg_core::net::IpNet]>,
 }
 
 impl DataAuth {
@@ -70,7 +70,7 @@ impl DataAuth {
 
     /// Believe `X-Forwarded-For` from these peers (e.g. the local nginx).
     #[must_use]
-    pub fn with_trusted_proxies(mut self, proxies: Vec<String>) -> Self {
+    pub fn with_trusted_proxies(mut self, proxies: Vec<vkdg_core::net::IpNet>) -> Self {
         self.trusted_proxies = proxies.into();
         self
     }

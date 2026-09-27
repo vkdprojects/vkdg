@@ -10,12 +10,13 @@ use tower::ServiceExt;
 use vkdg_connections::{
     AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
+use vkdg_core::net::{IpPolicy, IpRules};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::ConnectionId;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId};
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::upstream::HttpClient;
-use vkdg_http::{AdmissionGuard, AppState, IpPolicy, PipelineState, ServerConfig};
+use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_operations::{
     CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
@@ -190,10 +191,10 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         },
     );
     // Allowlist contains only "10.0.0.1"; any other IP is blocked.
-    pipeline.ip_policy = Some(Arc::new(IpPolicy {
-        allowlist: vec!["10.0.0.1".into()],
-        blocklist: vec![],
-    }));
+    pipeline.ip_policy = Some(Arc::new(IpPolicy::new(IpRules {
+        allow: vec!["10.0.0.1".parse().unwrap()],
+        block: vec![],
+    })));
     let pipeline = Arc::new(pipeline);
 
     let envelope = RequestEnvelope {
@@ -208,7 +209,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: Some("1.2.3.4".into()), // NOT in allowlist
+        client_ip: Some("1.2.3.4".parse().unwrap()), // NOT in allowlist
     };
     let op = Operation::Conversation(ConversationRequest {
         model: "test-model".into(),

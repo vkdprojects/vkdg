@@ -17,6 +17,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - **Breaking:** `vkdg serve --config <file>` exits with the validation error when the file is invalid. It used to log a warning and serve an env-derived gateway (different routes, possibly an `ANTHROPIC_API_KEY` passthrough) instead of the one the operator asked for
 
 ### Added
+- Per-key usage, budgets and rate limits. Tokens are counted from the response the client receives (SSE or JSON, Anthropic or OpenAI dialect), at end of stream or on client disconnect, and stored per key per month in `keys.db` with an atomic upsert. `monthly_token_limit` refuses a key over budget before routing (429, `insufficient_quota`); `requests_per_minute` is an in-memory per-key window (429, `rate_limit_exceeded`). CLI `--monthly-tokens`/`--rpm`, admin `monthly_token_limit`/`requests_per_minute`
 - Per-key limits: expiry (`expires_at`), allowed model patterns (`allowed_models`, same `*`/`?` syntax as routes) and allowed client ranges (`allowed_ips`, CIDR, v4/v6). Expired keys get 401; a model or address outside the key's list gets 403. Set them with `vkdg keys create --model 'claude-*' --ip 10.0.0.0/8 --expires-in-days 30` or `POST /admin/v1/keys`. Existing `keys.db` files gain the columns on open
 - `vkdg keys create|list|revoke`. `create` prints only the raw key on stdout, so `$(vkdg keys create ci)` works
 - `/admin/v1/keys` takes `scopes` (`data_inference`, `data_image`) instead of `role`, and returns `prefix`, `status`, `last_used_at`, `revoked_at`. The console Keys page shows them and keeps revoked keys listed

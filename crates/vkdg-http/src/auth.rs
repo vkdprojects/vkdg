@@ -9,7 +9,11 @@
 //! a storage error all reject the request. The only way to serve without keys is
 //! [`DataAuth::disabled`], an explicit operator opt-out.
 
+use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Request, State},
@@ -17,10 +21,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use futures::Stream;
 use http::{HeaderMap, StatusCode};
 use serde_json::json;
 use vkdg_core::VkdgError;
-use vkdg_governance::{KeyScope, VirtualKeyStore};
+use vkdg_governance::{KeyScope, VirtualKeyId, VirtualKeyStore};
+
+use crate::metering::UsageMeter;
 
 /// Who is calling, as established by [`require_api_key`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +72,33 @@ pub struct DataAuth {
     store: Option<Arc<VirtualKeyStore>>,
     /// Proxies whose `X-Forwarded-For` is believed.
     trusted_proxies: Arc<[vkdg_core::net::IpNet]>,
+    /// Per-key request counters for `requests_per_minute`. In memory on
+    /// purpose: a rate limit is about the last minute, not durable history.
+    rate: Arc<RateWindows>,
+}
+
+/// Fixed one-minute windows per key. Only authenticated key ids are ever
+/// inserted, so the map is bounded by the number of keys.
+#[derive(Default)]
+struct RateWindows(parking_lot::Mutex<HashMap<String, (Instant, u32)>>);
+
+impl RateWindows {
+    const WINDOW: Duration = Duration::from_secs(60);
+
+    /// Count one request against `limit`; `false` when the window is full.
+    fn admit(&self, key_id: &str, limit: u32) -> bool {
+        let now = Instant::now();
+        let mut windows = self.0.lock();
+        let (start, count) = windows.entry(key_id.to_owned()).or_insert((now, 0));
+        if now.duration_since(*start) >= Self::WINDOW {
+            (*start, *count) = (now, 0);
+        }
+        if *count >= limit {
+            return false;
+        }
+        *count += 1;
+        true
+    }
 }
 
 impl DataAuth {
@@ -73,6 +107,7 @@ impl DataAuth {
         Self {
             store: Some(store),
             trusted_proxies: Arc::from([]),
+            rate: Arc::default(),
         }
     }
 
@@ -81,6 +116,7 @@ impl DataAuth {
         Self {
             store: None,
             trusted_proxies: Arc::from([]),
+            rate: Arc::default(),
         }
     }
 
@@ -160,13 +196,109 @@ pub async fn require_api_key(
         );
     }
 
+    // Budget before the upstream is ever called.
+    if let Some(limit) = key.monthly_token_limit {
+        match store.usage_this_month(&key.id) {
+            Ok(used) if used.tokens() >= limit => {
+                return reject_as(
+                    &path,
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limit_error",
+                    "insufficient_quota",
+                    "this API key has used its monthly token budget",
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "key usage lookup failed; rejecting request");
+                return reject(
+                    &path,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "API key store unavailable",
+                );
+            }
+        }
+    }
+    if let Some(rpm) = key.requests_per_minute {
+        if !auth.rate.admit(&key.id.0, rpm) {
+            return reject_as(
+                &path,
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_error",
+                "rate_limit_exceeded",
+                "this API key is over its requests-per-minute limit",
+            );
+        }
+    }
+
+    let key_id = key.id.clone();
     req.extensions_mut().insert(ClientIdentity {
         key_id: key.id.0,
         tenant_id: key.tenant_id,
         client_ip,
         allowed_models: key.allowed_models.into(),
     });
-    next.run(req).await
+    let response = next.run(req).await;
+    metered(response, Arc::clone(store), key_id)
+}
+
+/// Count the response's tokens against the key once the body is done: at the
+/// end of the stream, or when the client hangs up, so a disconnect mid-stream
+/// is still charged for what was sent.
+fn metered(response: Response, store: Arc<VirtualKeyStore>, key_id: VirtualKeyId) -> Response {
+    let (parts, body) = response.into_parts();
+    let stream = Metered {
+        inner: body.into_data_stream(),
+        meter: UsageMeter::default(),
+        charge: Some((store, key_id)),
+    };
+    Response::from_parts(parts, axum::body::Body::from_stream(stream))
+}
+
+struct Metered {
+    inner: axum::body::BodyDataStream,
+    meter: UsageMeter,
+    /// Taken on the first of end-of-stream or drop, so usage is recorded once.
+    charge: Option<(Arc<VirtualKeyStore>, VirtualKeyId)>,
+}
+
+impl Metered {
+    fn record(&mut self) {
+        let Some((store, key_id)) = self.charge.take() else {
+            return;
+        };
+        let usage = self.meter.finish();
+        let write = move || {
+            if let Err(e) = store.record_usage(&key_id, usage.input, usage.output) {
+                tracing::error!(error = %e, key = %key_id.0, "failed to record key usage");
+            }
+        };
+        // SQLite is blocking; keep it off the async workers.
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) => drop(rt.spawn_blocking(write)),
+            Err(_) => write(),
+        }
+    }
+}
+
+impl Stream for Metered {
+    type Item = Result<bytes::Bytes, axum::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let polled = Pin::new(&mut self.inner).poll_next(cx);
+        match &polled {
+            Poll::Ready(Some(Ok(chunk))) => self.meter.feed(chunk),
+            Poll::Ready(None) => self.record(),
+            _ => {}
+        }
+        polled
+    }
+}
+
+impl Drop for Metered {
+    fn drop(&mut self) {
+        self.record();
+    }
 }
 
 /// The key a client presented. `x-api-key` wins: Anthropic SDKs send it and some
@@ -200,14 +332,19 @@ fn reject(path: &str, status: StatusCode, message: &str) -> Response {
         StatusCode::SERVICE_UNAVAILABLE => "api_error",
         _ => "authentication_error",
     };
+    let code = match status {
+        StatusCode::UNAUTHORIZED => "invalid_api_key",
+        StatusCode::FORBIDDEN => "insufficient_scope",
+        _ => "unavailable",
+    };
+    reject_as(path, status, kind, code, message)
+}
+
+/// `kind` is the Anthropic `error.type`; `code` the OpenAI `error.code`.
+fn reject_as(path: &str, status: StatusCode, kind: &str, code: &str, message: &str) -> Response {
     let body = if path.starts_with("/v1/messages") {
         json!({ "type": "error", "error": { "type": kind, "message": message } })
     } else {
-        let code = match status {
-            StatusCode::UNAUTHORIZED => "invalid_api_key",
-            StatusCode::FORBIDDEN => "insufficient_scope",
-            _ => "unavailable",
-        };
         json!({ "error": { "message": message, "type": kind, "code": code } })
     };
     (status, Json(body)).into_response()
@@ -399,5 +536,76 @@ mod tests {
             id.check_model("gpt-4o"),
             Err(VkdgError::Unauthorized)
         ));
+    }
+
+    fn limited(
+        f: impl FnOnce(&mut vkdg_governance::NewKey),
+    ) -> (Arc<VirtualKeyStore>, vkdg_governance::VirtualKey, String) {
+        let store = store();
+        let mut spec = vkdg_governance::NewKey::named("limited");
+        f(&mut spec);
+        let (key, raw) = store.create(spec).unwrap();
+        (store, key, raw)
+    }
+
+    // Plausible wrong impl: requests_per_minute stored but never enforced.
+    #[tokio::test]
+    async fn requests_over_the_per_minute_limit_get_429() {
+        let (store, _k, raw) = limited(|s| s.requests_per_minute = Some(2));
+        let app = app(DataAuth::required(store));
+        for _ in 0..2 {
+            let (s, _) = call(app.clone(), "/v1/messages", &[("x-api-key", &raw)]).await;
+            assert_eq!(s, StatusCode::OK);
+        }
+        let (s, body) = call(app, "/v1/messages", &[("x-api-key", &raw)]).await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    }
+
+    // The budget is checked before the request reaches the upstream.
+    #[tokio::test]
+    async fn key_over_its_monthly_budget_is_refused_before_the_handler() {
+        let (store, key, raw) = limited(|s| s.monthly_token_limit = Some(100));
+        store.record_usage(&key.id, 60, 40).unwrap();
+        let (s, body) = call(
+            app(DataAuth::required(store)),
+            "/v1/chat/completions",
+            &[("authorization", &format!("Bearer {raw}"))],
+        )
+        .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert!(body.contains("insufficient_quota"), "{body}");
+    }
+
+    // Streaming is most traffic: its usage must be counted from the stream.
+    #[tokio::test]
+    async fn streamed_usage_is_recorded_against_the_key() {
+        async fn sse() -> axum::response::Response {
+            let chunks = [
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n",
+            ];
+            let stream = futures::stream::iter(
+                chunks.map(|c| Ok::<_, std::io::Error>(bytes::Bytes::from(c))),
+            );
+            axum::response::Response::new(axum::body::Body::from_stream(stream))
+        }
+        let (store, key, raw) = limited(|_| {});
+        let app = Router::new().route("/v1/messages", post(sse)).route_layer(
+            axum::middleware::from_fn_with_state(
+                DataAuth::required(Arc::clone(&store)),
+                require_api_key,
+            ),
+        );
+        let (s, _) = call(app, "/v1/messages", &[("x-api-key", &raw)]).await;
+        assert_eq!(s, StatusCode::OK);
+        // Recording happens when the body finishes; give the blocking write a moment.
+        for _ in 0..50 {
+            if store.usage_this_month(&key.id).unwrap().requests > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let u = store.usage_this_month(&key.id).unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens, u.requests), (11, 4, 1));
     }
 }

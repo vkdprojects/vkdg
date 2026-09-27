@@ -31,6 +31,10 @@ pub struct CreateKeyBody {
     /// Addresses or CIDR ranges; empty or absent = anywhere.
     #[serde(default)]
     pub allowed_ips: Vec<String>,
+    /// Tokens (input + output) per calendar month (UTC); absent = unlimited.
+    pub monthly_token_limit: Option<u64>,
+    /// Requests per minute; absent = unlimited.
+    pub requests_per_minute: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +166,8 @@ pub async fn create_key(
         expires_at: body.expires_at,
         allowed_models: body.allowed_models,
         allowed_ips,
+        monthly_token_limit: body.monthly_token_limit,
+        requests_per_minute: body.requests_per_minute,
     };
     match state.key_store.create(spec) {
         Ok((key, raw)) => (
@@ -244,6 +250,8 @@ mod tests {
             expires_at: None,
             allowed_models: vec![],
             allowed_ips: vec![],
+            monthly_token_limit: None,
+            requests_per_minute: None,
         })
     }
 
@@ -344,6 +352,8 @@ mod tests {
                 expires_at: exp,
                 allowed_models: vec!["claude-*".into()],
                 allowed_ips: ips.into_iter().map(Into::into).collect(),
+                monthly_token_limit: None,
+                requests_per_minute: None,
             })
         };
         let bad_ip = create_key(State(state.clone()), h.clone(), mk(vec!["192.168."], None)).await;

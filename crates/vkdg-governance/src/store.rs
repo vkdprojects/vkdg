@@ -42,6 +42,20 @@ pub enum KeyStoreError {
 
 pub type Result<T, E = KeyStoreError> = std::result::Result<T, E>;
 
+/// A key's usage in one period.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub requests: u64,
+}
+
+impl KeyUsage {
+    pub fn tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+}
+
 struct Cached {
     key: VirtualKey,
     at: Instant,
@@ -57,7 +71,8 @@ pub struct VirtualKeyStore {
 }
 
 const SELECT: &str = "SELECT id, name, tenant_id, token_hash, prefix, scopes, created_at, \
-                      last_used_at, revoked_at, expires_at, allowed_models, allowed_ips FROM keys";
+                      last_used_at, revoked_at, expires_at, allowed_models, allowed_ips, \
+                      monthly_token_limit, requests_per_minute FROM keys";
 
 /// Columns added after the first release, with their definitions. `init` adds
 /// any that an existing `keys.db` lacks, so upgrades need no manual step.
@@ -65,6 +80,8 @@ const LATER_COLUMNS: &[(&str, &str)] = &[
     ("expires_at", "TEXT"),
     ("allowed_models", "TEXT NOT NULL DEFAULT '[]'"),
     ("allowed_ips", "TEXT NOT NULL DEFAULT '[]'"),
+    ("monthly_token_limit", "INTEGER"),
+    ("requests_per_minute", "INTEGER"),
 ];
 
 impl VirtualKeyStore {
@@ -107,6 +124,14 @@ impl VirtualKeyStore {
                  created_at   TEXT NOT NULL,
                  last_used_at TEXT,
                  revoked_at   TEXT
+             );
+             CREATE TABLE IF NOT EXISTS key_usage (
+                 key_id        TEXT NOT NULL,
+                 period        TEXT NOT NULL,
+                 input_tokens  INTEGER NOT NULL DEFAULT 0,
+                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                 requests      INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (key_id, period)
              );",
         )
         .map_err(sql("init"))?;
@@ -135,8 +160,9 @@ impl VirtualKeyStore {
             .lock()
             .execute(
                 "INSERT INTO keys (id, name, tenant_id, token_hash, prefix, scopes, created_at,
-                                   expires_at, allowed_models, allowed_ips)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                   expires_at, allowed_models, allowed_ips,
+                                   monthly_token_limit, requests_per_minute)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     key.id.0,
                     key.name,
@@ -148,6 +174,8 @@ impl VirtualKeyStore {
                     key.expires_at.map(|t| t.to_rfc3339()),
                     json(&key.allowed_models),
                     json(&ips),
+                    key.monthly_token_limit.map(|v| v as i64),
+                    key.requests_per_minute,
                 ],
             )
             .map_err(sql("insert"))?;
@@ -213,6 +241,46 @@ impl VirtualKeyStore {
         Ok(changed > 0)
     }
 
+    /// Add a response's tokens to the key's current-month usage. One statement,
+    /// so concurrent requests and processes never lose an update.
+    pub fn record_usage(&self, key_id: &VirtualKeyId, input: u64, output: u64) -> Result<()> {
+        self.conn
+            .lock()
+            .execute(
+                "INSERT INTO key_usage (key_id, period, input_tokens, output_tokens, requests)
+                 VALUES (?1, ?2, ?3, ?4, 1)
+                 ON CONFLICT (key_id, period) DO UPDATE SET
+                     input_tokens  = input_tokens + excluded.input_tokens,
+                     output_tokens = output_tokens + excluded.output_tokens,
+                     requests      = requests + 1",
+                params![key_id.0, current_period(), to_i64(input), to_i64(output)],
+            )
+            .map_err(sql("record usage"))?;
+        Ok(())
+    }
+
+    /// Usage of `key_id` in the current calendar month (UTC).
+    pub fn usage_this_month(&self, key_id: &VirtualKeyId) -> Result<KeyUsage> {
+        self.conn
+            .lock()
+            .query_row(
+                "SELECT input_tokens, output_tokens, requests FROM key_usage
+                 WHERE key_id = ?1 AND period = ?2",
+                params![key_id.0, current_period()],
+                |r| {
+                    let n = |i| r.get::<_, i64>(i).map(|v| v.max(0) as u64);
+                    Ok(KeyUsage {
+                        input_tokens: n(0)?,
+                        output_tokens: n(1)?,
+                        requests: n(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map(Option::unwrap_or_default)
+            .map_err(sql("read usage"))
+    }
+
     /// All keys, newest first, including revoked ones (the console shows both).
     pub fn list(&self) -> Result<Vec<VirtualKey>> {
         let conn = self.conn.lock();
@@ -256,6 +324,15 @@ impl VirtualKeyStore {
     }
 }
 
+/// Usage bucket for "now": the calendar month in UTC, e.g. `2026-09`.
+fn current_period() -> String {
+    Utc::now().format("%Y-%m").to_string()
+}
+
+fn to_i64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
 fn encode_scopes(scopes: &[KeyScope]) -> String {
     json(scopes)
 }
@@ -290,6 +367,8 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
             .iter()
             .map(|e| e.parse().map_err(|m: String| policy_err(11, m)))
             .collect::<rusqlite::Result<_>>()?,
+        monthly_token_limit: row.get::<_, Option<i64>>(12)?.map(|v| v.max(0) as u64),
+        requests_per_minute: row.get(13)?,
     })
 }
 
@@ -540,5 +619,46 @@ mod tests {
                 "{col}={garbage:?} must not authenticate"
             );
         }
+    }
+
+    // Plausible wrong impl: usage kept in memory (lost on restart) or written
+    // read-modify-write (concurrent updates lost).
+    #[test]
+    fn usage_accumulates_and_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.db");
+        let a = VirtualKeyStore::open(&path).unwrap();
+        let b = VirtualKeyStore::open(&path).unwrap();
+        let (key, _) = a.create(NewKey::named("k")).unwrap();
+        a.record_usage(&key.id, 10, 5).unwrap();
+        b.record_usage(&key.id, 1, 2).unwrap();
+        drop((a, b));
+        let u = VirtualKeyStore::open(&path)
+            .unwrap()
+            .usage_this_month(&key.id)
+            .unwrap();
+        assert_eq!(
+            u,
+            KeyUsage {
+                input_tokens: 11,
+                output_tokens: 7,
+                requests: 2
+            }
+        );
+        assert_eq!(u.tokens(), 18);
+    }
+
+    #[test]
+    fn limits_persist() {
+        let store = VirtualKeyStore::in_memory().unwrap();
+        let mut spec = NewKey::named("k");
+        spec.monthly_token_limit = Some(1_000);
+        spec.requests_per_minute = Some(60);
+        store.create(spec).unwrap();
+        let k = &store.list().unwrap()[0];
+        assert_eq!(
+            (k.monthly_token_limit, k.requests_per_minute),
+            (Some(1_000), Some(60))
+        );
     }
 }

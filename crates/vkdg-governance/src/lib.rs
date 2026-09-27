@@ -8,4 +8,4 @@ pub mod key;
 pub mod store;
 
 pub use key::{hash_token, KeyScope, NewKey, VirtualKey, VirtualKeyId, TOKEN_PREFIX};
-pub use store::{KeyStoreError, VirtualKeyStore, DEFAULT_CACHE_TTL};
+pub use store::{KeyStoreError, KeyUsage, VirtualKeyStore, DEFAULT_CACHE_TTL};

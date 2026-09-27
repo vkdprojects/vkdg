@@ -169,6 +169,12 @@ enum KeysSub {
         /// Stop working after this many days.
         #[arg(long)]
         expires_in_days: Option<u32>,
+        /// Token budget (input + output) per calendar month, UTC.
+        #[arg(long)]
+        monthly_tokens: Option<u64>,
+        /// Requests per minute.
+        #[arg(long)]
+        rpm: Option<u32>,
     },
     /// List keys (prefix only; raw keys are never shown again).
     List,
@@ -912,6 +918,8 @@ fn cmd_keys(sub: KeysSub) -> Result<()> {
             models,
             ips,
             expires_in_days,
+            monthly_tokens,
+            rpm,
         } => {
             let scopes = if inference_only {
                 vec![KeyScope::DataInference]
@@ -927,6 +935,8 @@ fn cmd_keys(sub: KeysSub) -> Result<()> {
                 allowed_models: models,
                 allowed_ips: vkdg_core::net::parse_ip_list("--ip", &ips)
                     .map_err(anyhow::Error::msg)?,
+                monthly_token_limit: monthly_tokens,
+                requests_per_minute: rpm,
             })?;
             // stdout carries only the secret so `$(vkdg keys create ci)` works;
             // the context goes to stderr.

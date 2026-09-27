@@ -14,7 +14,9 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::key::{hash_token, KeyScope, NewKey, VirtualKey, VirtualKeyId};
+use crate::key::{
+    display_prefix, hash_token, mint_token, KeyPatch, KeyScope, NewKey, VirtualKey, VirtualKeyId,
+};
 
 /// How long a successful lookup is trusted before re-reading SQLite.
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -72,7 +74,7 @@ pub struct VirtualKeyStore {
 
 const SELECT: &str = "SELECT id, name, tenant_id, token_hash, prefix, scopes, created_at, \
                       last_used_at, revoked_at, expires_at, allowed_models, allowed_ips, \
-                      monthly_token_limit, requests_per_minute FROM keys";
+                      monthly_token_limit, requests_per_minute, disabled_at FROM keys";
 
 /// Columns added after the first release, with their definitions. `init` adds
 /// any that an existing `keys.db` lacks, so upgrades need no manual step.
@@ -82,6 +84,7 @@ const LATER_COLUMNS: &[(&str, &str)] = &[
     ("allowed_ips", "TEXT NOT NULL DEFAULT '[]'"),
     ("monthly_token_limit", "INTEGER"),
     ("requests_per_minute", "INTEGER"),
+    ("disabled_at", "TEXT"),
 ];
 
 impl VirtualKeyStore {
@@ -174,7 +177,7 @@ impl VirtualKeyStore {
                     key.expires_at.map(|t| t.to_rfc3339()),
                     json(&key.allowed_models),
                     json(&ips),
-                    key.monthly_token_limit.map(|v| v as i64),
+                    key.monthly_token_limit.map(to_i64),
                     key.requests_per_minute,
                 ],
             )
@@ -210,7 +213,7 @@ impl VirtualKeyStore {
 
         let Some(mut key) = self
             .get_by_hash(&hash)?
-            .filter(|k| !k.is_revoked() && !k.is_expired_at(Utc::now()))
+            .filter(|k| !k.is_revoked() && !k.is_disabled() && !k.is_expired_at(Utc::now()))
         else {
             return Ok(None);
         };
@@ -281,6 +284,91 @@ impl VirtualKeyStore {
             .map_err(sql("read usage"))
     }
 
+    /// Apply a policy change. Returns the updated key, or `None` if the id does
+    /// not exist. Takes effect in this process at once, elsewhere within the TTL.
+    pub fn update(&self, id: &VirtualKeyId, patch: KeyPatch) -> Result<Option<VirtualKey>> {
+        let Some(mut key) = self.get_by_id(id)? else {
+            return Ok(None);
+        };
+        if let Some(v) = patch.name {
+            key.name = v;
+        }
+        if let Some(v) = patch.scopes {
+            key.scopes = v;
+        }
+        if let Some(v) = patch.expires_at {
+            key.expires_at = v;
+        }
+        if let Some(v) = patch.allowed_models {
+            key.allowed_models = v;
+        }
+        if let Some(v) = patch.allowed_ips {
+            key.allowed_ips = v;
+        }
+        if let Some(v) = patch.monthly_token_limit {
+            key.monthly_token_limit = v;
+        }
+        if let Some(v) = patch.requests_per_minute {
+            key.requests_per_minute = v;
+        }
+        let ips: Vec<String> = key.allowed_ips.iter().map(ToString::to_string).collect();
+        self.conn
+            .lock()
+            .execute(
+                "UPDATE keys SET name = ?2, scopes = ?3, expires_at = ?4, allowed_models = ?5,
+                     allowed_ips = ?6, monthly_token_limit = ?7, requests_per_minute = ?8
+                 WHERE id = ?1",
+                params![
+                    key.id.0,
+                    key.name,
+                    encode_scopes(&key.scopes),
+                    key.expires_at.map(|t| t.to_rfc3339()),
+                    json(&key.allowed_models),
+                    json(&ips),
+                    key.monthly_token_limit.map(to_i64),
+                    key.requests_per_minute,
+                ],
+            )
+            .map_err(sql("update"))?;
+        // A cached hit would keep serving the old, possibly wider, policy.
+        self.cache.lock().clear();
+        Ok(Some(key))
+    }
+
+    /// Replace a key's secret, keeping its id, policy and usage. The old token
+    /// stops working at once in this process. Returns the new raw token.
+    pub fn regenerate(&self, id: &VirtualKeyId) -> Result<Option<(VirtualKey, String)>> {
+        let raw = mint_token();
+        let changed = self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE keys SET token_hash = ?2, prefix = ?3 WHERE id = ?1 AND revoked_at IS NULL",
+                params![id.0, hash_token(&raw), display_prefix(&raw)],
+            )
+            .map_err(sql("regenerate"))?;
+        self.cache.lock().clear();
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(self.get_by_id(id)?.map(|k| (k, raw)))
+    }
+
+    /// Disable or re-enable a key. A disabled key does not authenticate.
+    pub fn set_disabled(&self, id: &VirtualKeyId, disabled: bool) -> Result<bool> {
+        let changed = self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE keys SET disabled_at = CASE WHEN ?2 THEN COALESCE(disabled_at, ?3) END
+                 WHERE id = ?1",
+                params![id.0, disabled, Utc::now().to_rfc3339()],
+            )
+            .map_err(sql("disable"))?;
+        self.cache.lock().clear();
+        Ok(changed > 0)
+    }
+
     /// All keys, newest first, including revoked ones (the console shows both).
     pub fn list(&self) -> Result<Vec<VirtualKey>> {
         let conn = self.conn.lock();
@@ -290,6 +378,14 @@ impl VirtualKeyStore {
         let rows = stmt.query_map([], row_to_key).map_err(sql("list"))?;
         rows.collect::<std::result::Result<_, _>>()
             .map_err(sql("list"))
+    }
+
+    fn get_by_id(&self, id: &VirtualKeyId) -> Result<Option<VirtualKey>> {
+        self.conn
+            .lock()
+            .query_row(&format!("{SELECT} WHERE id = ?1"), [&id.0], row_to_key)
+            .optional()
+            .map_err(sql("lookup"))
     }
 
     fn get_by_hash(&self, hash: &str) -> Result<Option<VirtualKey>> {
@@ -369,6 +465,7 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
             .collect::<rusqlite::Result<_>>()?,
         monthly_token_limit: row.get::<_, Option<i64>>(12)?.map(|v| v.max(0) as u64),
         requests_per_minute: row.get(13)?,
+        disabled_at: policy_time(row, 14)?,
     })
 }
 
@@ -602,6 +699,7 @@ mod tests {
             ("expires_at", "not-a-time"),
             // A revoked key must not come back because its timestamp is garbage.
             ("revoked_at", "not-a-time"),
+            ("disabled_at", "not-a-time"),
             ("allowed_models", "{broken"),
             ("allowed_ips", "{broken"),
             ("allowed_ips", "[\"192.168.\"]"),
@@ -661,6 +759,94 @@ mod tests {
         assert_eq!(
             (k.monthly_token_limit, k.requests_per_minute),
             (Some(1_000), Some(60))
+        );
+    }
+
+    #[test]
+    fn update_changes_policy_and_applies_to_the_next_request() {
+        let store = VirtualKeyStore::in_memory()
+            .unwrap()
+            .with_cache_ttl(Duration::from_secs(60));
+        let (key, raw) = store.create(NewKey::named("k")).unwrap();
+        assert!(store
+            .authenticate(&raw)
+            .unwrap()
+            .unwrap()
+            .allowed_models
+            .is_empty());
+        let updated = store
+            .update(
+                &key.id,
+                KeyPatch {
+                    name: Some("renamed".into()),
+                    allowed_models: Some(vec!["claude-*".into()]),
+                    monthly_token_limit: Some(Some(10)),
+                    ..KeyPatch::default()
+                },
+            )
+            .unwrap()
+            .expect("key exists");
+        assert_eq!(updated.name, "renamed");
+        // Cached hit must not keep the old, wider policy.
+        let live = store.authenticate(&raw).unwrap().unwrap();
+        assert_eq!(live.allowed_models, ["claude-*"]);
+        assert_eq!(live.monthly_token_limit, Some(10));
+        let cleared = store
+            .update(
+                &key.id,
+                KeyPatch {
+                    monthly_token_limit: Some(None),
+                    ..KeyPatch::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.monthly_token_limit, None);
+        assert!(store
+            .update(&VirtualKeyId("nope".into()), KeyPatch::default())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn regenerate_keeps_identity_and_kills_the_old_secret() {
+        let store = VirtualKeyStore::in_memory()
+            .unwrap()
+            .with_cache_ttl(Duration::from_secs(60));
+        let (key, old) = store.create(NewKey::named("k")).unwrap();
+        store.record_usage(&key.id, 5, 5).unwrap();
+        assert!(store.authenticate(&old).unwrap().is_some());
+        let (again, new) = store.regenerate(&key.id).unwrap().expect("key exists");
+        assert_eq!(again.id, key.id);
+        assert_ne!(new, old);
+        assert!(
+            store.authenticate(&old).unwrap().is_none(),
+            "old secret dies at once"
+        );
+        assert!(store.authenticate(&new).unwrap().is_some());
+        assert_eq!(
+            store.usage_this_month(&key.id).unwrap().tokens(),
+            10,
+            "usage kept"
+        );
+    }
+
+    #[test]
+    fn disable_is_reversible_unlike_revoke() {
+        let store = VirtualKeyStore::in_memory()
+            .unwrap()
+            .with_cache_ttl(Duration::from_secs(60));
+        let (key, raw) = store.create(NewKey::named("k")).unwrap();
+        assert!(store.authenticate(&raw).unwrap().is_some());
+        assert!(store.set_disabled(&key.id, true).unwrap());
+        assert!(store.authenticate(&raw).unwrap().is_none());
+        assert!(store.set_disabled(&key.id, false).unwrap());
+        assert!(store.authenticate(&raw).unwrap().is_some());
+        store.revoke(&key.id).unwrap();
+        store.set_disabled(&key.id, false).unwrap();
+        assert!(
+            store.authenticate(&raw).unwrap().is_none(),
+            "enable never un-revokes"
         );
     }
 }

@@ -47,7 +47,19 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/keys/{id}",
-            delete(crate::handlers::keys::revoke_key),
+            delete(crate::handlers::keys::revoke_key).patch(crate::handlers::keys::update_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/regenerate",
+            post(crate::handlers::keys::regenerate_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/disable",
+            post(crate::handlers::keys::disable_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/enable",
+            post(crate::handlers::keys::enable_key),
         )
         .route(
             "/admin/v1/routes",

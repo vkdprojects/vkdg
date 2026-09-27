@@ -15,7 +15,7 @@ use axum::{
 };
 use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
-use vkdg_governance::{KeyScope, NewKey, VirtualKey, VirtualKeyId};
+use vkdg_governance::{KeyPatch, KeyScope, NewKey, VirtualKey, VirtualKeyId};
 
 #[derive(Deserialize)]
 pub struct CreateKeyBody {
@@ -86,6 +86,8 @@ impl From<&VirtualKey> for KeySummary {
             usage_this_month: None,
             status: if k.is_revoked() {
                 "revoked"
+            } else if k.is_disabled() {
+                "disabled"
             } else if k.is_expired_at(chrono::Utc::now()) {
                 "expired"
             } else {
@@ -209,6 +211,138 @@ pub async fn create_key(
             .into_response(),
         Err(e) => store_failure(&e),
     }
+}
+
+/// Body of `PATCH /admin/v1/keys/{id}`. Absent fields are unchanged; `null`
+/// clears an optional limit.
+#[derive(Deserialize, Default)]
+pub struct UpdateKeyBody {
+    pub name: Option<String>,
+    pub scopes: Option<Vec<KeyScope>>,
+    #[serde(default, deserialize_with = "present")]
+    pub expires_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    pub allowed_models: Option<Vec<String>>,
+    pub allowed_ips: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "present")]
+    pub monthly_token_limit: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "present")]
+    pub requests_per_minute: Option<Option<u32>>,
+}
+
+/// Distinguishes an absent field (`None`) from an explicit `null` (`Some(None)`).
+fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+fn not_found(id: &str) -> Response {
+    AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(id)).into_response()
+}
+
+pub async fn update_key(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateKeyBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    if body.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+        return invalid("name must not be empty");
+    }
+    if body.scopes.as_ref().is_some_and(Vec::is_empty) {
+        return invalid("a key needs at least one scope");
+    }
+    if body
+        .expires_at
+        .flatten()
+        .is_some_and(|t| t <= chrono::Utc::now())
+    {
+        return invalid("expires_at must be in the future");
+    }
+    let allowed_ips = match body.allowed_ips.as_deref() {
+        Some(list) => match vkdg_core::net::parse_ip_list("allowed_ips", list) {
+            Ok(ips) => Some(ips),
+            Err(msg) => return invalid(msg),
+        },
+        None => None,
+    };
+    let patch = KeyPatch {
+        name: body.name.map(|n| n.trim().to_owned()),
+        scopes: body.scopes,
+        expires_at: body.expires_at,
+        allowed_models: body.allowed_models,
+        allowed_ips,
+        monthly_token_limit: body.monthly_token_limit,
+        requests_per_minute: body.requests_per_minute,
+    };
+    match state.key_store.update(&VirtualKeyId(id.clone()), patch) {
+        Ok(Some(key)) => Json(KeySummary::from(&key)).into_response(),
+        Ok(None) => not_found(&id),
+        Err(e) => store_failure(&e),
+    }
+}
+
+/// `POST /admin/v1/keys/{id}/regenerate`: new secret, same id, policy and
+/// usage. The old secret stops working at once. The new one is shown once.
+pub async fn regenerate_key(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    match state.key_store.regenerate(&VirtualKeyId(id.clone())) {
+        Ok(Some((key, raw))) => Json(CreatedKeyResponse {
+            key: raw,
+            summary: KeySummary::from(&key),
+        })
+        .into_response(),
+        Ok(None) => not_found(&id),
+        Err(e) => store_failure(&e),
+    }
+}
+
+async fn set_disabled(
+    state: AdminState,
+    headers: HeaderMap,
+    id: String,
+    disabled: bool,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return unauthorized();
+    }
+    match state
+        .key_store
+        .set_disabled(&VirtualKeyId(id.clone()), disabled)
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => not_found(&id),
+        Err(e) => store_failure(&e),
+    }
+}
+
+/// `POST /admin/v1/keys/{id}/disable`: reversible; the key stops authenticating.
+pub async fn disable_key(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    set_disabled(state, headers, id, true).await
+}
+
+/// `POST /admin/v1/keys/{id}/enable`: undoes a disable. Never un-revokes.
+pub async fn enable_key(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    set_disabled(state, headers, id, false).await
 }
 
 pub async fn revoke_key(
@@ -406,5 +540,71 @@ mod tests {
         assert!(item["expires_at"].is_string());
         assert_eq!(item["status"], "active");
         assert_eq!(item["usage_this_month"]["requests"], 0);
+    }
+
+    #[tokio::test]
+    async fn update_regenerate_and_disable_round_trip() {
+        let state = make_state();
+        let h = authed_headers(&state);
+        let created =
+            json(create_key(State(state.clone()), h.clone(), body("k", None)).await).await;
+        let id = created["id"].as_str().unwrap().to_owned();
+        let old = created["key"].as_str().unwrap().to_owned();
+
+        let patch: UpdateKeyBody = serde_json::from_value(serde_json::json!({
+            "allowed_models": ["claude-*"], "monthly_token_limit": 500
+        }))
+        .unwrap();
+        let resp = update_key(
+            State(state.clone()),
+            h.clone(),
+            Path(id.clone()),
+            Json(patch),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json(resp).await;
+        assert_eq!(v["allowed_models"][0], "claude-*");
+        assert_eq!(v["monthly_token_limit"], 500);
+
+        // null clears a limit; absent leaves it.
+        let clear: UpdateKeyBody =
+            serde_json::from_value(serde_json::json!({ "monthly_token_limit": null })).unwrap();
+        let v = json(
+            update_key(
+                State(state.clone()),
+                h.clone(),
+                Path(id.clone()),
+                Json(clear),
+            )
+            .await,
+        )
+        .await;
+        assert!(v["monthly_token_limit"].is_null());
+        assert_eq!(v["allowed_models"][0], "claude-*");
+
+        let bad: UpdateKeyBody =
+            serde_json::from_value(serde_json::json!({ "allowed_ips": ["192.168."] })).unwrap();
+        let resp = update_key(State(state.clone()), h.clone(), Path(id.clone()), Json(bad)).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let regen =
+            json(regenerate_key(State(state.clone()), h.clone(), Path(id.clone())).await).await;
+        let new = regen["key"].as_str().unwrap();
+        assert_ne!(new, old);
+        assert!(state.key_store.authenticate(&old).unwrap().is_none());
+        assert!(state.key_store.authenticate(new).unwrap().is_some());
+
+        let resp = disable_key(State(state.clone()), h.clone(), Path(id.clone())).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let listed = json(list_keys(State(state.clone()), h.clone()).await).await;
+        assert_eq!(listed["items"][0]["status"], "disabled");
+        assert!(state.key_store.authenticate(new).unwrap().is_none());
+        let resp = enable_key(State(state.clone()), h.clone(), Path(id.clone())).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(state.key_store.authenticate(new).unwrap().is_some());
+
+        let missing = regenerate_key(State(state), h, Path("nope".into())).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -46,6 +46,8 @@ pub struct VirtualKey {
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    /// Set while the key is disabled. Unlike revocation this is reversible.
+    pub disabled_at: Option<DateTime<Utc>>,
     /// After this instant the key no longer authenticates.
     pub expires_at: Option<DateTime<Utc>>,
     /// Model patterns (`claude-*`) this key may call. Empty = every model.
@@ -56,6 +58,19 @@ pub struct VirtualKey {
     pub monthly_token_limit: Option<u64>,
     /// Requests this key may start per minute.
     pub requests_per_minute: Option<u32>,
+}
+
+/// Changes to an existing key's policy. `None` leaves a field as it is; for
+/// the `Option` fields, `Some(None)` clears the limit.
+#[derive(Debug, Clone, Default)]
+pub struct KeyPatch {
+    pub name: Option<String>,
+    pub scopes: Option<Vec<KeyScope>>,
+    pub expires_at: Option<Option<DateTime<Utc>>>,
+    pub allowed_models: Option<Vec<String>>,
+    pub allowed_ips: Option<Vec<IpNet>>,
+    pub monthly_token_limit: Option<Option<u64>>,
+    pub requests_per_minute: Option<Option<u32>>,
 }
 
 /// What a new key may do. `Default` is a key with every data-plane scope and no
@@ -103,17 +118,18 @@ impl std::fmt::Debug for VirtualKey {
 impl VirtualKey {
     /// Mint a new key. Returns `(VirtualKey, raw_token)`; the raw token is shown once.
     pub fn new(spec: NewKey) -> (Self, String) {
-        let raw = format!("{TOKEN_PREFIX}{}", Uuid::new_v4().simple());
+        let raw = mint_token();
         let key = Self {
             id: VirtualKeyId(Uuid::new_v4().to_string()),
             name: spec.name,
             tenant_id: spec.tenant_id,
             token_hash: hash_token(&raw),
-            prefix: raw[..DISPLAY_PREFIX_LEN].to_owned(),
+            prefix: display_prefix(&raw),
             scopes: spec.scopes,
             created_at: Utc::now(),
             last_used_at: None,
             revoked_at: None,
+            disabled_at: None,
             expires_at: spec.expires_at,
             allowed_models: spec.allowed_models,
             allowed_ips: spec.allowed_ips,
@@ -121,6 +137,10 @@ impl VirtualKey {
             requests_per_minute: spec.requests_per_minute,
         };
         (key, raw)
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.disabled_at.is_some()
     }
 
     pub fn is_revoked(&self) -> bool {
@@ -147,6 +167,16 @@ impl VirtualKey {
     pub fn allows(&self, scope: KeyScope) -> bool {
         self.scopes.contains(&scope)
     }
+}
+
+/// A fresh raw token. 128 bits of randomness behind a recognisable prefix.
+pub(crate) fn mint_token() -> String {
+    format!("{TOKEN_PREFIX}{}", Uuid::new_v4().simple())
+}
+
+/// The safe-to-show start of a raw token.
+pub(crate) fn display_prefix(raw: &str) -> String {
+    raw[..DISPLAY_PREFIX_LEN.min(raw.len())].to_owned()
 }
 
 /// SHA-256 hex of a raw token: the only form a token is stored or looked up in.

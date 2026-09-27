@@ -144,6 +144,7 @@ mod tests {
         req.extensions_mut().insert(vkdg_http::ClientIdentity {
             key_id: "key-test".into(),
             tenant_id: "default".into(),
+            client_ip: None,
         });
         handle_messages(State(state), req).await
     }

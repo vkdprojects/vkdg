@@ -11,6 +11,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - API keys are persisted in `keys.db` (next to `accounts.db`, `0600`, override with `VKDG_KEYS_DB`). Only a SHA-256 hash and a display prefix (`vkdg_1a2b3c4d`) are stored. A key revoked from another process stops working within 5 s
 - The admin API's plaintext in-memory key store is gone: `/admin/v1/keys` manages the same keys `/v1/*` checks
 
+- Client IP comes from the TCP socket. `X-Forwarded-For` is believed only from peers in `VKDG_TRUSTED_PROXIES` (walked right to left); before, any client could claim any address and pass an IP allowlist
+- IP allowlist/blocklist entries match by bit mask for IPv4 and IPv6 (`10.16.0.0/12` no longer admits `10.32.0.1`). **Breaking:** the dotted-prefix form (`192.168.1.`) is gone; use CIDR. An unknown client IP now fails a non-empty allowlist instead of skipping it
+
 ### Added
 - `vkdg keys create|list|revoke`. `create` prints only the raw key on stdout, so `$(vkdg keys create ci)` works
 - `/admin/v1/keys` takes `scopes` (`data_inference`, `data_image`) instead of `role`, and returns `prefix`, `status`, `last_used_at`, `revoked_at`. The console Keys page shows them and keeps revoked keys listed

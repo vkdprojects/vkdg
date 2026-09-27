@@ -62,10 +62,10 @@ pub struct LimitsDef {
     pub max_concurrent_requests: Option<usize>,
     pub max_body_bytes: Option<u64>,
     pub request_timeout_secs: Option<u64>,
-    /// Allow only these IP CIDRs/prefixes. Empty = allow all.
+    /// Allow only these addresses or CIDR ranges (v4/v6). Empty = allow all.
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
-    /// Block these IP CIDRs/prefixes. Checked after allowlist.
+    /// Block these addresses or CIDR ranges (v4/v6). Wins over the allowlist.
     #[serde(default)]
     pub ip_blocklist: Vec<String>,
 }

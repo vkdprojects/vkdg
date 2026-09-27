@@ -64,7 +64,7 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip.clone(),
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);

@@ -151,7 +151,7 @@ fn all_capability_variants_exist() {
 fn ip_policy_blocklist_wins_over_allowlist() {
     use vkdg_http::IpPolicy;
     let p = IpPolicy {
-        allowlist: vec!["192.168.1.".into()],
+        allowlist: vec!["192.168.1.0/24".into()],
         blocklist: vec!["192.168.1.100".into()],
     };
     assert!(

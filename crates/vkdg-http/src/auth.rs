@@ -27,14 +27,18 @@ pub struct ClientIdentity {
     /// Virtual key id; becomes the envelope's `client_id`.
     pub key_id: String,
     pub tenant_id: String,
+    /// Client address from the socket, or from `X-Forwarded-For` only when the
+    /// socket peer is a trusted proxy. See [`crate::resolve_client_ip`].
+    pub client_ip: Option<String>,
 }
 
 impl ClientIdentity {
     /// Identity used only when auth is explicitly disabled.
-    fn anonymous() -> Self {
+    fn anonymous(client_ip: Option<String>) -> Self {
         Self {
             key_id: "anonymous".into(),
             tenant_id: "default".into(),
+            client_ip,
         }
     }
 }
@@ -43,17 +47,32 @@ impl ClientIdentity {
 #[derive(Clone)]
 pub struct DataAuth {
     store: Option<Arc<VirtualKeyStore>>,
+    /// Proxies whose `X-Forwarded-For` is believed (`IpPolicy` entry syntax).
+    trusted_proxies: Arc<[String]>,
 }
 
 impl DataAuth {
     /// Require a valid key from `store` on every request.
     pub fn required(store: Arc<VirtualKeyStore>) -> Self {
-        Self { store: Some(store) }
+        Self {
+            store: Some(store),
+            trusted_proxies: Arc::from([]),
+        }
     }
 
     /// Serve without client keys. Operator opt-out only; never a default.
     pub fn disabled() -> Self {
-        Self { store: None }
+        Self {
+            store: None,
+            trusted_proxies: Arc::from([]),
+        }
+    }
+
+    /// Believe `X-Forwarded-For` from these peers (e.g. the local nginx).
+    #[must_use]
+    pub fn with_trusted_proxies(mut self, proxies: Vec<String>) -> Self {
+        self.trusted_proxies = proxies.into();
+        self
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -68,8 +87,15 @@ pub async fn require_api_key(
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_owned();
+    // Present when served with `into_make_service_with_connect_info`.
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let client_ip = crate::resolve_client_ip(peer, req.headers(), &auth.trusted_proxies);
     let Some(store) = &auth.store else {
-        req.extensions_mut().insert(ClientIdentity::anonymous());
+        req.extensions_mut()
+            .insert(ClientIdentity::anonymous(client_ip));
         return next.run(req).await;
     };
 
@@ -113,6 +139,7 @@ pub async fn require_api_key(
     req.extensions_mut().insert(ClientIdentity {
         key_id: key.id.0,
         tenant_id: key.tenant_id,
+        client_ip,
     });
     next.run(req).await
 }

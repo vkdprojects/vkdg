@@ -847,6 +847,20 @@ fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> vkdg_http
             vkdg_http::DataAuth::required(store)
         }
     }
+    .with_trusted_proxies(trusted_proxies_from_env())
+}
+
+/// `VKDG_TRUSTED_PROXIES`: comma-separated proxies whose `X-Forwarded-For` is
+/// believed, e.g. `127.0.0.1,172.16.0.0/12` for a local nginx or Docker bridge.
+/// Empty (the default) means the socket address is the client.
+fn trusted_proxies_from_env() -> Vec<String> {
+    std::env::var("VKDG_TRUSTED_PROXIES")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn cmd_keys(sub: KeysSub) -> Result<()> {

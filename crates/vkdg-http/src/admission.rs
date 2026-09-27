@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -27,77 +28,99 @@ impl AdmissionGuard {
 
 // ── IP policy ─────────────────────────────────────────────────────────────────
 
-/// Simple IP policy: allowlist (if non-empty) and blocklist.
+/// Client IP allowlist and blocklist.
 ///
-/// Matching is prefix-based: an entry of `"192.168.1."` matches any address
-/// that starts with that prefix; an entry of `"192.168.1.10"` matches only
-/// that exact address.  CIDR notation (`"10.0.0.0/8"`) is accepted: the host
-/// portion after `/` is stripped and the resulting prefix is used.
-///
-/// Phase E: replace with a proper CIDR library for correct bit-level masking.
+/// Entries are an address (`10.0.0.1`, `::1`) or a CIDR range (`10.16.0.0/12`,
+/// `2001:db8::/32`). Matching compares masked bits, for IPv4 and IPv6. An
+/// address that does not parse never matches, and a v4 address never matches a
+/// v6 range.
 #[derive(Debug, Clone, Default)]
 pub struct IpPolicy {
-    /// If non-empty, only IPs matching one of these prefixes are allowed.
+    /// If non-empty, only IPs matching one of these entries are allowed.
     pub allowlist: Vec<String>,
-    /// IPs matching any of these prefixes are always blocked (wins over allowlist).
+    /// IPs matching any of these entries are always blocked (wins over allowlist).
     pub blocklist: Vec<String>,
 }
 
 impl IpPolicy {
-    pub fn from_config(allowlist: Vec<String>, blocklist: Vec<String>) -> Self {
-        Self {
+    /// Build a policy, rejecting entries that are neither an address nor a CIDR
+    /// range. A typo in a blocklist must not silently block nothing.
+    pub fn from_config(allowlist: Vec<String>, blocklist: Vec<String>) -> Result<Self, String> {
+        for entry in allowlist.iter().chain(&blocklist) {
+            parse_entry(entry).ok_or_else(|| format!("invalid IP or CIDR entry: {entry:?}"))?;
+        }
+        Ok(Self {
             allowlist,
             blocklist,
+        })
+    }
+
+    /// Like [`allows`](Self::allows) for a possibly unknown client address:
+    /// unknown fails an allowlist (it cannot prove membership) but passes a
+    /// blocklist-only policy.
+    pub fn allows_opt(&self, ip: Option<&str>) -> bool {
+        match ip {
+            Some(ip) => self.allows(ip),
+            None => self.allowlist.is_empty(),
         }
     }
 
     /// Returns `true` if `ip` is allowed through this policy.
     ///
-    /// Evaluation order: blocklist first (blocklist wins), then allowlist.
-    /// An empty allowlist means "allow all" (only blocklist applies).
+    /// Blocklist first (blocklist wins), then allowlist. An empty allowlist
+    /// means "allow all" (only the blocklist applies).
     pub fn allows(&self, ip: &str) -> bool {
-        // Blocklist wins — checked first.
-        if self.blocklist.iter().any(|entry| ip_matches(ip, entry)) {
+        let Ok(addr) = ip.trim().parse::<IpAddr>() else {
+            return self.allowlist.is_empty() && self.blocklist.is_empty();
+        };
+        if self.blocklist.iter().any(|e| entry_contains(e, addr)) {
             return false;
         }
-        // Empty allowlist = allow all.
-        if self.allowlist.is_empty() {
-            return true;
-        }
-        self.allowlist.iter().any(|entry| ip_matches(ip, entry))
+        self.allowlist.is_empty() || self.allowlist.iter().any(|e| entry_contains(e, addr))
     }
 }
 
-/// Returns true when `ip` matches `entry`.
-///
-/// - CIDR (`"10.0.0.0/8"`): use the prefix length to determine how many full
-///   octets to compare.  `/8` → first octet, `/16` → first two, `/24` → first
-///   three, `/32` → exact match.  Bit-level masking within an octet is not
-///   performed (Phase E: replace with a proper CIDR library).
-/// - Bare prefix ending with `.` (`"192.168.1."`): `ip.starts_with(entry)`.
-/// - Exact address (`"10.0.0.1"`): `ip == entry` OR `ip.starts_with("10.0.0.1.")`.
-///   The dot-suffix check prevents `"1.2.3"` matching `"1.2.30.4"`.
-fn ip_matches(ip: &str, entry: &str) -> bool {
-    if let Some(slash_pos) = entry.find('/') {
-        let base = &entry[..slash_pos];
-        let bits: u32 = entry[slash_pos + 1..].parse().unwrap_or(32);
-        let octets_covered = (bits / 8) as usize;
-        if octets_covered >= 4 {
-            return ip == base;
+/// `addr/prefix` for an entry; a bare address is a full-length prefix.
+fn parse_entry(entry: &str) -> Option<(IpAddr, u32)> {
+    let entry = entry.trim();
+    let (base, bits) = match entry.split_once('/') {
+        Some((b, n)) => (b.parse::<IpAddr>().ok()?, n.parse::<u32>().ok()?),
+        None => {
+            let a = entry.parse::<IpAddr>().ok()?;
+            (a, if a.is_ipv4() { 32 } else { 128 })
         }
-        // Collect only the first `octets_covered` octets of the base address,
-        // then check that ip starts with that dotted prefix followed by a dot.
-        let needed: String = base
-            .split('.')
-            .take(octets_covered)
-            .collect::<Vec<_>>()
-            .join(".");
-        ip == needed.as_str() || ip.starts_with(&format!("{needed}."))
-    } else if entry.ends_with('.') {
-        ip.starts_with(entry)
-    } else {
-        ip == entry || ip.starts_with(&format!("{entry}."))
+    };
+    let max = if base.is_ipv4() { 32 } else { 128 };
+    (bits <= max).then_some((base, bits))
+}
+
+/// True when `addr` falls in `entry`. Also used for trusted-proxy checks.
+pub(crate) fn entry_contains(entry: &str, addr: IpAddr) -> bool {
+    let Some((base, bits)) = parse_entry(entry) else {
+        return false;
+    };
+    match (base, addr) {
+        (IpAddr::V4(b), IpAddr::V4(a)) => {
+            masked_eq(u32::from(b).into(), u32::from(a).into(), bits, 32)
+        }
+        (IpAddr::V6(b), IpAddr::V6(a)) => masked_eq(u128::from(b), u128::from(a), bits, 128),
+        _ => false,
     }
+}
+
+fn masked_eq(base: u128, addr: u128, bits: u32, width: u32) -> bool {
+    if bits == 0 {
+        return true;
+    }
+    let shift = width - bits;
+    (base >> shift) == (addr >> shift)
+}
+
+/// String form used by callers holding an address as text.
+pub(crate) fn ip_matches(ip: &str, entry: &str) -> bool {
+    ip.trim()
+        .parse::<IpAddr>()
+        .is_ok_and(|addr| entry_contains(entry, addr))
 }
 
 #[cfg(test)]
@@ -108,7 +131,7 @@ mod tests {
     #[test]
     fn blocklist_wins_over_allowlist() {
         let p = IpPolicy {
-            allowlist: vec!["192.168.1.".into()],
+            allowlist: vec!["192.168.1.0/24".into()],
             blocklist: vec!["192.168.1.100".into()],
         };
         assert!(
@@ -144,7 +167,7 @@ mod tests {
     #[test]
     fn prefix_must_be_segment_boundary() {
         let p = IpPolicy {
-            allowlist: vec!["192.168.".into()],
+            allowlist: vec!["192.168.0.0/16".into()],
             blocklist: vec![],
         };
         assert!(p.allows("192.168.1.1"));
@@ -155,7 +178,7 @@ mod tests {
     #[test]
     fn exact_entry_requires_dot_boundary() {
         let p = IpPolicy {
-            allowlist: vec!["1.2.3".into()],
+            allowlist: vec!["1.2.3.0/24".into()],
             blocklist: vec![],
         };
         assert!(p.allows("1.2.3.4"), "sub-address of entry should match");
@@ -172,5 +195,59 @@ mod tests {
         assert!(p.allows("10.0.0.1"));
         assert!(p.allows("10.255.255.254"));
         assert!(!p.allows("11.0.0.1"));
+    }
+
+    fn allow(entries: &[&str]) -> IpPolicy {
+        IpPolicy {
+            allowlist: entries.iter().map(|e| (*e).to_owned()).collect(),
+            blocklist: vec![],
+        }
+    }
+
+    // Octet-granular matching treated /12 as /8: 10.32.0.1 got in.
+    #[test]
+    fn cidr_masks_bits_not_whole_octets() {
+        let p = allow(&["10.16.0.0/12"]);
+        assert!(p.allows("10.16.0.1"));
+        assert!(p.allows("10.31.255.255"));
+        assert!(!p.allows("10.32.0.1"));
+        assert!(!p.allows("10.15.255.255"));
+        let p = allow(&["192.168.0.0/20"]);
+        assert!(p.allows("192.168.15.1"));
+        assert!(!p.allows("192.168.16.1"));
+    }
+
+    #[test]
+    fn ipv6_entries_match_ipv6_addresses() {
+        let p = allow(&["2001:db8::/32", "::1"]);
+        assert!(p.allows("2001:db8:abcd::1"));
+        assert!(p.allows("::1"));
+        assert!(!p.allows("2001:db9::1"));
+        assert!(!p.allows("10.0.0.1"), "v4 never matches a v6 range");
+    }
+
+    // String prefixes let "10.0.0.1" match "10.0.0.1.evil" and garbage through.
+    #[test]
+    fn unparsable_addresses_never_match() {
+        let p = allow(&["10.0.0.1"]);
+        assert!(p.allows("10.0.0.1"));
+        assert!(!p.allows("10.0.0.10"));
+        assert!(!p.allows("10.0.0.1.evil"));
+        assert!(!p.allows("not-an-ip"));
+    }
+
+    // An allowlist that an unknown client IP skips is not an allowlist.
+    #[test]
+    fn unknown_ip_is_rejected_when_an_allowlist_exists() {
+        assert!(!allow(&["10.0.0.0/8"]).allows_opt(None));
+        assert!(
+            IpPolicy::default().allows_opt(None),
+            "no allowlist: nothing to enforce"
+        );
+        let block_only = IpPolicy {
+            allowlist: vec![],
+            blocklist: vec!["10.0.0.0/8".into()],
+        };
+        assert!(block_only.allows_opt(None));
     }
 }

@@ -129,7 +129,7 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip.clone(),
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);
@@ -194,7 +194,7 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip.clone(),
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);

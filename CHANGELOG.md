@@ -7,6 +7,64 @@ Versioning: [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Security
+- Console login: after a password is set, the bootstrap token is refused (not just after the first
+  sign-in). Failed sign-ins are throttled per source IP (resolved through `VKDG_TRUSTED_PROXIES`)
+  and globally, with 429 and `retry-after`.
+
+### Added
+- **Request history:** streaming rows now record `input_tokens`, `output_tokens` and `cost_microdollars`
+  (from the response body, once the stream ends). Status changes from `pending` to `completed`
+  (body ran to the end) or `cancelled` (client disconnected mid-stream). Before, every streaming row
+  finished as `completed` with no tokens, even when the client disconnected.
+- **Per-key `no_log`:** a key with `no_log: true` still has its usage counted but generates no request
+  history row. Toggle in the console, set via `POST /admin/v1/keys` or `vkdg keys create --no-log`.
+- **USD cost per request:** every row in the request history carries `cost_microdollars` from the
+  provider plugin's declared list prices. Kiro and Claude Code (subscription) show unknown rather than
+  $0. Cache reads bill at 0.1× and cache writes at 1.25× the input price. `Custom` and
+  `anthropic-compat` endpoints are never charged at another provider's prices.
+- **Combos that actually route:** combos were stored but never applied in production (`combo_resolver`
+  was always `None`). Now they route with their own strategy, carry an explicit upstream model, and can
+  be created, edited and deleted from the console and `GET/POST/PUT/DELETE /admin/v1/combos`, taking
+  effect on the next request. A combo named by its id takes priority over pattern-based combos.
+- **Live plugin reload:** installing or removing a plugin through the console or the admin API reloads
+  provider and auth registries on the next request, without a restart. Works for both `serve --config`
+  and env-only gateways. Removing an auth plugin that a route still names is refused (409).
+- **`openai-compat` / `anthropic-compat`:** config-only connections to any
+  OpenAI Chat Completions or Anthropic Messages endpoint. Before, `provider: openai-compat` was
+  silently mis-parsed and the `base_url` was dropped. Config check, serve and reload now refuse
+  unknown provider ids (listing the known ones), dropped/typo'd fields, and `base_url` on providers
+  that don't use it.
+- **Kiro improvements:** prompt-cache tokens (`cache_read`, `cache_write`) reported in usage and priced
+  correctly; `usageEvent` decoded; prompt-caching headers sent; `<thinking>` / reasoning support
+  (adaptive models `claude-opus-5` / `claude-sonnet-5` on Kiro, `gpt-5.6-*` native reasoning);
+  inline `<thinking>…</thinking>` stream blocks split into `ReasoningDelta` events; `api_key` auth
+  uses the API-key endpoint, not Builder ID.
+- **Codex:** request body now uses the Responses API shape (`input`, `instructions`, `store: false`,
+  no `max_tokens`). The old Chat Completions body was rejected by Codex `/v1/responses`.
+- All provider adapters (anthropic, claude-code, codex, github-copilot, kimi-coding, openai-compat)
+  now send the model the client requested (`req.model`), not `config.models.first()`. That sent the
+  route glob (`claude-*`, `gpt-*`) upstream or pinned every call to one entry of a multi-model
+  connection.
+- Client reasoning requests (`thinking` block on Anthropic, `reasoning_effort` on OpenAI) are now
+  carried through the operation type to provider plugins.
+
+### Fixed
+- `vkdg setup` and the console connection snippet generated YAML with broken indentation (`auth:`,
+  `models:` at column 0). The gateway refused to load them.
+- Reconnecting an OAuth account now replaces the existing account in place instead of creating a new
+  one with a different id (the config kept pointing at the old, revoked account).
+
+### Docs
+- `docs/sdk/adding-a-provider.md` rewritten from the code: Tier 1 uses `openai-compat`/`anthropic-compat`
+  with `base_url`; the Tier 1 example is tested against the parser. Tier 2 lists the four exports the
+  WASM host actually calls and what it does not call yet (decode, login, prices).
+- `docs/sdk/writing-a-plugin.md` rewritten around the two WASM roles that run (provider and route auth).
+  `prepare()` in a WASM plugin is no longer a stub.
+- Tokens are stored in `accounts.db` (SQLite, 0600). The vault reference is removed.
+
+---
+
+### Security
 - Console sign-in: after the first sign-in with the bootstrap token, the console asks for a password (at least 12 characters), stored as an argon2id hash in `admin.password` next to `accounts.db` (`0600`; override with `VKDG_ADMIN_PASSWORD_FILE`). From then on the token is refused, even after a restart, and the password signs in any number of times. Before, the token worked once, so signing out locked the admin out until a restart. Recover with `vkdg admin set-password` on the host. Failed sign-ins are throttled per client address (5 per 15 min, resolved through `VKDG_TRUSTED_PROXIES` like the data plane) and globally (100 per 15 min), with 429 and `retry-after`. Sessions expire after 12 h unused; a restart still signs everyone out
 - **Breaking:** `/v1/messages`, `/v1/chat/completions` and `/v1/images/generations` now require a client API key (`x-api-key` or `Authorization: Bearer`), on every bind address including loopback: a loopback listener behind a reverse proxy is still public. Requests without a valid key get 401 in the client's wire format. `VKDG_DATA_AUTH=off` opts out explicitly and logs a warning at startup
 - API keys are persisted in `keys.db` (next to `accounts.db`, `0600`, override with `VKDG_KEYS_DB`). Only a SHA-256 hash and a display prefix (`vkdg_1a2b3c4d`) are stored. A key revoked from another process stops working within 5 s

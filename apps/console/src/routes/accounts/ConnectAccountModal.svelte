@@ -213,25 +213,59 @@
               <p class="muted">{m.acct_no_methods()}</p>
             {:else}
               {#if methods.length > 1}
-                <Select
-                  label={m.acct_method()}
-                  options={methods.map((x) => ({ value: x.id, label: x.label }))}
-                  value={methodId}
-                  onchange={pickMethod}
-                  disabled={busy}
-                />
+                <!-- Cards per método: mais claro que um dropdown quando >1 opção -->
+                <div class="method-grid">
+                  {#each methods as mx (mx.id)}
+                    <button
+                      type="button"
+                      class="method-card"
+                      class:selected={methodId === mx.id}
+                      onclick={() => pickMethod(mx.id)}
+                      aria-pressed={methodId === mx.id}
+                    >
+                      {#if mx.icon_char}
+                        <span class="method-icon">{mx.icon_char}</span>
+                      {/if}
+                      <span class="method-label">{mx.label}</span>
+                      {#if mx.hint}
+                        <span class="method-hint">{mx.hint}</span>
+                      {/if}
+                    </button>
+                  {/each}
+                </div>
               {/if}
               {#each method?.fields ?? [] as f (f.id)}
-                <div class="field">
-                  <label for="login-{f.id}">{f.label}{#if f.required}<span aria-hidden="true"> *</span>{/if}</label>
-                  <input
-                    id="login-{f.id}"
-                    type={f.secret ? 'password' : 'text'}
-                    autocomplete="off"
-                    required={f.required}
-                    bind:value={params[f.id]}
-                  />
-                </div>
+                {#if f.id === 'provider' && method?.id === 'social'}
+                  <!-- Kiro social: Google vs GitHub como radio, não campo livre -->
+                  <fieldset class="social-choice">
+                    <legend class="field-label">{f.label}</legend>
+                    <div class="social-options">
+                      {#each ['Google', 'Github'] as opt (opt)}
+                        <label class="social-opt" class:checked={params[f.id] === opt}>
+                          <input
+                            type="radio"
+                            name="social-provider"
+                            value={opt}
+                            bind:group={params[f.id]}
+                          />
+                          {opt}
+                        </label>
+                      {/each}
+                    </div>
+                  </fieldset>
+                {:else}
+                  <div class="field">
+                    <label for="login-{f.id}">{f.label}{#if f.required}<span aria-hidden="true"> *</span>{/if}</label>
+                    <input
+                      id="login-{f.id}"
+                      type={f.secret ? 'password' : 'text'}
+                      autocomplete="off"
+                      required={f.required}
+                      placeholder={f.placeholder ?? ''}
+                      bind:value={params[f.id]}
+                    />
+                  </div>
+                {/if}
               {/each}
             {/if}
 
@@ -433,5 +467,100 @@
     color: var(--danger);
     font-size: 0.875rem;
     margin: 0;
+  }
+
+  .method-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 8px;
+  }
+
+  .method-card {
+    align-items: flex-start;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    text-align: left;
+    transition: border-color 0.12s;
+    width: 100%;
+  }
+
+  .method-card:hover {
+    border-color: var(--accent);
+  }
+
+  .method-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+
+  .method-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+  }
+
+  .method-label {
+    color: var(--text-1);
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+
+  .method-hint {
+    color: var(--text-3);
+    font-size: 0.75rem;
+    line-height: 1.3;
+  }
+
+  .social-choice {
+    border: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .field-label {
+    color: var(--text-2);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    display: block;
+  }
+
+  .social-options {
+    display: flex;
+    gap: 8px;
+  }
+
+  .social-opt {
+    align-items: center;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+    display: flex;
+    gap: 6px;
+    padding: 8px 14px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--text-2);
+    transition: border-color 0.12s;
+  }
+
+  .social-opt input[type='radio'] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .social-opt:hover { border-color: var(--accent); }
+
+  .social-opt.checked {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+    color: var(--text-1);
   }
 </style>

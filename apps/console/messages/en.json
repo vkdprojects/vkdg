@@ -266,5 +266,18 @@
   "combo_delete_label": "Delete combo {id}",
   "combo_actions": "Actions",
   "combo_empty_desc": "A combo is a name clients can call (e.g. coding-fast) that routes across your connections with its own strategy.",
-  "common_edit": "Edit"
+  "common_edit": "Edit",
+  "nav_providers": "Providers",
+  "providers_title": "Providers",
+  "providers_filter_all": "All",
+  "providers_filter_oauth_ide": "AI Assistants",
+  "providers_filter_llm_api": "LLM APIs",
+  "providers_filter_compatible": "Compatible",
+  "providers_empty": "No providers available.",
+  "providers_connected_count": "{n} connected",
+  "providers_connect_first": "Connect your first account",
+  "provider_detail_accounts": "Accounts",
+  "provider_detail_no_accounts": "No accounts connected for this provider.",
+  "provider_detail_connect": "Connect account",
+  "method_pick_title": "Choose how to sign in"
 }

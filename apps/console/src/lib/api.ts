@@ -121,6 +121,17 @@ export interface Account {
 }
 
 export type OAuthFlow = 'authorization_code_pkce' | 'device_code' | 'import_token';
+export type ProviderCategory = 'llm_api' | 'oauth_ide' | 'compatible';
+
+export interface OAuthProvider {
+  id: string;
+  display_name: string;
+  icon_char: string;
+  icon_color: string;
+  category: ProviderCategory;
+  site_url: string | null;
+  description: string | null;
+}
 
 export interface LoginField {
   id: string;
@@ -128,6 +139,7 @@ export interface LoginField {
   required: boolean;
   secret: boolean;
   default: string | null;
+  placeholder: string | null;
 }
 
 export interface LoginMethod {
@@ -135,6 +147,8 @@ export interface LoginMethod {
   label: string;
   flow: OAuthFlow;
   fields: LoginField[];
+  hint: string | null;
+  icon_char: string | null;
 }
 
 export type LoginStart =
@@ -270,7 +284,7 @@ export const api = {
     req<void>('DELETE', `/admin/v1/accounts/${encodeURIComponent(id)}`),
   /** Providers on this gateway that support interactive login, plugins included. */
   oauthProviders: () =>
-    req<{ items: { id: string; display_name: string }[] }>('GET', '/admin/v1/providers/oauth'),
+    req<{ items: OAuthProvider[] }>('GET', '/admin/v1/providers/oauth'),
   loginMethods: (provider: string) =>
     req<{ provider: string; items: LoginMethod[] }>('GET', `/admin/v1/providers/${encodeURIComponent(provider)}/login-methods`),
   /** `accountId` reconnects that account in place (same id) instead of adding one. */

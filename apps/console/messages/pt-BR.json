@@ -251,5 +251,18 @@
   "combo_delete_label": "Apagar combo {id}",
   "combo_actions": "Ações",
   "combo_empty_desc": "Um combo é um nome que os clientes chamam (ex.: coding-fast) e que roteia pelas suas conexões com estratégia própria.",
-  "common_edit": "Editar"
+  "common_edit": "Editar",
+  "nav_providers": "Providers",
+  "providers_title": "Providers",
+  "providers_filter_all": "Todos",
+  "providers_filter_oauth_ide": "Assistentes IA",
+  "providers_filter_llm_api": "LLMs API",
+  "providers_filter_compatible": "Compatíveis",
+  "providers_empty": "Nenhum provider disponível.",
+  "providers_connected_count": "{n} conectado(s)",
+  "providers_connect_first": "Conecte sua primeira conta",
+  "provider_detail_accounts": "Contas",
+  "provider_detail_no_accounts": "Nenhuma conta conectada neste provider.",
+  "provider_detail_connect": "Conectar conta",
+  "method_pick_title": "Como você quer entrar"
 }

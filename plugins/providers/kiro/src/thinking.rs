@@ -19,10 +19,10 @@ const NATIVE_REASONING_MODELS: &[&str] = &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-
 const KIRO_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 fn supports_adaptive(model: &str) -> bool {
-    ADAPTIVE_MODELS.iter().any(|m| model == *m)
+    ADAPTIVE_MODELS.contains(&model)
 }
 fn supports_native_reasoning(model: &str) -> bool {
-    NATIVE_REASONING_MODELS.iter().any(|m| model == *m)
+    NATIVE_REASONING_MODELS.contains(&model)
 }
 
 fn effort_from_budget(budget: u32) -> &'static str {

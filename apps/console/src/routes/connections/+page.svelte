@@ -88,16 +88,24 @@
     if (!connId) connId = `${provider}-default`;
   });
 
-  // Generate the YAML snippet the user needs to paste into vkdg.yaml
+  // Generate the YAML snippet the user needs to paste into vkdg.yaml. One entry
+  // per line with explicit indentation: `auth:` once rendered at 8 spaces and
+  // the gateway refused the pasted file.
   const yamlSnippet = $derived(() => {
-    const idLine     = `  - id: ${connId || provider + '-default'}`;
-    const provLine   = `    provider: ${provider}`;
-    const urlLine    = showBaseUrl && baseUrl ? `    base_url: ${baseUrl}\n` : '';
-    const envLine    = `    auth:\n      type: api_key\n      env_var: ${envVar || 'API_KEY'}`;
-    const modelList  = (models || '*').split(',').map(m => m.trim()).map(m => `"${m}"`).join(', ');
-    const modelsLine = `    models: [${modelList}]`;
-    const miscLines  = `    max_concurrent: 50\n    weight: 1`;
-    return `connections:\n${idLine}\n${provLine}\n${urlLine}    ${envLine}\n${modelsLine}\n${miscLines}`;
+    const modelList = (models || '*').split(',').map((m) => `"${m.trim()}"`).join(', ');
+    const lines = [
+      'connections:',
+      `  - id: ${connId || provider + '-default'}`,
+      `    provider: ${provider}`,
+      ...(showBaseUrl && baseUrl ? [`    base_url: ${baseUrl}`] : []),
+      '    auth:',
+      '      type: api_key',
+      `      env_var: ${envVar || 'API_KEY'}`,
+      `    models: [${modelList}]`,
+      '    max_concurrent: 50',
+      '    weight: 1',
+    ];
+    return lines.join('\n');
   });
 
   async function load() {

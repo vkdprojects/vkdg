@@ -24,7 +24,7 @@ pub mod region;
 mod request;
 pub mod stream_decoder;
 
-use crate::auth::{AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
+use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
 use crate::endpoint::EndpointKind;
 
 /// Identifies this gateway upstream.
@@ -52,10 +52,17 @@ impl ProviderAdapter for KiroAdapter {
         };
 
         let extra = credential.extra.as_ref();
-        let auth_method = extra
-            .get("auth_method")
-            .map(String::as_str)
-            .unwrap_or(AUTH_BUILDER_ID);
+        // A stored account records which login issued its token. A connection
+        // authenticated by `auth: { type: api_key }` (a long-lived Kiro key in an
+        // env var) has no account, so it is the API-key flow, not Builder ID.
+        let auth_method =
+            extra
+                .get("auth_method")
+                .map(String::as_str)
+                .unwrap_or(match config.auth {
+                    vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
+                    _ => AUTH_BUILDER_ID,
+                });
         let profile_arn = extra.get("profile_arn").map(String::as_str);
 
         // The runtime region lives in the profile ARN; the OIDC region is only a

@@ -181,3 +181,21 @@ fn optout_and_cache_point_are_always_sent() {
         "default"
     );
 }
+
+// `auth: { type: api_key }` in config (a long-lived Kiro key in an env var) has
+// no stored account, so no `auth_method`. It used to fall back to Builder ID:
+// wrong host, no `tokentype`, and the key was refused.
+#[test]
+fn api_key_connection_without_account_uses_the_api_key_flow() {
+    let (_, headers, body) = prepared("claude-sonnet-4.5", &["claude-*"], &[]);
+    assert!(
+        headers
+            .iter()
+            .any(|(k, v)| k == "tokentype" && v == "API_KEY"),
+        "{headers:?}"
+    );
+    assert!(
+        body.get("profileArn").is_none(),
+        "API-key requests must not send profileArn"
+    );
+}

@@ -303,6 +303,7 @@ mod tests {
             stream: true,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         });
         let cred = Credential {
             token: "t".into(),

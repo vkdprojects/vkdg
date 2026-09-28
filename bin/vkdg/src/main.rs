@@ -392,7 +392,7 @@ async fn serve(
 
     // Auth plugins, loaded once for both builders so a gateway started without
     // a config file has them too; plugin reloads swap this same registry.
-    let hooks = Arc::new(build_hook_registry());
+    let hooks = Arc::new(build_hook_registry(&PluginStore::from_env()));
     let mut pipeline = if let Some(path) = &config_path {
         match load_and_validate(path, 1) {
             Ok(snap) => {
@@ -463,11 +463,8 @@ async fn serve(
     let reload_plugins: Option<vkdg_admin::router::PluginReload> = pipeline.as_ref().map(|p| {
         let providers = Arc::clone(&p.provider_registry);
         let hooks = Arc::clone(&p.hooks);
-        Arc::new(move || {
-            providers.replace(load_provider_registry());
-            hooks.replace(build_hook_registry());
-            tracing::info!("plugins reloaded");
-        }) as vkdg_admin::router::PluginReload
+        Arc::new(move || reload_plugins(&PluginStore::from_env(), &providers, &hooks))
+            as vkdg_admin::router::PluginReload
     });
 
     let mut state = AppState::new(server_config.clone());
@@ -751,12 +748,12 @@ fn build_pipeline_from_env(
 }
 
 fn build_provider_registry() -> Arc<ProviderRegistry> {
-    Arc::new(load_provider_registry())
+    Arc::new(load_provider_registry(&PluginStore::from_env()))
 }
 
 /// Built-ins first, then installed WASM providers. Called at startup and on
 /// every plugin install/removal.
-fn load_provider_registry() -> ProviderRegistry {
+fn load_provider_registry(store: &PluginStore) -> ProviderRegistry {
     let mut r = ProviderRegistry::empty();
     r.register(Arc::new(AnthropicAdapter));
     r.register(Arc::new(OpenAIAdapter));
@@ -781,7 +778,7 @@ fn load_provider_registry() -> ProviderRegistry {
     // Installed WASM providers register after the built-ins and may only take
     // a free id: an adapter receives the credentials of every connection that
     // names it, so a plugin must never replace `anthropic` or `kiro`.
-    for (name, loaded) in vkdg_plugin_host::PluginStore::from_env().load_providers() {
+    for (name, loaded) in store.load_providers() {
         let adapter = match loaded {
             Ok(adapter) => adapter,
             Err(e) => {
@@ -996,9 +993,9 @@ impl vkdg_http::hooks::AuthHook for WasmAuthHook {
 
 /// Auth plugins installed on this gateway, by plugin name. Broken ones are
 /// logged and left out, so routes naming them are refused at load.
-fn build_hook_registry() -> vkdg_http::hooks::HookRegistry {
+fn build_hook_registry(store: &PluginStore) -> vkdg_http::hooks::HookRegistry {
     let mut reg = vkdg_http::hooks::HookRegistry::default();
-    for (name, loaded) in vkdg_plugin_host::PluginStore::from_env().load_auth() {
+    for (name, loaded) in store.load_auth() {
         match loaded {
             Ok(auth) => {
                 tracing::info!(plugin = %name, "loaded WASM auth plugin");
@@ -1010,6 +1007,18 @@ fn build_hook_registry() -> vkdg_http::hooks::HookRegistry {
         }
     }
     reg
+}
+
+/// Rebuild the live registries from `store` in place. Every holder of these
+/// `Arc`s (pipeline, credential refresh, config reload) sees the new set.
+fn reload_plugins(
+    store: &PluginStore,
+    providers: &ProviderRegistry,
+    hooks: &vkdg_http::hooks::HookRegistry,
+) {
+    providers.replace(load_provider_registry(store));
+    hooks.replace(build_hook_registry(store));
+    tracing::info!(dir = %store.root().display(), "plugins reloaded");
 }
 
 /// Every route hook id must name a loaded plugin.
@@ -2037,5 +2046,73 @@ mod tests {
         let ok = loads(&setup_yaml("kiro", None, "K", "claude-*")).unwrap();
         unknown_providers(&ok, &build_provider_registry()).unwrap();
         unknown_providers(&ok, &ProviderRegistry::empty()).unwrap_err();
+    }
+
+    /// A component exporting `authenticate` that always returns `payload`.
+    fn auth_component(payload: &str) -> Vec<u8> {
+        let escaped = payload.replace('"', "\\22");
+        let len = payload.len();
+        wat::parse_str(format!(
+            r#"(component
+  (core module $m
+    (memory (export "mem") 1)
+    (data (i32.const 1024) "{escaped}")
+    (func (export "f") (param i32 i32) (result i32)
+      (i32.store (i32.const 0) (i32.const 1024))
+      (i32.store (i32.const 4) (i32.const {len}))
+      (i32.const 0))
+    (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32) (i32.const 8192)))
+  (core instance $i (instantiate $m))
+  (func (export "authenticate") (param "input" string) (result string)
+    (canon lift (core func $i "f") (memory (core memory $i "mem"))
+      (realloc (core func $i "cabi_realloc")) string-encoding=utf8)))"#
+        ))
+        .unwrap()
+    }
+
+    // Installing an auth plugin used to need a restart. This drives the same
+    // reload the admin API runs, against a real compiled component, and checks
+    // the next authorization through the live registry the pipeline reads.
+    #[tokio::test]
+    async fn installed_auth_plugin_applies_after_reload_and_removal_denies() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PluginStore::new(dir.path());
+        let providers = ProviderRegistry::empty();
+        let hooks = Arc::new(vkdg_http::hooks::HookRegistry::default());
+        let ids = ["gate".to_owned()];
+        let req = || vkdg_http::hooks::HookRequest {
+            key_id: "k".into(),
+            tenant_id: "t".into(),
+            client_ip: None,
+            model: "m".into(),
+            route_id: "guarded".into(),
+        };
+        assert!(
+            hooks.authorize(&ids, req()).await.is_err(),
+            "not installed: deny"
+        );
+
+        let plugin = dir.path().join("gate");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("manifest.yaml"),
+            "name: gate\nversion: \"1.0.0\"\nkind: auth\ndescription: test\nlicense: MIT\n\
+             install:\n  wasm: \"https://example.com/gate.wasm\"\n  checksum: \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n",
+        )
+        .unwrap();
+        let allow = r#"{"result":"allowed","context":{"tenant_id":"t","key_id":"k","role":"user","scopes":[]}}"#;
+        std::fs::write(plugin.join("plugin.wasm"), auth_component(allow)).unwrap();
+        reload_plugins(&store, &providers, &hooks);
+        assert!(
+            hooks.authorize(&ids, req()).await.is_ok(),
+            "installed: allow, no restart"
+        );
+
+        std::fs::remove_dir_all(&plugin).unwrap();
+        reload_plugins(&store, &providers, &hooks);
+        assert!(
+            hooks.authorize(&ids, req()).await.is_err(),
+            "removed: deny again"
+        );
     }
 }

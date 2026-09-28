@@ -1835,9 +1835,24 @@ fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
             println!("  {line}");
         }
     } else {
+        use vkdg_plugin_host::registry_manifest::PluginManifestKind as K;
+        let name = &installed.manifest.name;
         println!();
-        println!("Reference it in your config:");
-        println!("  plugins: [{}]", installed.manifest.name);
+        match installed.manifest.kind {
+            K::Provider | K::OauthProvider => {
+                println!("Use it from a connection in your config:");
+                println!("  provider: {name}");
+            }
+            K::Auth => {
+                println!("Use it from a route in your config:");
+                println!("  hooks: {{ auth: [{name}] }}");
+            }
+            other => {
+                println!(
+                    "Note: {other:?} plugins are installed but this gateway does not run them yet."
+                );
+            }
+        }
     }
     Ok(())
 }

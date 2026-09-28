@@ -31,7 +31,8 @@ vkdg config check vkdg.yaml
 
 `config check` refuses what `serve` would refuse: an unknown field (`base_ur:`), a `base_url` on any
 provider other than the two compatible kinds, a missing `base_url` on them, and a provider id with no
-adapter behind it. Edits to a running gateway's config file apply on save.
+adapter behind it. When the gateway runs with `vkdg serve --config <file>`, edits to that file apply
+on save; an invalid edit is refused and the running config stays.
 
 **When to use this:**
 - Local Ollama, vLLM, LM Studio, llama.cpp

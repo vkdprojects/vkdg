@@ -372,10 +372,14 @@ pub(super) async fn run_pipeline_inner(
     let prepared = adapter
         .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
-    // Priced on the model actually sent upstream. A custom endpoint borrows the
-    // OpenAI adapter for its wire format, not OpenAI's prices.
+    // Priced on the model actually sent upstream. A compatible endpoint borrows
+    // the OpenAI or Anthropic adapter for its wire format, not their prices.
     ctx.price = match (&config.provider, &operation) {
-        (vkdg_connections::ProviderKind::Custom { .. }, _) => None,
+        (
+            vkdg_connections::ProviderKind::Custom { .. }
+            | vkdg_connections::ProviderKind::AnthropicCompat { .. },
+            _,
+        ) => None,
         (_, Operation::Conversation(conv)) => {
             vkdg_core::pricing::price_for(adapter.prices(), &conv.model).cloned()
         }

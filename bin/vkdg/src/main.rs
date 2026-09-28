@@ -294,6 +294,10 @@ async fn main() -> Result<()> {
             sub: ConfigSub::Check { path },
         } => {
             vkdg_cli::commands::config_check::run(&path).await?;
+            // `config check` must refuse what `serve` would refuse: a provider
+            // with no adapter (e.g. a typo, or a plugin that is not installed).
+            let snap = load_and_validate(&path, 0)?;
+            unknown_providers(&snap, &build_provider_registry()).map_err(anyhow::Error::msg)?;
         }
         Command::Config {
             sub: ConfigSub::Explain { model, json },
@@ -402,6 +406,8 @@ async fn serve(
                 // Refuse to start on a route naming a hook that is not installed,
                 // exactly as a reload with one is refused.
                 unknown_hooks(&snap, &pipeline.hooks).map_err(anyhow::Error::msg)?;
+                unknown_providers(&snap, &pipeline.provider_registry)
+                    .map_err(anyhow::Error::msg)?;
                 // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
                 let (tx, _rx) = vkdg_config::config_channel(snap);
                 admin_config_rx = Some(tx.subscribe());
@@ -939,6 +945,7 @@ fn cmd_accounts(sub: AccountsSub) -> Result<()> {
 /// watcher already rejects invalid files, so this only ever sees valid ones.
 fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState) {
     let hooks = Arc::clone(&pipeline.hooks);
+    let providers = Arc::clone(&pipeline.provider_registry);
     let router = Arc::clone(&pipeline.router);
     let catalog = Arc::clone(&pipeline.catalog);
     let ip_policy = pipeline.ip_policy.clone();
@@ -949,7 +956,9 @@ fn spawn_config_applier(mut rx: vkdg_config::ConfigRx, pipeline: &PipelineState)
             let snap = Arc::clone(&rx.borrow_and_update());
             // Invariant 7: a reload applies whole or not at all. A route naming
             // a missing hook rejects the entire snapshot before anything moves.
-            if let Err(e) = unknown_hooks(&snap, &hooks) {
+            let checked =
+                unknown_hooks(&snap, &hooks).and_then(|()| unknown_providers(&snap, &providers));
+            if let Err(e) = checked {
                 tracing::warn!(version = snap.version, error = %e, "config reload rejected — keeping current snapshot");
                 continue;
             }
@@ -1015,6 +1024,25 @@ fn unknown_hooks(
                     route.id.0
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+/// Every connection must name a provider with a registered adapter. Without
+/// this, `provider: openai-compatt` loads fine and fails on the first request.
+fn unknown_providers(snap: &ConfigSnapshot, registry: &ProviderRegistry) -> Result<(), String> {
+    for conn in snap.connections.iter() {
+        let id = conn.provider.adapter_id();
+        if registry.get(id).is_none() {
+            let mut known = registry.ids();
+            known.sort_unstable();
+            return Err(format!(
+                "connection '{}': provider {id:?} is not a built-in provider or an installed plugin \
+                 (known: {}; or openai-compat / anthropic-compat with base_url)",
+                conn.id.0,
+                known.join(", ")
+            ));
         }
     }
     Ok(())

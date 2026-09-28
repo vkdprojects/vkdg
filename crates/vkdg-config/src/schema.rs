@@ -15,19 +15,30 @@ pub struct GatewayConfig {
     pub global_system_prompt: Option<String>,
 }
 
+/// A typo'd field (`base_ur:`, `env_vr:`) is an error, never silently dropped:
+/// a dropped `base_url` sends traffic to a provider's default host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectionDef {
     pub id: String,
-    /// `"anthropic"` | `"openai"` | `"google"` | `"custom:<url>"`
+    /// `anthropic` | `openai` | `google` | a provider plugin id (`kiro`, `codex`)
+    /// | `openai-compat` / `anthropic-compat` (with `base_url`) | `custom:<url>`.
     pub provider: String,
+    /// Endpoint of an `openai-compat` or `anthropic-compat` connection, e.g.
+    /// `http://localhost:11434`. Refused for every other provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
     pub auth: AuthDef,
     pub models: Vec<String>,
     pub max_concurrent: Option<u32>,
     pub weight: Option<u32>,
+    /// Free-form labels, e.g. `[primary]`, `[fast, cheap]`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthDef {
     ApiKey {
         env_var: String,

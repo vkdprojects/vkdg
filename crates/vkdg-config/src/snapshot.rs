@@ -117,7 +117,7 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
             return Err(ConfigError::DuplicateConnection { id: def.id.clone() });
         }
 
-        let provider = parse_provider(&def.provider);
+        let provider = parse_provider(&def.id, &def.provider, def.base_url.as_deref())?;
         let auth = match &def.auth {
             crate::schema::AuthDef::ApiKey { env_var } => AuthKind::ApiKey {
                 env_var: env_var.clone(),
@@ -140,9 +140,13 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
                         def.id
                     )));
                 }
-                if matches!(provider, ProviderKind::Custom { .. }) {
+                if matches!(
+                    provider,
+                    ProviderKind::Custom { .. } | ProviderKind::AnthropicCompat { .. }
+                ) {
                     return Err(ConfigError::Validation(format!(
-                        "connection '{}': account auth needs a provider plugin id, not a custom URL",
+                        "connection '{}': account auth needs a provider plugin id (kiro, codex, ...), \
+                         not a compatible endpoint: an account's token belongs to its own provider",
                         def.id
                     )));
                 }
@@ -159,7 +163,7 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
             models: def.models.clone(),
             max_concurrent: def.max_concurrent.unwrap_or(100),
             weight: def.weight.unwrap_or(1),
-            tags: vec![],
+            tags: def.tags.clone(),
             capabilities: CapabilitySet::default(),
         });
     }
@@ -167,8 +171,37 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
     Ok(out)
 }
 
-fn parse_provider(s: &str) -> ProviderKind {
-    match s {
+/// Resolve `provider` (and `base_url`) to a provider kind. `base_url` is only
+/// meaningful for the two compatible kinds; anywhere else it would be silently
+/// ignored and the connection would call the provider's default host.
+fn parse_provider(
+    conn: &str,
+    provider: &str,
+    base_url: Option<&str>,
+) -> Result<ProviderKind, ConfigError> {
+    let invalid = |m: String| ConfigError::Validation(format!("connection '{conn}': {m}"));
+    let endpoint = || match base_url.map(str::trim) {
+        Some(u) if u.starts_with("http://") || u.starts_with("https://") => {
+            Ok(u.trim_end_matches('/').to_owned())
+        }
+        Some(u) => Err(invalid(format!(
+            "base_url must start with http:// or https://, got {u:?}"
+        ))),
+        None => Err(invalid(format!(
+            "provider {provider} needs base_url, e.g. http://localhost:11434"
+        ))),
+    };
+    let kind = match provider {
+        "openai-compat" => {
+            return Ok(ProviderKind::Custom {
+                base_url: endpoint()?,
+            })
+        }
+        "anthropic-compat" => {
+            return Ok(ProviderKind::AnthropicCompat {
+                base_url: endpoint()?,
+            })
+        }
         "anthropic" => ProviderKind::Anthropic,
         "openai" => ProviderKind::OpenAI,
         "google" => ProviderKind::Google,
@@ -183,7 +216,13 @@ fn parse_provider(s: &str) -> ProviderKind {
         other => ProviderKind::Plugin {
             id: other.to_owned(),
         },
+    };
+    if base_url.is_some() {
+        return Err(invalid(format!(
+            "base_url is only used with openai-compat or anthropic-compat, not {provider}"
+        )));
     }
+    Ok(kind)
 }
 
 fn build_routes(
@@ -246,22 +285,33 @@ mod tests {
         // A provider id that is not a core kind must address the plugin adapter
         // registered under that exact id — not fall back to "openai".
         for id in ["kiro", "groq", "deepseek", "github-copilot"] {
-            assert_eq!(parse_provider(id).adapter_id(), id);
+            assert_eq!(parse_provider("c", id, None).unwrap().adapter_id(), id);
         }
     }
 
     #[test]
     fn core_and_custom_provider_kinds_are_preserved() {
-        assert_eq!(parse_provider("anthropic").adapter_id(), "anthropic");
-        assert_eq!(parse_provider("openai").adapter_id(), "openai");
-        assert_eq!(parse_provider("google").adapter_id(), "google");
+        assert_eq!(
+            parse_provider("c", "anthropic", None).unwrap().adapter_id(),
+            "anthropic"
+        );
+        assert_eq!(
+            parse_provider("c", "openai", None).unwrap().adapter_id(),
+            "openai"
+        );
+        assert_eq!(
+            parse_provider("c", "google", None).unwrap().adapter_id(),
+            "google"
+        );
 
         // An explicit URL still means "OpenAI-compatible endpoint at this URL".
-        let custom = parse_provider("custom:https://api.example.com/v1");
+        let custom = parse_provider("c", "custom:https://api.example.com/v1", None).unwrap();
         assert_eq!(custom.adapter_id(), "openai");
         assert_eq!(custom.as_str(), "https://api.example.com/v1");
         assert_eq!(
-            parse_provider("https://api.example.com/v1").adapter_id(),
+            parse_provider("c", "https://api.example.com/v1", None)
+                .unwrap()
+                .adapter_id(),
             "openai"
         );
     }
@@ -290,5 +340,62 @@ mod tests {
             ConfigSnapshot::build(1, yaml_cfg("custom:https://x", "a1")),
             Err(ConfigError::Validation(_))
         ));
+    }
+
+    fn load(yaml: &str) -> Result<ConfigSnapshot, ConfigError> {
+        let cfg: GatewayConfig =
+            serde_yaml::from_str(yaml).map_err(|e| ConfigError::Validation(e.to_string()))?;
+        ConfigSnapshot::build(1, cfg)
+    }
+
+    const CONN: &str =
+        "listen: 0.0.0.0:8080\nroutes: []\nlimits: null\nobserve: null\nconnections:\n";
+
+    // The Tier-1 snippet from docs/sdk/adding-a-provider.md: it passed
+    // `config check` while its base_url was silently dropped.
+    #[test]
+    fn compat_providers_use_their_base_url() {
+        let snap = load(&format!(
+            "{CONN}  - id: llama\n    provider: openai-compat\n    base_url: http://localhost:11434/\n    auth: {{ type: api_key, env_var: K }}\n    models: [\"llama3.3:70b\"]\n  - id: proxy\n    provider: anthropic-compat\n    base_url: https://proxy.example.com\n    auth: {{ type: api_key, env_var: K }}\n    models: [\"claude-*\"]\n"
+        ))
+        .unwrap();
+        let (a, b) = (&snap.connections[0].provider, &snap.connections[1].provider);
+        assert_eq!(
+            (a.adapter_id(), a.as_str()),
+            ("openai", "http://localhost:11434")
+        );
+        assert_eq!(
+            (b.adapter_id(), b.as_str()),
+            ("anthropic", "https://proxy.example.com")
+        );
+    }
+
+    #[test]
+    fn misplaced_or_missing_base_url_and_typos_are_errors() {
+        let bad = [
+            // compat without an endpoint
+            "  - id: c\n    provider: openai-compat\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
+            // base_url on a provider that would ignore it
+            "  - id: c\n    provider: kiro\n    base_url: http://x\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
+            // not a URL
+            "  - id: c\n    provider: anthropic-compat\n    base_url: localhost:1\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
+            // an account token belongs to its own provider, not an arbitrary endpoint
+            "  - id: c\n    provider: anthropic-compat\n    base_url: http://x\n    auth: { type: account, account: a1 }\n    models: [m]\n",
+            // typos in connection and auth fields
+            "  - id: c\n    provider: openai-compat\n    base_ur: http://x\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
+            "  - id: c\n    provider: openai\n    auth: { type: api_key, env_vr: K }\n    models: [m]\n",
+        ];
+        for conn in bad {
+            assert!(load(&format!("{CONN}{conn}")).is_err(), "accepted:\n{conn}");
+        }
+    }
+
+    // Docs and schema drifted once (`tags` was silently dropped); keep the
+    // shipped example loadable.
+    #[test]
+    fn shipped_example_config_loads() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.example.yaml");
+        let snap = load(&std::fs::read_to_string(path).unwrap()).expect("config.example.yaml");
+        assert!(snap.connections.iter().any(|c| c.tags == ["primary"]));
     }
 }

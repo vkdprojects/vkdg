@@ -293,6 +293,8 @@ mod tests {
                 models: vec!["m-*".into()],
                 max_concurrent: None,
                 weight: None,
+                base_url: None,
+                tags: vec![],
             }],
             routes: vec![RouteDef {
                 id: "guarded".into(),

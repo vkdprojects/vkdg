@@ -17,7 +17,12 @@ pub enum ProviderKind {
     Plugin {
         id: String,
     },
+    /// An OpenAI Chat Completions endpoint (`openai-compat` in config).
     Custom {
+        base_url: String,
+    },
+    /// An Anthropic Messages endpoint (`anthropic-compat` in config).
+    AnthropicCompat {
         base_url: String,
     },
 }
@@ -29,7 +34,9 @@ impl ProviderKind {
             ProviderKind::OpenAI => "openai",
             ProviderKind::Google => "google",
             ProviderKind::Plugin { id } => id.as_str(),
-            ProviderKind::Custom { base_url } => base_url.as_str(),
+            ProviderKind::Custom { base_url } | ProviderKind::AnthropicCompat { base_url } => {
+                base_url.as_str()
+            }
         }
     }
 
@@ -43,6 +50,7 @@ impl ProviderKind {
             ProviderKind::Google => "google",
             ProviderKind::Plugin { id } => id.as_str(),
             ProviderKind::Custom { .. } => "openai",
+            ProviderKind::AnthropicCompat { .. } => "anthropic",
         }
     }
 }

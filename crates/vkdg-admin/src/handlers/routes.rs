@@ -184,6 +184,8 @@ mod tests {
                 models: vec!["claude-*".into()],
                 max_concurrent: None,
                 weight: None,
+                base_url: None,
+                tags: vec![],
             }],
             routes: vec![RouteDef {
                 id: "r1".into(),

@@ -88,7 +88,9 @@ fn base_url(config: &ConnectionConfig) -> String {
         ProviderKind::Anthropic | ProviderKind::Plugin { .. } => "https://api.anthropic.com".into(),
         ProviderKind::OpenAI => "https://api.openai.com".into(),
         ProviderKind::Google => "https://generativelanguage.googleapis.com".into(),
-        ProviderKind::Custom { base_url } => base_url.clone(),
+        ProviderKind::Custom { base_url } | ProviderKind::AnthropicCompat { base_url } => {
+            base_url.clone()
+        }
     }
 }
 

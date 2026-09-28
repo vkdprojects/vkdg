@@ -94,6 +94,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -126,6 +127,7 @@ fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation
         stream: true,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -727,6 +729,7 @@ fn context_relay_injects_history_on_account_rotation() {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
 
     relay_on_rotation(

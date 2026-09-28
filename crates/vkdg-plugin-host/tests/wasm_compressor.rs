@@ -90,6 +90,7 @@ fn request() -> ConversationRequest {
         stream: false,
         system: Some("you are helpful".into()),
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     }
 }
 

@@ -224,6 +224,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     let ctx = PipelineCtx::new(envelope);
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;

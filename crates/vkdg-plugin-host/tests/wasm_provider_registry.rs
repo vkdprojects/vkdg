@@ -71,6 +71,7 @@ fn operation() -> Operation {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     })
 }
 

@@ -881,6 +881,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         })
     }
 
@@ -1130,6 +1131,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         });
 
         let ctx = make_ctx("zero-budget");

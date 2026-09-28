@@ -349,6 +349,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         stream: true,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     let ctx = PipelineCtx::new(envelope);
 

@@ -57,6 +57,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }

@@ -28,6 +28,9 @@ pub struct KiroEventDecoder {
     output_chars: u64,
     context_usage_pct: f64,
     reported_usage: Option<(u32, u32)>,
+    /// Prompt-cache counts; they can arrive on a frame with no input/output.
+    cache_read: Option<u32>,
+    cache_write: Option<u32>,
 }
 
 impl KiroEventDecoder {
@@ -104,7 +107,9 @@ impl KiroEventDecoder {
                     self.context_usage_pct = pct;
                 }
             }
-            "metadataEvent" | "messageMetadataEvent" | "metricsEvent" => self.on_metrics(&payload),
+            "metadataEvent" | "messageMetadataEvent" | "metricsEvent" | "usageEvent" => {
+                self.on_metrics(&payload)
+            }
             "invalidStateEvent" => {
                 let message = error_message(&payload).unwrap_or("invalid state");
                 self.fail(out, 502, format!("invalidStateEvent: {message}"));
@@ -135,8 +140,12 @@ impl KiroEventDecoder {
             out.push(ConversationEvent::Usage {
                 input_tokens,
                 output_tokens,
-                cache_read_tokens: vkdg_operations::UsageCount::Unknown,
-                cache_creation_tokens: vkdg_operations::UsageCount::Unknown,
+                cache_read_tokens: self
+                    .cache_read
+                    .map_or(UsageCount::Unknown, UsageCount::Reported),
+                cache_creation_tokens: self
+                    .cache_write
+                    .map_or(UsageCount::Unknown, UsageCount::Reported),
             });
         }
         let stop_reason = if self.tool_indices.is_empty() {
@@ -234,18 +243,38 @@ impl KiroEventDecoder {
     fn on_metrics(&mut self, payload: &Value) {
         let metrics = payload
             .get("metricsEvent")
+            .or_else(|| payload.get("usageEvent"))
             .or_else(|| payload.get("usage"))
             .or_else(|| payload.get("metadataEvent").and_then(|m| m.get("usage")))
             .unwrap_or(payload);
         let read = |keys: &[&str]| {
             keys.iter()
                 .find_map(|k| metrics.get(*k).and_then(Value::as_u64))
-                .unwrap_or(0)
         };
-        let input = read(&["inputTokens", "prompt_tokens"]);
-        let output = read(&["outputTokens", "completion_tokens"]);
+        let input = read(&["inputTokens", "prompt_tokens"]).unwrap_or(0);
+        let output = read(&["outputTokens", "completion_tokens"]).unwrap_or(0);
         if input > 0 || output > 0 {
             self.reported_usage = Some((saturate(input), saturate(output)));
+        }
+        // Spellings as OmniRoute reads them (Bedrock, camelCase, Anthropic).
+        // Kept even without totals: the estimate fills input/output later.
+        if let Some(n) = read(&[
+            "cacheReadInputTokens",
+            "cacheReadTokens",
+            "cache_read_input_tokens",
+        ])
+        .filter(|n| *n > 0)
+        {
+            self.cache_read = Some(saturate(n));
+        }
+        if let Some(n) = read(&[
+            "cacheWriteInputTokens",
+            "cacheCreationTokens",
+            "cache_creation_input_tokens",
+        ])
+        .filter(|n| *n > 0)
+        {
+            self.cache_write = Some(saturate(n));
         }
     }
 

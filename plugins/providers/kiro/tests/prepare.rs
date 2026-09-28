@@ -199,3 +199,20 @@ fn api_key_connection_without_account_uses_the_api_key_flow() {
         "API-key requests must not send profileArn"
     );
 }
+
+// OmniRoute enables prompt caching on every Kiro call; without the headers a
+// repeated prompt never hits the cache.
+#[test]
+fn prompt_caching_headers_are_sent() {
+    let (_, headers, _) = prepared(
+        "claude-sonnet-4.5",
+        &["claude-*"],
+        &[("auth_method", "social")],
+    );
+    let has = |k: &str, v: &str| headers.iter().any(|(hk, hv)| hk == k && hv == v);
+    assert!(has("x-amzn-bedrock-cache-control", "enable"), "{headers:?}");
+    assert!(
+        has("anthropic-beta", "prompt-caching-2024-07-31"),
+        "{headers:?}"
+    );
+}

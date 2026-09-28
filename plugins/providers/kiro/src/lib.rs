@@ -129,6 +129,16 @@ impl ProviderAdapter for KiroAdapter {
             http::header::USER_AGENT,
             HeaderValue::from_static(USER_AGENT),
         );
+        // Prompt caching, as OmniRoute's KiroExecutor sends it. Without these a
+        // repeated Claude Code prompt is billed and timed as fresh input.
+        headers.insert(
+            "x-amzn-bedrock-cache-control",
+            HeaderValue::from_static("enable"),
+        );
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("prompt-caching-2024-07-31"),
+        );
 
         Ok(PreparedRequest {
             // An explicit base_url overrides host selection (private deploys, tests).

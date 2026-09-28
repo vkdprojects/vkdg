@@ -399,3 +399,62 @@ fn empty_stream_fails_instead_of_completing() {
     assert!(failure(&events).is_some());
     assert!(stop_reason(&events).is_none());
 }
+
+/// Usage as Debug text (`UsageCount` has no `PartialEq`): [input, output, cache read, cache write].
+fn usage_of(events: &[ConversationEvent]) -> [String; 4] {
+    events
+        .iter()
+        .find_map(|e| match e {
+            ConversationEvent::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            } => Some([
+                format!("{input_tokens:?}"),
+                format!("{output_tokens:?}"),
+                format!("{cache_read_tokens:?}"),
+                format!("{cache_creation_tokens:?}"),
+            ]),
+            _ => None,
+        })
+        .expect("a usage event")
+}
+
+// Cache counts were hardcoded to Unknown, so a cached Claude Code prompt was
+// metered and priced as fresh input.
+#[test]
+fn cache_tokens_from_metadata_usage_are_reported() {
+    let mut bytes = text("ok");
+    bytes.extend(event(
+        "metadataEvent",
+        json!({ "usage": { "inputTokens": 1200, "outputTokens": 3,
+                           "cacheReadInputTokens": 1000, "cacheWriteInputTokens": 150 } }),
+    ));
+    let u = usage_of(&decode(&bytes, 7));
+    assert_eq!(
+        u,
+        [
+            "Reported(1200)",
+            "Reported(3)",
+            "Reported(1000)",
+            "Reported(150)"
+        ]
+    );
+}
+
+// OmniRoute also reads `usageEvent`; cache counts can come on a frame with no totals.
+#[test]
+fn usage_event_and_cache_only_frames_are_read() {
+    let mut bytes = text("ok");
+    bytes.extend(event(
+        "usageEvent",
+        json!({ "inputTokens": 40, "outputTokens": 2 }),
+    ));
+    bytes.extend(event("metricsEvent", json!({ "cacheReadTokens": 30 })));
+    let u = usage_of(&decode(&bytes, 64));
+    assert_eq!(
+        u,
+        ["Reported(40)", "Reported(2)", "Reported(30)", "Unknown"]
+    );
+}

@@ -66,6 +66,12 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         stream: req.stream.unwrap_or(false),
         system: req.system,
         required_capabilities: CapabilitySet::default(),
+        thinking: req.thinking.filter(|t| t.kind != "disabled").map(|t| {
+            vkdg_operations::ThinkingRequest {
+                budget_tokens: t.budget_tokens,
+                effort: None,
+            }
+        }),
     });
 
     Ok((req.model, operation))

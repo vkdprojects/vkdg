@@ -13,6 +13,16 @@ pub(crate) struct AnthropicRequest {
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: Option<bool>,
     pub(crate) tools: Option<Vec<AnthropicTool>>,
+    pub(crate) thinking: Option<AnthropicThinking>,
+}
+
+/// `{"type":"enabled","budget_tokens":N}`, `{"type":"adaptive"}` or
+/// `{"type":"disabled"}`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AnthropicThinking {
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    pub(crate) budget_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

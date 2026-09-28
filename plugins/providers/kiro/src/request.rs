@@ -160,6 +160,11 @@ pub(crate) fn build_conversation_state(
     model_id: &str,
     origin: &str,
 ) -> ConversationState {
+    // The <thinking_mode> directive must come before the user's content.
+    let thinking_prefix = conv
+        .thinking
+        .as_ref()
+        .and_then(|t| crate::thinking::directive(model_id, t));
     let (tools, relocated_docs) = tool_specs(&conv.tools);
     let mut turns = collect_turns(conv);
 
@@ -206,7 +211,11 @@ pub(crate) fn build_conversation_state(
         conversation_id: Uuid::new_v4().to_string(),
         current_message: CurrentMessage {
             user_input_message: UserInput {
-                content: current_text,
+                content: if let Some(prefix) = &thinking_prefix {
+                    format!("{prefix}\n\n{current_text}")
+                } else {
+                    current_text
+                },
                 model_id: Some(model_id.to_owned()),
                 origin: Some(origin.to_owned()),
                 cache_point: Some(CachePoint { kind: "default" }),

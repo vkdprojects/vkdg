@@ -21,6 +21,8 @@ struct OaiRequest {
     temperature: Option<f32>,
     n: Option<u32>,
     response_format: Option<OaiResponseFormat>,
+    /// `minimal` | `low` | `medium` | `high`; reasoning models only.
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +195,14 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         stream: req.stream.unwrap_or(false),
         system,
         required_capabilities,
+        thinking: req
+            .reasoning_effort
+            .map(|e| e.trim().to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+            .map(|effort| vkdg_operations::ThinkingRequest {
+                budget_tokens: None,
+                effort: Some(effort),
+            }),
     });
 
     Ok((req.model, operation))

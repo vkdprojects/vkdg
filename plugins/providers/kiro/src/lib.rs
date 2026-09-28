@@ -23,6 +23,7 @@ pub mod models;
 pub mod region;
 mod request;
 pub mod stream_decoder;
+mod thinking;
 
 use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
 use crate::endpoint::EndpointKind;
@@ -75,6 +76,15 @@ impl ProviderAdapter for KiroAdapter {
         // route patterns, so falling back to it would send a glob upstream.
         let model_id = models::resolve_model_id(Some(conv.model.as_str()));
 
+        // Thinking / reasoning, gated on the exact model allowlist from OmniRoute's
+        // adaptiveThinking.ts. Sending `output_config` to non-whitelisted models
+        // (e.g. claude-sonnet-4.5) causes a Bedrock 400 even though those models
+        // support thinking on Anthropic's direct API.
+        let additional_fields = conv
+            .thinking
+            .as_ref()
+            .and_then(|t| thinking::build_fields(&model_id, t));
+
         let body = KiroRequestBody {
             conversation_state: request::build_conversation_state(conv, &model_id, kind.origin()),
             // API-key accounts must not send profileArn: AWS answers 403.
@@ -82,6 +92,7 @@ impl ProviderAdapter for KiroAdapter {
                 .sends_profile_arn()
                 .then(|| profile_arn.map(str::to_owned))
                 .flatten(),
+            additional_fields,
         };
 
         let mut headers = HeaderMap::new();
@@ -173,4 +184,10 @@ struct KiroRequestBody {
     /// accounts; API-key accounts must omit it, or AWS answers 403.
     #[serde(rename = "profileArn", skip_serializing_if = "Option::is_none")]
     profile_arn: Option<String>,
+    /// Thinking / reasoning controls, gated on the model allowlist.
+    #[serde(
+        rename = "additionalModelRequestFields",
+        skip_serializing_if = "Option::is_none"
+    )]
+    additional_fields: Option<thinking::AdditionalFields>,
 }

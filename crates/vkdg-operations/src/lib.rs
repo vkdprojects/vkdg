@@ -106,6 +106,36 @@ pub struct ConversationRequest {
     pub stream: bool,
     pub system: Option<String>,
     pub required_capabilities: CapabilitySet,
+    /// Extended reasoning the client asked for (Anthropic `thinking`, OpenAI
+    /// `reasoning_effort`). `None` = the client did not ask.
+    #[serde(default)]
+    pub thinking: Option<ThinkingRequest>,
+}
+
+/// A client's reasoning request, kept in the client's own terms: a token
+/// budget (Anthropic) or an effort level (OpenAI). Adapters map it to their
+/// provider's knob.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThinkingRequest {
+    pub budget_tokens: Option<u32>,
+    /// `low` | `medium` | `high` (and `minimal`/`xhigh`/`max` where sent).
+    pub effort: Option<String>,
+}
+
+impl ThinkingRequest {
+    /// Effort level, from the explicit effort or a budget (OmniRoute's mapping:
+    /// ≥32k high, ≥16k medium, >0 low). `minimal` counts as `low`.
+    pub fn effort_level(&self) -> &str {
+        match self.effort.as_deref() {
+            Some("minimal") => "low",
+            Some(e) if !e.is_empty() => e,
+            _ => match self.budget_tokens.unwrap_or(0) {
+                b if b >= 32_000 => "high",
+                b if b >= 16_000 => "medium",
+                _ => "low",
+            },
+        }
+    }
 }
 
 // ── Operation ─────────────────────────────────────────────────────────────────

@@ -201,24 +201,30 @@ A tap is a GitHub repo with the same structure as `vkdg-registry`. No approval n
 
 ## Using installed plugins
 
-After installing, register the plugin in your config:
+There is no plugin list to register in config. A provider plugin is used by naming it on a connection,
+and an auth plugin by naming it in a route's `hooks`:
 
 ```yaml
 # vkdg.yaml
-plugins:
-  - deepinfra          # provider plugin
-  - rust-build-errors  # filter-pack plugin
-
 connections:
   - id: deepinfra-main
-    provider: deepinfra    # references the installed plugin
+    provider: deepinfra        # the installed provider plugin's name
     auth:
       type: api_key
       env_var: DEEPINFRA_API_KEY
     models: ["meta-llama/*"]
+
+routes:
+  - id: sso-only
+    match_models: ["meta-llama/*"]
+    strategy: round_robin
+    targets: [deepinfra-main]
+    hooks: { auth: [my-sso] }  # an installed auth plugin
 ```
 
-Or add from the console: Settings → Plugins → Install.
+Filter-pack, compressor, router and cache-backend plugins install, but this gateway does not run them yet.
+
+Or install from the console: Plugins → Install. That applies to the next request without a restart.
 
 ---
 

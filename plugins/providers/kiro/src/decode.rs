@@ -20,17 +20,18 @@ const DEFAULT_MAX_INPUT_TOKENS: u64 = 200_000;
 pub struct KiroEventDecoder {
     started: bool,
     terminated: bool,
-    /// toolUseId → stream index, in first-seen order.
     tool_indices: HashMap<String, u32>,
-    /// Object-form tool inputs: the latest object is canonical; emitted once.
     buffered_tool_inputs: Vec<(String, u32, String)>,
     generated_tool_ids: u32,
     output_chars: u64,
     context_usage_pct: f64,
     reported_usage: Option<(u32, u32)>,
-    /// Prompt-cache counts; they can arrive on a frame with no input/output.
     cache_read: Option<u32>,
     cache_write: Option<u32>,
+    /// State for the stream-safe `<thinking>…</thinking>` splitter.
+    /// Tags can span chunk boundaries, so partial prefixes are held here.
+    thinking_in_block: bool,
+    thinking_pending: String,
 }
 
 impl KiroEventDecoder {
@@ -69,11 +70,7 @@ impl KiroEventDecoder {
         match frame.header_str(":event-type").unwrap_or_default() {
             "assistantResponseEvent" => {
                 if let Some(content) = str_field(&payload, "content").filter(|c| !c.is_empty()) {
-                    self.output_chars += content.chars().count() as u64;
-                    out.push(ConversationEvent::OutputDelta {
-                        delta: content.to_owned(),
-                        index: 0,
-                    });
+                    self.split_thinking(content, out);
                 }
             }
             "codeEvent" => {
@@ -298,6 +295,80 @@ impl KiroEventDecoder {
             UsageCount::Estimated(saturate(input)),
             UsageCount::Estimated(saturate(output)),
         ))
+    }
+
+    /// Stream-safe `<thinking>…</thinking>` splitter (ported from OmniRoute's
+    /// `kiroThinking.ts`). Tags can span chunk boundaries: partial tag prefixes
+    /// are held in `self.thinking_pending` and completed on the next call.
+    fn split_thinking(&mut self, raw: &str, out: &mut Vec<ConversationEvent>) {
+        const PARTIAL_MAX: usize = 11; // len("</thinking>")
+        let mut text = if self.thinking_pending.is_empty() {
+            raw.to_owned()
+        } else {
+            let mut s = self.thinking_pending.clone();
+            s.push_str(raw);
+            self.thinking_pending.clear();
+            s
+        };
+
+        loop {
+            let target = if self.thinking_in_block {
+                "</thinking>"
+            } else {
+                "<thinking>"
+            };
+            match text.find(target) {
+                None => {
+                    // Hold back a tail that could be the start of `target`.
+                    // Only at char boundaries to avoid slicing into multi-byte chars.
+                    let hold_from = (text.len().saturating_sub(PARTIAL_MAX)..text.len())
+                        .filter(|&i| text.is_char_boundary(i))
+                        .find(|&i| {
+                            let tail = &text[i..];
+                            !tail.is_empty() && target.starts_with(tail)
+                        })
+                        .unwrap_or(text.len());
+                    let flushable = &text[..hold_from];
+                    if !flushable.is_empty() {
+                        self.emit(flushable, out);
+                    }
+                    self.thinking_pending = text[hold_from..].to_owned();
+                    return;
+                }
+                Some(idx) => {
+                    let before = &text[..idx];
+                    if !before.is_empty() {
+                        self.emit(before, out);
+                    }
+                    self.thinking_in_block = !self.thinking_in_block;
+                    text = text[idx + target.len()..].to_owned();
+                }
+            }
+        }
+    }
+
+    fn emit(&mut self, text: &str, out: &mut Vec<ConversationEvent>) {
+        if self.thinking_in_block {
+            out.push(ConversationEvent::ReasoningDelta {
+                delta: text.to_owned(),
+                index: 0,
+            });
+        } else {
+            self.output_chars += text.chars().count() as u64;
+            out.push(ConversationEvent::OutputDelta {
+                delta: text.to_owned(),
+                index: 0,
+            });
+        }
+    }
+
+    /// Drain pending at end of stream; routes leftover partial tags to
+    /// whichever channel is currently open (mirrors OmniRoute `flushPendingThinking`).
+    pub fn flush_thinking(&mut self, out: &mut Vec<ConversationEvent>) {
+        if !self.thinking_pending.is_empty() {
+            let leftover = std::mem::take(&mut self.thinking_pending);
+            self.emit(&leftover, out);
+        }
     }
 }
 

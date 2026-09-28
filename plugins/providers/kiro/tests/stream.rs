@@ -458,3 +458,71 @@ fn usage_event_and_cache_only_frames_are_read() {
         ["Reported(40)", "Reported(2)", "Reported(30)", "Unknown"]
     );
 }
+
+// The <thinking_mode> directive makes Claude emit reasoning inline rather than
+// as separate reasoningContentEvent frames. Tags can span frame boundaries.
+#[test]
+fn inline_thinking_tags_split_into_reasoning_and_content() {
+    let mut bytes = event(
+        "assistantResponseEvent",
+        json!({ "content": "<thinking>some reasoning</thinking>answer" }),
+    );
+    bytes.extend(text("more"));
+    let events = decode(&bytes, 64);
+    let reasoning: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ConversationEvent::ReasoningDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    let content: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ConversationEvent::OutputDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, ["some reasoning"], "reasoning extracted");
+    assert!(
+        content.contains(&"answer"),
+        "answer in content: {content:?}"
+    );
+    assert!(
+        !content.iter().any(|c| c.contains("<thinking>")),
+        "tags stripped from content"
+    );
+}
+
+#[test]
+fn inline_thinking_tag_split_across_frames() {
+    // "</thinking" arrives in one frame, ">" in the next.
+    let mut bytes = event(
+        "assistantResponseEvent",
+        json!({ "content": "<thinking>think</think" }),
+    );
+    bytes.extend(event(
+        "assistantResponseEvent",
+        json!({ "content": "ing>answer" }),
+    ));
+    let events = decode(&bytes, 128);
+    let reasoning: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ConversationEvent::ReasoningDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    let content: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            ConversationEvent::OutputDelta { delta, .. } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasoning, ["think"], "cross-frame tag recognised");
+    assert!(
+        content.contains(&"answer"),
+        "answer in content: {content:?}"
+    );
+}

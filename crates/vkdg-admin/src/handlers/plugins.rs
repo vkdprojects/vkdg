@@ -321,6 +321,7 @@ mod tests {
             })),
             catalog: None,
             logins: None,
+            connection_tester: None,
         }
     }
 

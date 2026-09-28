@@ -467,9 +467,29 @@ async fn serve(
             as vkdg_admin::router::PluginReload
     });
 
+    // Build Arc<PipelineState> now (before pipeline is moved into AppState)
+    // so both the data plane and the connection-test closure share the same instance.
+    let pipeline_arc: Option<Arc<PipelineState>> = pipeline.map(Arc::new);
+
+    let connection_tester: Option<vkdg_admin::router::ConnectionTester> =
+        pipeline_arc.as_ref().map(|p| {
+            let p = Arc::clone(p);
+            Arc::new(
+                move |id: String| -> std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = vkdg_admin::router::ConnectionTestResult>
+                            + Send,
+                    >,
+                > {
+                    let p = Arc::clone(&p);
+                    Box::pin(async move { test_connection_smoke(&p, &id).await })
+                },
+            ) as vkdg_admin::router::ConnectionTester
+        });
+
     let mut state = AppState::new(server_config.clone());
-    if let Some(p) = pipeline {
-        state = state.with_pipeline(Arc::new(p));
+    if let Some(p) = pipeline_arc {
+        state = state.with_pipeline(p);
     }
 
     // Build router here (not via vkdg_http::build_router) so we can add all
@@ -538,6 +558,7 @@ async fn serve(
                 Some(Arc::clone(&credentials)),
             )
         }),
+        connection_tester,
     };
     // Console SPA served as fallback on the admin port (9090).
     // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.
@@ -2015,6 +2036,103 @@ fn setup_yaml(
     out
 }
 
+async fn test_connection_smoke(
+    pipeline: &Arc<vkdg_http::PipelineState>,
+    conn_id: &str,
+) -> vkdg_admin::router::ConnectionTestResult {
+    use std::time::Instant;
+    use vkdg_core::{ApiType, ClientId, ConnectionId, RequestEnvelope, RequestId, TenantId};
+    use vkdg_http::pipeline::run_conversation_pipeline;
+    use vkdg_operations::{
+        CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
+    };
+
+    // Find the connection's first concrete model so we don't send a glob.
+    let model = {
+        let Some(guard) = pipeline.catalog.get(&ConnectionId(conn_id.to_owned())) else {
+            return vkdg_admin::router::ConnectionTestResult {
+                latency_ms: 0,
+                ok: false,
+                error: Some(format!("connection '{conn_id}' not found")),
+            };
+        };
+        let config = guard.read().await;
+        config
+            .config
+            .models
+            .iter()
+            .find(|m| !m.contains(['*', '?']))
+            .cloned()
+            .unwrap_or_else(|| "test".to_owned())
+    };
+
+    // A synthetic envelope that routes directly to this connection by name.
+    let envelope = RequestEnvelope {
+        request_id: RequestId::new(),
+        client_id: ClientId("_test".into()),
+        tenant_id: TenantId("_test".into()),
+        session_key: None,
+        api_type: ApiType::AnthropicMessages,
+        model_requested: model.clone(),
+        deadline: None,
+        mode_pack_override: None,
+        compression_override: None,
+        cache_bypass: true,
+        include_think_tags: false,
+        client_ip: None,
+    };
+
+    let op = Operation::Conversation(ConversationRequest {
+        model,
+        messages: vec![Message {
+            role: Role::User,
+            content: MessageContent::Text("Hello".into()),
+        }],
+        tools: vec![],
+        max_tokens: Some(1),
+        temperature: None,
+        stream: false,
+        system: None,
+        required_capabilities: CapabilitySet::default(),
+        thinking: None,
+    });
+
+    // Force routing to this specific connection by temporarily making the
+    // router irrelevant: we push the connection directly.
+    use vkdg_core::pipeline::PipelineCtx;
+    let mut ctx = PipelineCtx::new(envelope);
+    ctx.connection_id = Some(ConnectionId(conn_id.to_owned()));
+    ctx.route_id = Some("_test".to_owned());
+
+    let t = Instant::now();
+    let resp = run_conversation_pipeline(Arc::clone(pipeline), ctx, op).await;
+    let latency_ms = t.elapsed().as_millis() as u64;
+
+    let status = resp.status();
+    if status.is_success() || status.as_u16() == 400 || status.as_u16() == 422 {
+        // 400/422 = provider rejected the request (wrong model, etc.) — connection is alive.
+        vkdg_admin::router::ConnectionTestResult {
+            latency_ms,
+            ok: true,
+            error: None,
+        }
+    } else {
+        let body = axum::body::to_bytes(resp.into_body(), 4096)
+            .await
+            .ok()
+            .and_then(|b| String::from_utf8(b.to_vec()).ok())
+            .unwrap_or_default();
+        vkdg_admin::router::ConnectionTestResult {
+            latency_ms,
+            ok: false,
+            error: Some(format!("HTTP {}: {}", status.as_u16(), body.trim())),
+        }
+    }
+}
+
+/// Sends one smoke request through a named connection and returns latency + status.
+/// A provider-level error (wrong model, rate limit) still counts as ok=true because
+/// the connection is alive. A network / auth failure returns ok=false.
 #[cfg(test)]
 mod tests {
     use super::*;

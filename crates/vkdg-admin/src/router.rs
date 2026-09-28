@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 use vkdg_config::ConfigRx;
@@ -25,6 +26,28 @@ pub struct AdminState {
     /// Reload installed plugins into the running data plane after an install
     /// or removal. `None` = plugin changes apply at the next restart.
     pub reload_plugins: Option<PluginReload>,
+    /// Fires a smoke request through a specific connection and returns latency and status.
+    /// `None` = no data plane, the endpoint answers 503.
+    pub connection_tester: Option<ConnectionTester>,
+}
+
+/// Sends one smoke request (`"Hello"`, max_tokens=1) through the named connection
+/// and returns `(latency_ms, ok, error)`. Spawned as a blocking task if needed.
+pub type ConnectionTester = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ConnectionTestResult> + Send>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, serde::Serialize)]
+pub struct ConnectionTestResult {
+    /// Round-trip time in milliseconds.
+    pub latency_ms: u64,
+    /// `true` when the provider returned a response (any 2xx or a provider-level error
+    /// such as "context too long" still counts — the connection itself is alive).
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Rebuilds the live provider and hook registries from the plugin directory.
@@ -51,6 +74,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route(
             "/admin/v1/connections/{id}",
             get(crate::handlers::connections::get_connection),
+        )
+        .route(
+            "/admin/v1/connections/{id}/test",
+            axum::routing::post(crate::handlers::connections::test_connection),
         )
         .route(
             "/admin/v1/keys",

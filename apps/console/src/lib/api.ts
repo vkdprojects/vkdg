@@ -54,6 +54,12 @@ export interface ConnectionSummary {
   failure_count?: number;
 }
 
+export interface ConnectionTestResult {
+  latency_ms: number;
+  ok: boolean;
+  error?: string;
+}
+
 export type KeyScope = 'data_inference' | 'data_image';
 
 export interface ClientKey {
@@ -264,6 +270,8 @@ export const api = {
     req<void>('DELETE', '/admin/v1/session'),
   listConnections: () =>
     req<{ items: ConnectionSummary[]; total: number }>('GET', '/admin/v1/connections'),
+  testConnection: (id: string) =>
+    req<ConnectionTestResult>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/test`),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>

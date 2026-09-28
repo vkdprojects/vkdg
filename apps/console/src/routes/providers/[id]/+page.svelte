@@ -5,7 +5,7 @@
   import { ExternalLink, PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { Dialog } from 'bits-ui';
   import { api } from '$lib/api.js';
-  import type { Account, ConnectionStatus, ConnectionSummary, OAuthProvider } from '$lib/api.js';
+  import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Badge, Button, CopyButton, EmptyState, Select, Spinner, StatusDot } from '$lib/components/index.js';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
@@ -21,6 +21,21 @@
   let connectOpen = $state(false);
   let connectAccountId = $state<string | null>(null);
   let deleting = $state<string | null>(null);
+
+  // ── Connection test ──────────────────────────────────────────────────────────
+  let testing = $state<string | null>(null);
+  let testResults = $state<Record<string, ConnectionTestResult>>({});
+
+  async function testConn(connId: string) {
+    testing = connId;
+    try {
+      testResults[connId] = await api.testConnection(connId);
+    } catch (e) {
+      testResults[connId] = { latency_ms: 0, ok: false, error: (e as Error).message };
+    } finally {
+      testing = null;
+    }
+  }
 
   // ── Connection YAML wizard ───────────────────────────────────────────────────
   let dialogOpen = $state(false);
@@ -196,6 +211,7 @@
             <th scope="col">{m.connection_models()}</th>
             <th scope="col">{m.connection_active_requests()}</th>
             <th scope="col">{m.connection_cooldown()}</th>
+            <th scope="col"><span class="sr-only">Test</span></th>
           </tr>
         </thead>
         <tbody>
@@ -217,6 +233,18 @@
                 {:else}
                   {m.common_none()}
                 {/if}
+              </td>
+              <td class="test-cell">
+                {#if testResults[conn.id]}
+                  <span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}
+                    title={testResults[conn.id].error ?? `${testResults[conn.id].latency_ms}ms`}>
+                    {testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗ fail'}
+                  </span>
+                {/if}
+                <Button size="sm" variant="outline" disabled={testing === conn.id}
+                  onclick={() => testConn(conn.id)}>
+                  {#if testing === conn.id}<Spinner size="sm" />{:else}Test{/if}
+                </Button>
               </td>
             </tr>
           {/each}
@@ -387,4 +415,8 @@
   .yaml-code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; line-height: 1.5; margin: 0; white-space: pre; overflow-x: auto; }
   .yaml-env-note { font-size: 0.8125rem; color: var(--text-3); margin: 0; }
   .yaml-env-note code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+  .test-cell { text-align: right; white-space: nowrap; display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .test-badge { border-radius: 9999px; font-size: 0.75rem; font-weight: 500; padding: 2px 8px; }
+  .test-badge.ok { background: color-mix(in oklch, var(--success) 15%, transparent); color: var(--success); }
+  .test-badge.err { background: color-mix(in oklch, var(--danger) 15%, transparent); color: var(--danger); }
 </style>

@@ -260,6 +260,7 @@ mod tests {
             request_log: RequestLog::new(),
             combos: Some(Arc::new(svc)),
             reload_plugins: None,
+            connection_tester: None,
             catalog: Some(catalog),
             logins: None,
         }

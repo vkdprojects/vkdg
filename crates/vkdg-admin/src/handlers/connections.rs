@@ -106,6 +106,29 @@ pub async fn get_connection(
     }
 }
 
+pub async fn test_connection(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    let Some(tester) = &state.connection_tester else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new(
+                "no_pipeline",
+                "connection testing needs a running data plane",
+            ),
+        )
+        .into_response();
+    };
+    let result = tester(id).await;
+    Json(result).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +149,7 @@ mod tests {
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
             reload_plugins: None,
+            connection_tester: None,
             catalog: None,
             logins: None,
         }
@@ -174,6 +198,7 @@ mod tests {
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
             reload_plugins: None,
+            connection_tester: None,
             catalog: None,
             logins: None,
         };
@@ -239,6 +264,7 @@ mod tests {
             request_log: crate::handlers::requests::RequestLog::new(),
             combos: None,
             reload_plugins: None,
+            connection_tester: None,
             catalog: Some(catalog),
             logins: None,
         };

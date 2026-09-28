@@ -167,6 +167,7 @@ mod tests {
             request_log: RequestLog::new(),
             combos: None,
             reload_plugins: None,
+            connection_tester: None,
             catalog: None,
             logins: None,
         }
@@ -208,6 +209,7 @@ mod tests {
             request_log: RequestLog::new(),
             combos: None,
             reload_plugins: None,
+            connection_tester: None,
             catalog: None,
             logins: None,
         }

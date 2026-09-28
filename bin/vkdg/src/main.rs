@@ -217,7 +217,8 @@ enum PluginSub {
     },
     /// Install a plugin from the registry or a URL.
     Install {
-        /// Plugin name, name@version, or URL to .wasm file.
+        /// Registry name (`name` or `name@version`), a local plugin directory
+        /// (`manifest.yaml` + `plugin.wasm`), a manifest file, or a manifest URL.
         plugin: String,
         #[arg(long, default_value = "main")]
         registry_ref: String,

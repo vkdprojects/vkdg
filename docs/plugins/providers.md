@@ -68,14 +68,16 @@ Most of these are AI coding tools that don't use API keys — they use OAuth. Yo
 | Antigravity | `antigravity` | Google OAuth | Google Cloud Code (requires GCP project) |
 
 ```bash
-# Connect an OAuth provider
-vkdg setup
-# → picks the provider → walks through auth flow
-# → token stored in ~/.config/vkdg/vault/ (encrypted)
-# → auto-refreshed forever
+# Log in once; prints the connection snippet to paste into your config
+vkdg login kiro
+#   auth: { type: account, account: kiro-4ac0bf7e }
+vkdg accounts list
 ```
 
-After setup, the connection works with no `auth` block in your config — VKDG finds the stored token by provider ID.
+The account (tokens and the provider's own data, such as Kiro's region and profile ARN) is stored in
+`accounts.db`, a `0600` SQLite file next to `keys.db`. It is not encrypted at rest, so protect the
+data directory like any credential file. The gateway refreshes each token shortly before it expires,
+one refresh per account at a time. The console's Accounts page runs the same login.
 
 ---
 

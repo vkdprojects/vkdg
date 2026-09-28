@@ -226,30 +226,13 @@ Or add from the console: Settings → Plugins → Install.
 
 ### Step 1 — Build your plugin
 
-For a WASM provider, implement the WIT interface (see [adding-a-provider.md](../sdk/adding-a-provider.md)):
-
-```rust
-// src/lib.rs
-wit_bindgen::generate!({ world: "provider", path: "wit/" });
-
-struct MyProvider;
-impl Guest for MyProvider {
-    fn name() -> String { "my-provider".into() }
-    fn model_patterns() -> Vec<String> { vec!["myprovider/*".into()] }
-    fn translate_request(req: Request, config_json: String, token: String)
-        -> Result<(String, Vec<u8>, bool), PluginError> {
-        // build your upstream request
-        todo!()
-    }
-    // ...
-}
-export!(MyProvider);
-```
+For a WASM provider, export `name`, `model-patterns` and `prepare` as described in
+[writing-a-plugin.md](../sdk/writing-a-plugin.md). Each takes and returns a JSON string.
 
 Build:
 ```bash
-cargo build --target wasm32-wasip2 --release
-# produces target/wasm32-wasip2/release/my_provider.wasm
+cargo component build --release
+# produces target/wasm32-wasip1/release/my_provider.wasm; ship it as plugin.wasm
 ```
 
 ### Step 2 — Create a release

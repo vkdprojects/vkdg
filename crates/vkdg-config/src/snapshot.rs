@@ -398,4 +398,21 @@ mod tests {
         let snap = load(&std::fs::read_to_string(path).unwrap()).expect("config.example.yaml");
         assert!(snap.connections.iter().any(|c| c.tags == ["primary"]));
     }
+
+    // The Tier-1 snippet is read from the guide itself: if the doc changes to
+    // something the schema refuses, this fails instead of a first-time user.
+    #[test]
+    fn tier1_snippet_in_the_provider_guide_loads() {
+        let doc = include_str!("../../../docs/sdk/adding-a-provider.md");
+        let tier1 = &doc[doc.find("## Tier 1").expect("Tier 1 section")..];
+        let start = tier1.find("```yaml\n").expect("yaml block") + "```yaml\n".len();
+        let block = &tier1[start..start + tier1[start..].find("```").expect("block end")];
+        let snap =
+            load(&format!("listen: 0.0.0.0:8080\nroutes: []\n{block}")).expect("doc snippet");
+        let p = &snap.connections[0].provider;
+        assert_eq!(
+            (p.adapter_id(), p.as_str()),
+            ("openai", "http://localhost:11434")
+        );
+    }
 }

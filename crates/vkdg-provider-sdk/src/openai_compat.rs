@@ -101,6 +101,10 @@ pub struct OpenAiCompatAdapter {
     display_name: &'static str,
     default_base_url: &'static str,
     default_model: &'static str,
+    icon_char: char,
+    icon_color: &'static str,
+    site_url: Option<&'static str>,
+    description: Option<&'static str>,
 }
 
 impl OpenAiCompatAdapter {
@@ -115,7 +119,26 @@ impl OpenAiCompatAdapter {
             display_name,
             default_base_url,
             default_model,
+            icon_char: ' ',
+            icon_color: "#6b7280",
+            site_url: None,
+            description: None,
         }
+    }
+
+    /// Builder method: set visual metadata for the admin console.
+    pub const fn with_meta(
+        mut self,
+        icon_char: char,
+        icon_color: &'static str,
+        site_url: Option<&'static str>,
+        description: Option<&'static str>,
+    ) -> Self {
+        self.icon_char = icon_char;
+        self.icon_color = icon_color;
+        self.site_url = site_url;
+        self.description = description;
+        self
     }
 }
 
@@ -149,6 +172,20 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             body: chat_completions_body(req, model),
             is_streaming: req.stream,
         })
+    }
+
+    fn meta(&self) -> crate::ProviderMeta {
+        crate::ProviderMeta {
+            icon_char: if self.icon_char == ' ' {
+                self.id.chars().next().unwrap_or('?').to_ascii_uppercase()
+            } else {
+                self.icon_char
+            },
+            icon_color: self.icon_color,
+            category: crate::ProviderCategory::LlmApi,
+            site_url: self.site_url,
+            description: self.description,
+        }
     }
 }
 

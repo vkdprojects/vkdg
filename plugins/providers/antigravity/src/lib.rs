@@ -31,6 +31,16 @@ impl ProviderAdapter for AntigravityAdapter {
         "Antigravity (Google Cloud Code)"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'A',
+            icon_color: "#7C3AED",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://antigravity.dev"),
+            description: Some("Antigravity — Google Cloud Code assistant."),
+        }
+    }
+
     fn prepare(
         &self,
         _operation: &Operation,

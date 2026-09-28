@@ -21,5 +21,8 @@ pub use oauth::{
     OAuthProvider, PkceAuthorization, TokenPair,
 };
 pub use registry::ProviderRegistry;
-pub use request::{upstream_model, ConversationStreamDecoder, PreparedRequest, ProviderAdapter};
+pub use request::{
+    upstream_model, ConversationStreamDecoder, PreparedRequest, ProviderAdapter, ProviderCategory,
+    ProviderMeta,
+};
 pub use vkdg_connections::Credential;

@@ -29,6 +29,16 @@ impl ProviderAdapter for CodexAdapter {
         "OpenAI Codex"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'C',
+            icon_color: "#10a37f",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://chatgpt.com"),
+            description: Some("OpenAI Codex — coding agent via OAuth."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

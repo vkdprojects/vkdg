@@ -43,6 +43,16 @@ impl ProviderAdapter for AnthropicAdapter {
         "Anthropic"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'A',
+            icon_color: "#D97706",
+            category: vkdg_provider_sdk::ProviderCategory::LlmApi,
+            site_url: Some("https://console.anthropic.com"),
+            description: Some("Anthropic Claude — safety-focused frontier models."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

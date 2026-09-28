@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://api.together.xyz",
         "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     )
+    .with_meta(
+        'T',
+        "#6C47FF",
+        Some("https://api.together.ai"),
+        Some("Wide model catalog."),
+    )
 }

@@ -89,4 +89,44 @@ pub trait ProviderAdapter: Send + Sync {
     fn prices(&self) -> &[vkdg_core::pricing::ModelPrice] {
         &[]
     }
+
+    /// Metadata for the admin console UI. Defaults work for any plugin that
+    /// only implements `id()` and `display_name()`.
+    fn meta(&self) -> ProviderMeta {
+        ProviderMeta {
+            icon_char: self.id().chars().next().unwrap_or('?').to_ascii_uppercase(),
+            icon_color: "#6b7280",
+            category: ProviderCategory::LlmApi,
+            site_url: None,
+            description: None,
+        }
+    }
+}
+
+/// Visual and discovery metadata for the admin console UI.
+/// Returned by `ProviderAdapter::meta()` and serialised into
+/// `GET /admin/v1/providers/oauth` and `GET /admin/v1/providers`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProviderMeta {
+    /// Single character used as an icon when no image is available.
+    pub icon_char: char,
+    /// CSS color string for the icon background (e.g. `"#f97316"`).
+    pub icon_color: &'static str,
+    pub category: ProviderCategory,
+    /// Public website or docs URL.
+    pub site_url: Option<&'static str>,
+    /// One-liner shown under the provider name in the grid.
+    pub description: Option<&'static str>,
+}
+
+/// Broad category used to group providers in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCategory {
+    /// Hosted LLM with an API key.
+    LlmApi,
+    /// OAuth / device-code account login (AI IDE assistants, etc.).
+    OauthIde,
+    /// Self-hosted or OpenAI-compatible endpoint.
+    Compatible,
 }

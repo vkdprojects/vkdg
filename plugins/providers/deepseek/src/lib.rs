@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://api.deepseek.com",
         "deepseek-chat",
     )
+    .with_meta(
+        'D',
+        "#4B9EF6",
+        Some("https://platform.deepseek.com"),
+        Some("Open-source frontier models."),
+    )
 }

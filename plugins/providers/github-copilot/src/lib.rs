@@ -29,6 +29,16 @@ impl ProviderAdapter for GitHubCopilotAdapter {
         "GitHub Copilot"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'G',
+            icon_color: "#24292f",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://github.com/features/copilot"),
+            description: Some("GitHub Copilot — AI coding assistant."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

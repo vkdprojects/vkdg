@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://api.mistral.ai",
         "mistral-large-latest",
     )
+    .with_meta(
+        'M',
+        "#FF6F00",
+        Some("https://console.mistral.ai"),
+        Some("European frontier models."),
+    )
 }

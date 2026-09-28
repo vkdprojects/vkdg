@@ -261,7 +261,18 @@ pub async fn list_oauth_providers(State(state): State<AdminState>, headers: Head
         .iter()
         .filter_map(|id| svc.registry.get(id))
         .filter(|a| a.oauth().is_some())
-        .map(|a| serde_json::json!({ "id": a.id(), "display_name": a.display_name() }))
+        .map(|a| {
+            let meta = a.meta();
+            serde_json::json!({
+                "id": a.id(),
+                "display_name": a.display_name(),
+                "icon_char": meta.icon_char,
+                "icon_color": meta.icon_color,
+                "category": meta.category,
+                "site_url": meta.site_url,
+                "description": meta.description,
+            })
+        })
         .collect();
     Json(serde_json::json!({ "items": items })).into_response()
 }
@@ -586,7 +597,10 @@ mod tests {
                     required: true,
                     secret: false,
                     default: None,
+                    placeholder: None,
                 }],
+                hint: None,
+                icon_char: None,
             }]
         }
         fn start_device_login<'a>(

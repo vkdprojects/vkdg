@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://api.sambanova.ai",
         "Meta-Llama-3.1-70B-Instruct",
     )
+    .with_meta(
+        'S',
+        "#E63946",
+        Some("https://cloud.sambanova.ai"),
+        Some("High-throughput inference."),
+    )
 }

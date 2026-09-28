@@ -29,6 +29,16 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         "Claude Code"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'C',
+            icon_color: "#CC785C",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://claude.ai"),
+            description: Some("Anthropic Claude Code — OAuth coding agent."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

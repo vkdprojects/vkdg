@@ -45,6 +45,16 @@ impl ProviderAdapter for OpenAIAdapter {
         "OpenAI"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'O',
+            icon_color: "#10a37f",
+            category: vkdg_provider_sdk::ProviderCategory::LlmApi,
+            site_url: Some("https://platform.openai.com"),
+            description: Some("OpenAI — GPT-4o, o3 and the Responses API."),
+        }
+    }
+
     fn prices(&self) -> &[ModelPrice] {
         PRICES
     }

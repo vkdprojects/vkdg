@@ -91,6 +91,8 @@ impl OAuthProvider for FakeOAuth {
                 label: "Fake device code".into(),
                 flow: OAuthFlow::DeviceCode,
                 fields: vec![],
+                hint: None,
+                icon_char: None,
             },
             // Imports an already-expired account, so the next request refreshes
             // it at once: a refresh token containing `revoked` then drives the
@@ -105,7 +107,10 @@ impl OAuthProvider for FakeOAuth {
                     required: true,
                     secret: true,
                     default: None,
+                    placeholder: None,
                 }],
+                hint: None,
+                icon_char: None,
             },
         ]
     }

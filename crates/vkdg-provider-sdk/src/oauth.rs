@@ -66,6 +66,9 @@ pub struct LoginField {
     /// Mask the value in UIs (pasted tokens, secrets).
     pub secret: bool,
     pub default: Option<String>,
+    /// Short placeholder or example shown in the input.
+    #[serde(default)]
+    pub placeholder: Option<String>,
 }
 
 /// A login method a plugin supports, e.g. `builder-id` (device code) or `import`.
@@ -75,6 +78,12 @@ pub struct LoginMethod {
     pub label: String,
     pub flow: OAuthFlow,
     pub fields: Vec<LoginField>,
+    /// One-line description shown under the method name in the UI picker.
+    #[serde(default)]
+    pub hint: Option<String>,
+    /// Single icon character (overrides the provider icon for this method).
+    #[serde(default)]
+    pub icon_char: Option<char>,
 }
 
 /// Returned by [`OAuthProvider::start_device_login`]; shown to the user.
@@ -336,6 +345,7 @@ mod tests {
                         required: true,
                         secret: false,
                         default: Some("us-east-1".into()),
+                        placeholder: None,
                     },
                     LoginField {
                         id: "start_url".into(),
@@ -343,8 +353,11 @@ mod tests {
                         required: true,
                         secret: false,
                         default: None,
+                        placeholder: None,
                     },
                 ],
+                hint: None,
+                icon_char: None,
             }]
         }
         fn poll_device_login<'a>(

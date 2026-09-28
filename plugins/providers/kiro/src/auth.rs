@@ -85,6 +85,7 @@ fn field(id: &str, label: &str, required: bool, secret: bool, default: Option<&s
         required,
         secret,
         default: default.map(str::to_owned),
+        placeholder: None,
     }
 }
 
@@ -511,6 +512,8 @@ impl OAuthProvider for KiroAdapter {
                     false,
                     Some(DEFAULT_REGION),
                 )],
+                hint: None,
+                icon_char: None,
             },
             LoginMethod {
                 id: AUTH_IDC.to_owned(),
@@ -520,6 +523,8 @@ impl OAuthProvider for KiroAdapter {
                     field("start_url", "IdC start URL", true, false, None),
                     field("region", "IdC region", true, false, Some(DEFAULT_REGION)),
                 ],
+                hint: None,
+                icon_char: None,
             },
             LoginMethod {
                 id: AUTH_SOCIAL.to_owned(),
@@ -532,6 +537,8 @@ impl OAuthProvider for KiroAdapter {
                     false,
                     Some("Google"),
                 )],
+                hint: None,
+                icon_char: None,
             },
             LoginMethod {
                 id: "import".to_owned(),
@@ -557,6 +564,8 @@ impl OAuthProvider for KiroAdapter {
                     ),
                     field("scope", "Scope (organization IdP only)", false, false, None),
                 ],
+                hint: None,
+                icon_char: None,
             },
             LoginMethod {
                 id: AUTH_API_KEY.to_owned(),
@@ -566,6 +575,8 @@ impl OAuthProvider for KiroAdapter {
                     field("api_key", "API key", true, true, None),
                     field("region", "AWS region", false, false, Some(DEFAULT_REGION)),
                 ],
+                hint: None,
+                icon_char: None,
             },
         ]
     }

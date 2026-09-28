@@ -29,6 +29,16 @@ impl ProviderAdapter for KimiCodingAdapter {
         "Kimi Coding"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'K',
+            icon_color: "#1DB4C4",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://kimi.ai"),
+            description: Some("Kimi Coding — Moonshot AI coding assistant."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

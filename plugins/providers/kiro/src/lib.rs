@@ -42,6 +42,16 @@ impl ProviderAdapter for KiroAdapter {
         "Kiro / Amazon Q"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'K',
+            icon_color: "#FF9900",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://kiro.dev"),
+            description: Some("Amazon Q / Kiro — AI coding assistant powered by AWS."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,

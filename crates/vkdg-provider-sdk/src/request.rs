@@ -14,6 +14,24 @@ pub struct PreparedRequest {
     pub is_streaming: bool,
 }
 
+/// The model id to send upstream: the one the client asked for (after any
+/// combo rewrite), or `default` when the request names none.
+///
+/// Never read `ConnectionConfig::models` for this. That list holds route
+/// patterns (`claude-*`), so a glob would go upstream, and a multi-model
+/// connection would pin every call to its first entry.
+pub fn upstream_model<'a>(
+    req: &'a vkdg_operations::ConversationRequest,
+    default: &'a str,
+) -> &'a str {
+    let m = req.model.trim();
+    if m.is_empty() || m.contains(['*', '?']) {
+        default
+    } else {
+        m
+    }
+}
+
 /// Decoder for provider-specific streaming protocols.
 /// Used when the provider returns raw bytes that need to be decoded into
 /// [`ConversationEvent`]s before re-encoding to the client's SSE format.

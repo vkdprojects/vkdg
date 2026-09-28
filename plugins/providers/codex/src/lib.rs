@@ -41,7 +41,7 @@ impl ProviderAdapter for CodexAdapter {
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_chat_completions_body(req, config, "gpt-4o");
+        let body = build_chat_completions_body(req, "gpt-4o");
         // Codex uses the OpenAI Responses API endpoint
         let url = format!("{}/v1/responses", base_url(config));
         let headers = build_auth_headers(token);
@@ -145,16 +145,8 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-fn build_chat_completions_body(
-    req: &ConversationRequest,
-    config: &ConnectionConfig,
-    default_model: &str,
-) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| default_model.to_string());
+fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, default_model).to_owned();
 
     let mut messages: Vec<Value> = Vec::new();
     if let Some(sys) = &req.system {
@@ -277,4 +269,60 @@ fn extract_tool_result(content: &MessageContent) -> (String, String) {
         _ => String::new(),
     };
     (String::new(), text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use vkdg_connections::AuthKind;
+    use vkdg_operations::{CapabilitySet, Message};
+
+    fn prepared_model(requested: &str, patterns: &[&str]) -> String {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-1".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::Account {
+                account_id: "a".into(),
+            },
+            models: patterns.iter().map(|p| (*p).to_owned()).collect(),
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: requested.into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+        });
+        let cred = Credential {
+            token: "t".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        let req = CodexAdapter.prepare(&op, &config, &cred).unwrap();
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        body["model"].as_str().unwrap_or_default().to_owned()
+    }
+
+    // The body carried `config.models.first()`: the route glob `gpt-*` went
+    // upstream, and a multi-model connection pinned every call to its first entry.
+    #[test]
+    fn upstream_model_is_the_requested_one_not_the_route_pattern() {
+        assert_eq!(prepared_model("gpt-5-codex", &["gpt-*"]), "gpt-5-codex");
+        assert_eq!(prepared_model("o3", &["gpt-5", "o3"]), "o3");
+        assert_eq!(
+            prepared_model("", &["gpt-*"]),
+            "gpt-4o",
+            "no model: adapter default"
+        );
+    }
 }

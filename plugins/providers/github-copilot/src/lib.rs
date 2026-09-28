@@ -43,7 +43,7 @@ impl ProviderAdapter for GitHubCopilotAdapter {
 
         // Note: production use requires fetching a short-lived copilot_token from
         //   /copilot_internal/v2/token first; Phase E will add that layer.
-        let body = build_chat_completions_body(req, config, "gpt-4o");
+        let body = build_chat_completions_body(req, "gpt-4o");
         let url = format!("{}/v1/chat/completions", base_url(config));
         let headers = build_auth_headers(token);
 
@@ -105,16 +105,8 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-fn build_chat_completions_body(
-    req: &ConversationRequest,
-    config: &ConnectionConfig,
-    default_model: &str,
-) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| default_model.to_string());
+fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, default_model).to_owned();
 
     let mut messages: Vec<Value> = Vec::new();
     if let Some(sys) = &req.system {

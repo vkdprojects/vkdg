@@ -55,7 +55,7 @@ impl ProviderAdapter for AnthropicAdapter {
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_body(req, config);
+        let body = build_body(req);
         let url = format!("{}/v1/messages", base_url(config));
 
         let mut headers = HeaderMap::new();
@@ -94,12 +94,8 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "claude-3-5-sonnet-20241022".into());
+fn build_body(req: &ConversationRequest) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, "claude-3-5-sonnet-20241022").to_owned();
 
     let messages: Vec<Value> = req
         .messages

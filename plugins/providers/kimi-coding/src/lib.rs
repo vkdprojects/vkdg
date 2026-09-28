@@ -41,7 +41,7 @@ impl ProviderAdapter for KimiCodingAdapter {
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_chat_completions_body(req, config, "kimi-k1-5-turbo");
+        let body = build_chat_completions_body(req, "kimi-k1-5-turbo");
         let url = format!("{}/v1/chat/completions", base_url(config));
 
         let mut headers = HeaderMap::new();
@@ -143,16 +143,8 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-fn build_chat_completions_body(
-    req: &ConversationRequest,
-    config: &ConnectionConfig,
-    default_model: &str,
-) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| default_model.to_string());
+fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, default_model).to_owned();
 
     let mut messages: Vec<Value> = Vec::new();
     if let Some(sys) = &req.system {

@@ -142,11 +142,7 @@ impl ProviderAdapter for OpenAiCompatAdapter {
             ProviderKind::Custom { base_url } => base_url.as_str(),
             _ => self.default_base_url,
         };
-        let model = config
-            .models
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or(self.default_model);
+        let model = crate::upstream_model(req, self.default_model);
         Ok(PreparedRequest {
             url: format!("{base}/v1/chat/completions"),
             headers: bearer_headers(token),

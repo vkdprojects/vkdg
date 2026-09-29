@@ -159,4 +159,6 @@ result-*
 apps/console/e2e/.auth/
 apps/console/test-results/
 apps/console/playwright-report/
+# OMP session config, não versionar
+/.omp/config.yml
 apps/console/e2e/.data/

@@ -380,5 +380,16 @@
   "credits_checked_days": "{n}d ago",
   "account_duplicate_user": "Duplicate account",
   "account_duplicate_user_desc": "This account resolves to the same upstream user as another account below.",
-  "method_pick_title": "Choose how to sign in"
+  "method_pick_title": "Choose how to sign in",
+  "acct_credits_column": "Credits",
+  "acct_credits_no_account": "No linked account",
+  "key_usage_summary": "{used} / {limit}",
+  "key_show_details": "Details",
+  "key_hide_details": "Hide details",
+  "key_table_name": "Name",
+  "key_table_usage": "Usage this month",
+  "key_table_restrictions": "Restrictions",
+  "key_table_actions": "Actions",
+  "shell_collapse_nav": "Collapse navigation",
+  "shell_expand_nav": "Expand navigation"
 }

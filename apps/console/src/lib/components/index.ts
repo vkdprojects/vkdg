@@ -9,4 +9,5 @@ export { default as Input } from './Input.svelte';
 export { default as Select } from './Select.svelte';
 export { default as Logo } from './Logo.svelte';
 export { default as Meter } from './Meter.svelte';
+export { default as AccountCredits } from './AccountCredits.svelte';
 export { default as Stat } from './Stat.svelte';

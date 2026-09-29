@@ -5,7 +5,7 @@
   import { api } from '$lib/api.js';
   import type { Account } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
+  import { AccountCredits, Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
   import { formatRelativeTime } from '$lib/format.js';
   import ConnectAccountModal from './ConnectAccountModal.svelte';
 
@@ -113,6 +113,8 @@
                 <Badge status="cancelled" label={m.acct_refresh_token()} />
               {/if}
             </div>
+
+            <div class="credits-bleed"><AccountCredits account={account} /></div>
 
             {#if account.revoked_reason}
               <p class="reason">{account.revoked_reason}</p>
@@ -235,6 +237,13 @@
   .account-details {
     padding-top: 0.75rem;
     border-top: 1px solid var(--border);
+  }
+
+  /* AccountCredits' panel variant is styled to bleed to a full-width strip
+     (as on the provider detail page); cancel this card's own padding so it
+     touches the card edges instead of floating as an inset box. */
+  .credits-bleed {
+    margin: 0 -1rem;
   }
 
   .detail {

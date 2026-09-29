@@ -3,7 +3,7 @@
   import { api } from '$lib/api.js';
   import type { ClientKey, CreatedKey, KeyLimits, KeyPatch, KeyScope } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, Button, Card, CopyButton, EmptyState, Meter, Spinner, Stat } from '$lib/components/index.js';
+  import { Badge, Button, CopyButton, EmptyState, Meter, Spinner } from '$lib/components/index.js';
   import { formatNumber, formatDateTime, formatRelativeTime } from '$lib/format.js';
   import { Dialog } from 'bits-ui';
   import { XIcon } from 'lucide-svelte';
@@ -14,6 +14,7 @@
   let submitting = $state(false);
   let formError = $state('');
   let createdKey = $state<CreatedKey | null>(null);
+  let expandedId = $state<string | null>(null);
 
   let keyName = $state('');
   let scopes = $state<KeyScope[]>(['data_inference', 'data_image']);
@@ -223,62 +224,66 @@
   <section aria-labelledby="create-heading" class="create-section">
     <h2 id="create-heading">{m.key_create()}</h2>
     <form onsubmit={createKey} class="create-form">
-      <div class="field">
-        <label for="key-name">{m.key_name()}</label>
-        <input id="key-name" type="text" bind:value={keyName} required placeholder="e.g. ci-runner" />
+      <div class="create-columns">
+        <div class="create-column">
+          <div class="field">
+            <label for="key-name">{m.key_name()}</label>
+            <input id="key-name" type="text" bind:value={keyName} required placeholder="e.g. ci-runner" />
+          </div>
+
+          <fieldset class="role-group">
+            <legend>{m.key_scopes()}</legend>
+            <label class="role-option">
+              <input type="checkbox" value="data_inference" bind:group={scopes} />
+              <span class="role-info">
+                <span class="role-label">{m.key_scope_inference()}</span>
+                <span class="role-desc">{m.key_scope_inference_desc()}</span>
+              </span>
+            </label>
+            <label class="role-option">
+              <input type="checkbox" value="data_image" bind:group={scopes} />
+              <span class="role-info">
+                <span class="role-label">{m.key_scope_image()}</span>
+                <span class="role-desc">{m.key_scope_image_desc()}</span>
+              </span>
+            </label>
+          </fieldset>
+        </div>
+
+        <fieldset class="role-group limits create-column">
+          <legend>{m.key_limits()}</legend>
+          <div class="field">
+            <label for="key-expires">{m.key_expires_on()}</label>
+            <input id="key-expires" type="date" bind:value={expiresOn} />
+          </div>
+          <div class="field">
+            <label for="key-models">{m.key_allowed_models()}</label>
+            <textarea id="key-models" rows="2" bind:value={allowedModels} placeholder="claude-*, gpt-5*" aria-describedby="key-models-hint"></textarea>
+            <span id="key-models-hint" class="hint">{m.key_allowed_models_hint()}</span>
+          </div>
+          <div class="field">
+            <label for="key-ips">{m.key_allowed_ips()}</label>
+            <textarea id="key-ips" rows="2" bind:value={allowedIps} placeholder="10.0.0.0/8" aria-describedby="key-ips-hint"></textarea>
+            <span id="key-ips-hint" class="hint">{m.key_allowed_ips_hint()}</span>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="key-tokens">{m.key_monthly_tokens()}</label>
+              <input id="key-tokens" type="number" min="1" step="1" bind:value={monthlyTokens} aria-describedby="key-unlimited-hint" />
+            </div>
+            <div class="field">
+              <label for="key-rpm">{m.key_rpm()}</label>
+              <input id="key-rpm" type="number" min="1" step="1" bind:value={rpm} aria-describedby="key-unlimited-hint" />
+            </div>
+          </div>
+          <span id="key-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
+          <label class="check-row">
+            <input type="checkbox" bind:checked={noLog} aria-describedby="key-no-log-hint" />
+            <span>{m.key_no_log()}</span>
+          </label>
+          <span id="key-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
+        </fieldset>
       </div>
-
-      <fieldset class="role-group">
-        <legend>{m.key_scopes()}</legend>
-        <label class="role-option">
-          <input type="checkbox" value="data_inference" bind:group={scopes} />
-          <span class="role-info">
-            <span class="role-label">{m.key_scope_inference()}</span>
-            <span class="role-desc">{m.key_scope_inference_desc()}</span>
-          </span>
-        </label>
-        <label class="role-option">
-          <input type="checkbox" value="data_image" bind:group={scopes} />
-          <span class="role-info">
-            <span class="role-label">{m.key_scope_image()}</span>
-            <span class="role-desc">{m.key_scope_image_desc()}</span>
-          </span>
-        </label>
-      </fieldset>
-
-      <fieldset class="role-group limits">
-        <legend>{m.key_limits()}</legend>
-        <div class="field">
-          <label for="key-expires">{m.key_expires_on()}</label>
-          <input id="key-expires" type="date" bind:value={expiresOn} />
-        </div>
-        <div class="field">
-          <label for="key-models">{m.key_allowed_models()}</label>
-          <textarea id="key-models" rows="2" bind:value={allowedModels} placeholder="claude-*, gpt-5*" aria-describedby="key-models-hint"></textarea>
-          <span id="key-models-hint" class="hint">{m.key_allowed_models_hint()}</span>
-        </div>
-        <div class="field">
-          <label for="key-ips">{m.key_allowed_ips()}</label>
-          <textarea id="key-ips" rows="2" bind:value={allowedIps} placeholder="10.0.0.0/8" aria-describedby="key-ips-hint"></textarea>
-          <span id="key-ips-hint" class="hint">{m.key_allowed_ips_hint()}</span>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label for="key-tokens">{m.key_monthly_tokens()}</label>
-            <input id="key-tokens" type="number" min="1" step="1" bind:value={monthlyTokens} aria-describedby="key-unlimited-hint" />
-          </div>
-          <div class="field">
-            <label for="key-rpm">{m.key_rpm()}</label>
-            <input id="key-rpm" type="number" min="1" step="1" bind:value={rpm} aria-describedby="key-unlimited-hint" />
-          </div>
-        </div>
-        <span id="key-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
-        <label class="check-row">
-          <input type="checkbox" bind:checked={noLog} aria-describedby="key-no-log-hint" />
-          <span>{m.key_no_log()}</span>
-        </label>
-        <span id="key-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
-      </fieldset>
 
       <!-- Backend 400s (bad CIDR, bad date…) render here, next to the form. -->
       {#if formError}
@@ -303,91 +308,114 @@
     {:else if keys.length === 0}
       <EmptyState title={m.key_empty()} description={m.key_empty_desc()} />
     {:else}
-      <div class="key-grid">
-        {#each keys as k (k.id)}
-          {@const used = (k.usage_this_month?.input_tokens ?? 0) + (k.usage_this_month?.output_tokens ?? 0)}
-          <Card padding="0">
-            <article class="key-card">
-              <header class="key-card-header">
-                <div class="key-identity">
-                  <div class="key-title-row">
-                    <h3>{k.name}</h3>
-                    <Badge status={k.status === 'active' ? 'healthy' : k.status === 'disabled' ? 'cancelled' : 'failed'} label={statusLabels[k.status]()} />
+      <div class="table-wrap">
+        <table class="key-table">
+          <thead>
+            <tr>
+              <th>{m.key_table_name()}</th>
+              <th>{m.key_status()}</th>
+              <th>{m.key_scopes()}</th>
+              <th>{m.key_table_usage()}</th>
+              <th>{m.key_table_restrictions()}</th>
+              <th><span class="sr-only">{m.key_table_actions()}</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each keys as k (k.id)}
+              {@const used = (k.usage_this_month?.input_tokens ?? 0) + (k.usage_this_month?.output_tokens ?? 0)}
+              {@const restrictionCount = k.allowed_models.length + k.allowed_ips.length + (k.no_log ? 1 : 0)}
+              {@const expanded = expandedId === k.id}
+              <tr class="key-row" class:expanded>
+                <td>
+                  <div class="key-name-cell">
+                    <span class="key-name">{k.name}</span>
+                    <code class="key-prefix">{k.prefix}…</code>
                   </div>
-                  <code>{k.prefix}…</code>
-                </div>
-                <div class="scope-list" aria-label={m.key_scopes()}>
-                  {#each k.scopes as scope}
-                    <span class="chip">{scope === 'data_image' ? m.key_scope_image() : m.key_scope_inference()}</span>
-                  {/each}
-                </div>
-              </header>
-
-              <div class="key-card-body">
-                <div class="usage-panel">
+                </td>
+                <td><Badge status={k.status === 'active' ? 'healthy' : k.status === 'disabled' ? 'cancelled' : 'failed'} label={statusLabels[k.status]()} /></td>
+                <td>
+                  <div class="scope-list" aria-label={m.key_scopes()}>
+                    {#each k.scopes as scope}
+                      <span class="chip">{scope === 'data_image' ? m.key_scope_image() : m.key_scope_inference()}</span>
+                    {/each}
+                  </div>
+                </td>
+                <td>
                   <div class:unlimited={k.monthly_token_limit == null} class="key-meter">
                     <Meter
                       value={used}
                       limit={k.monthly_token_limit}
-                      label={m.key_usage_month()}
                       valueText={k.monthly_token_limit == null
                         ? formatNumber(used)
-                        : m.key_usage_tokens({ used: formatNumber(used), limit: formatNumber(k.monthly_token_limit) })}
+                        : m.key_usage_summary({ used: formatNumber(used), limit: formatNumber(k.monthly_token_limit) })}
                       unlimitedText={m.key_no_limit()}
                     />
                   </div>
-                  <div class="usage-meta">
-                    <span>{m.key_usage_requests({ n: k.usage_this_month?.requests ?? 0 })}</span>
-                    {#if k.requests_per_minute != null}
-                      <Stat label={m.key_rpm()} value={formatNumber(k.requests_per_minute)} />
-                    {/if}
-                  </div>
-                </div>
-
-                <dl class="key-dates">
-                  <div>
-                    <dt>{m.key_expires()}</dt>
-                    <dd title={k.expires_at ? formatDateTime(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
-                  </div>
-                  <div>
-                    <dt>{m.key_created()}</dt>
-                    <dd>{formatDateTime(k.created_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>{m.key_last_used()}</dt>
-                    <dd>{k.last_used_at ? formatDateTime(k.last_used_at) : m.key_never()}</dd>
-                  </div>
-                </dl>
-
-                <div class="restriction-list" aria-label={m.key_restrictions()}>
-                  {#each k.allowed_models as model}
-                    <span class="chip mono">{m.key_models_count({ list: model })}</span>
-                  {/each}
-                  {#each k.allowed_ips as ip}
-                    <span class="chip mono">{m.key_ips_count({ list: ip })}</span>
-                  {/each}
-                  {#if k.no_log}<span class="chip">{m.key_no_log_summary()}</span>{/if}
-                  {#if k.allowed_models.length === 0 && k.allowed_ips.length === 0 && !k.no_log}
+                </td>
+                <td>
+                  {#if restrictionCount === 0}
                     <span class="no-restrictions">{m.key_no_restrictions()}</span>
-                  {/if}
-                </div>
-              </div>
-
-              {#if k.status !== 'revoked'}
-                <footer class="key-card-actions">
-                  <Button variant="outline" size="sm" onclick={() => openEdit(k)} ariaLabel={`${m.key_edit()} ${k.name}`}>{m.key_edit()}</Button>
-                  <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => regenerateKey(k)} ariaLabel={`${m.key_regenerate()} ${k.name}`}>{m.key_regenerate()}</Button>
-                  {#if k.status === 'disabled'}
-                    <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_enable()} ${k.name}`}>{m.key_enable()}</Button>
                   {:else}
-                    <Button variant="ghost" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_disable()} ${k.name}`}>{m.key_disable()}</Button>
+                    <span class="mono restriction-count">{restrictionCount}</span>
                   {/if}
-                  <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
-                </footer>
+                </td>
+                <td class="key-actions-cell">
+                  <button type="button" class="detail-toggle" onclick={() => (expandedId = expanded ? null : k.id)} aria-expanded={expanded}>
+                    {expanded ? m.key_hide_details() : m.key_show_details()}
+                  </button>
+                  {#if k.status !== 'revoked'}
+                    <Button variant="outline" size="sm" onclick={() => openEdit(k)} ariaLabel={`${m.key_edit()} ${k.name}`}>{m.key_edit()}</Button>
+                    <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => regenerateKey(k)} ariaLabel={`${m.key_regenerate()} ${k.name}`}>{m.key_regenerate()}</Button>
+                    {#if k.status === 'disabled'}
+                      <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_enable()} ${k.name}`}>{m.key_enable()}</Button>
+                    {:else}
+                      <Button variant="ghost" size="sm" disabled={busyId === k.id} onclick={() => toggleDisabled(k)} ariaLabel={`${m.key_disable()} ${k.name}`}>{m.key_disable()}</Button>
+                    {/if}
+                    <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
+                  {/if}
+                </td>
+              </tr>
+              {#if expanded}
+                <tr class="key-detail-row">
+                  <td colspan="6">
+                    <div class="key-detail">
+                      <dl class="key-dates">
+                        <div>
+                          <dt>{m.key_expires()}</dt>
+                          <dd title={k.expires_at ? formatDateTime(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
+                        </div>
+                        <div>
+                          <dt>{m.key_created()}</dt>
+                          <dd>{formatDateTime(k.created_at)}</dd>
+                        </div>
+                        <div>
+                          <dt>{m.key_last_used()}</dt>
+                          <dd>{k.last_used_at ? formatDateTime(k.last_used_at) : m.key_never()}</dd>
+                        </div>
+                        <div>
+                          <dt>{m.key_usage_requests({ n: k.usage_this_month?.requests ?? 0 })}</dt>
+                          <dd>{#if k.requests_per_minute != null}{m.key_rpm_summary({ rpm: formatNumber(k.requests_per_minute) })}{:else}—{/if}</dd>
+                        </div>
+                      </dl>
+                      <div class="restriction-list" aria-label={m.key_restrictions()}>
+                        {#each k.allowed_models as model}
+                          <span class="chip mono">{m.key_models_count({ list: model })}</span>
+                        {/each}
+                        {#each k.allowed_ips as ip}
+                          <span class="chip mono">{m.key_ips_count({ list: ip })}</span>
+                        {/each}
+                        {#if k.no_log}<span class="chip">{m.key_no_log_summary()}</span>{/if}
+                        {#if restrictionCount === 0}
+                          <span class="no-restrictions">{m.key_no_restrictions()}</span>
+                        {/if}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
               {/if}
-            </article>
-          </Card>
-        {/each}
+            {/each}
+          </tbody>
+        </table>
       </div>
     {/if}
   </section>
@@ -497,7 +525,31 @@
     display: flex;
     flex-direction: column;
     gap: 16px;
-    max-width: 480px;
+    max-width: 1100px;
+  }
+
+  /*
+   * Two-column layout: identity/scopes on the left, limits/restrictions on
+   * the right. Previously a single ~480px column left most of the page
+   * empty on anything wider than a laptop; this uses the room the page
+   * already has (see .page max-width in app.css) instead of stretching a
+   * narrow strip down the left edge.
+   */
+  .create-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  .create-column {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  @media (max-width: 800px) {
+    .create-columns { grid-template-columns: 1fr; }
   }
 
   .field {
@@ -673,26 +725,63 @@
   }
 
 
-  .key-grid {
-    display: grid;
-    gap: 0.75rem;
+  .table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
   }
 
-  .key-card { min-width: 0; }
+  .key-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
 
-  .key-card-header,
-  .key-card-actions {
+  .key-table th {
+    text-align: left;
+    padding: 0.625rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-3);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  .key-table td {
+    padding: 0.5rem 0.875rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+
+  .key-row:last-child td,
+  .key-detail-row:last-child td {
+    border-bottom: 0;
+  }
+
+  .key-row.expanded td {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .key-name-cell {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.875rem 1rem;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 9rem;
   }
 
-  .key-card-header { border-bottom: 1px solid var(--border); }
-  .key-identity, .key-card-body, .usage-panel { min-width: 0; }
+  .key-name {
+    color: var(--text-1);
+    font-size: 0.875rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
 
-  .key-title-row,
+  .key-prefix {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+
   .scope-list,
   .restriction-list {
     display: flex;
@@ -701,49 +790,58 @@
     gap: 0.375rem;
   }
 
-  .key-title-row h3 {
-    margin: 0;
-    color: var(--text-1);
-    font-size: 0.9375rem;
-    font-weight: 600;
-  }
-
-  .key-identity > code {
-    display: block;
-    margin-top: 0.25rem;
-    color: var(--text-3);
-    font-size: var(--text-xs);
-  }
-
-  .key-card-body {
-    display: grid;
-    grid-template-columns: minmax(16rem, 1.4fr) minmax(16rem, 1fr);
-    align-items: start;
-    gap: 1rem 1.5rem;
-    padding: 1rem;
-  }
-
-  .usage-panel {
-    display: grid;
-    grid-template-columns: minmax(12rem, 1fr) auto;
-    align-items: start;
-    gap: 1.5rem;
-  }
-
-  .usage-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    color: var(--text-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
+  .key-meter {
+    min-width: 11rem;
+    max-width: 16rem;
   }
 
   .key-meter.unlimited :global(.meter-track) { display: none; }
+  .key-meter :global(.meter-label) { display: none; }
+
+  .restriction-count {
+    color: var(--text-2);
+    font-size: var(--text-xs);
+  }
+
+  .key-actions-cell {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.375rem;
+    text-align: right;
+  }
+
+  .detail-toggle {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+    font-size: var(--text-xs);
+    padding: 0.3125rem 0.625rem;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+
+  .detail-toggle:hover {
+    color: var(--text-1);
+    border-color: var(--text-3);
+  }
+
+  .key-detail-row td {
+    background: color-mix(in oklch, var(--bg-inset) 60%, transparent);
+    padding: 0.875rem 1rem;
+  }
+
+  .key-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
 
   .key-dates {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 1rem;
     margin: 0;
   }
@@ -766,12 +864,6 @@
     white-space: nowrap;
   }
 
-  .restriction-list {
-    grid-column: 1 / -1;
-    padding-top: 0.875rem;
-    border-top: 1px solid var(--border);
-  }
-
   .chip {
     display: inline-flex;
     align-items: center;
@@ -792,24 +884,22 @@
     font-size: var(--text-xs);
   }
 
-  .key-card-actions {
-    justify-content: flex-end;
-    flex-wrap: wrap;
-    border-top: 1px solid var(--border);
-    background: color-mix(in oklch, var(--bg-elevated) 45%, transparent);
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
 
   @media (max-width: 900px) {
-    .key-card-body, .usage-panel { grid-template-columns: 1fr; }
-    .key-dates { grid-template-columns: 1fr; }
+    .key-dates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 
   @media (max-width: 600px) {
-    .key-card-header {
-      align-items: flex-start;
-      flex-direction: column;
-    }
+    .key-dates { grid-template-columns: 1fr; }
   }
+
 
   .edit-form {
     display: flex;

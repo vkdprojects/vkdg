@@ -279,7 +279,6 @@
 </div>
 
 <style>
-  .playground { max-width: 1200px; }
 
   .page-header {
     display: flex;

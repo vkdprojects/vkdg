@@ -7,8 +7,8 @@
   import { api } from '$lib/api.js';
   import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { formatNumber, formatDateTime, formatDate, formatTime } from '$lib/format.js';
-  import { Badge, Button, CopyButton, EmptyState, Meter, Select, Spinner, StatusDot } from '$lib/components/index.js';
+  import { formatDateTime, formatTime } from '$lib/format.js';
+  import { AccountCredits, Badge, Button, CopyButton, EmptyState, Select, Spinner, StatusDot } from '$lib/components/index.js';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
   import { toast } from 'svelte-sonner';
 
@@ -181,16 +181,7 @@
     return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());
   });
 
-  /** Coarse "checked X ago" — a cache-age hint, not a live clock. */
-  function checkedAgo(iso: string): string {
-    const seconds = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-    if (seconds < 60) return m.credits_checked_seconds({ n: seconds });
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return m.credits_checked_minutes({ n: minutes });
-    const hours = Math.round(minutes / 60);
-    if (hours < 24) return m.credits_checked_hours({ n: hours });
-    return m.credits_checked_days({ n: Math.round(hours / 24) });
-  }
+
 </script>
 
 <div class="page">
@@ -228,18 +219,7 @@
           <article class="account-panel">
             <header class="account-head"><div><span class="eyebrow">{m.provider_account()}</span><h3>{a.label}</h3><span class="mono account-id">{a.id}</span>{#if a.credits_user_ref && duplicateUserRefs.has(a.id)}<div class="dup-warning"><Badge status="degraded" label={m.account_duplicate_user()} /> <span>{m.account_duplicate_user_desc()}</span></div>{/if}</div><div class="account-actions"><Badge status={a.status === 'active' ? 'healthy' : 'degraded'} label={a.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()} /><Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm" onclick={() => connect(a.id)}>{m.acct_reauth()}</Button><Button variant="danger" size="sm" disabled={deleting === a.id} onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button></div></header>
             <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDateTime(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
-            {#if a.credits_source === 'reported' && a.credits_used != null && a.credits_limit != null}
-              <div class="limits" data-state="reported">
-                <div class="limits-head"><span>{m.plan_limits_title()}</span>{#if a.credits_plan}<span class="plan-name">{a.credits_plan}</span>{/if}</div>
-                <Meter value={a.credits_used} limit={a.credits_limit} valueText={`${formatNumber(a.credits_used)} / ${formatNumber(a.credits_limit)}`} />
-                <div class="limits-foot">
-                  {#if a.credits_period_end != null}<span>{m.credits_resets_on({ date: formatDate(a.credits_period_end * 1000) })}</span>{/if}
-                  {#if a.credits_checked_at}<span class="checked-at">{m.credits_last_checked({ time: checkedAgo(a.credits_checked_at) })}</span>{/if}
-                </div>
-              </div>
-            {:else if a.credits_source === 'unavailable'}
-              <div class="limits" data-state="unavailable"><div class="limits-head"><span>{m.plan_limits_title()}</span><Badge status="unknown" label={m.plan_limits_unavailable()} /></div><p>{m.plan_limits_unavailable_desc()}</p></div>
-            {/if}
+            <AccountCredits account={a} />
             <div class="connections-block"><h4>{m.account_connections()}</h4>
               {#if connectionsForAccount(a).length === 0}<p class="muted-note">{m.account_connections_unassigned()}</p>{:else}
                 <div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th><th><span class="sr-only">{m.connection_test()}</span></th></tr></thead><tbody>{#each connectionsForAccount(a) as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td><td class="test-cell">{#if testResults[conn.id]}<span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}>{testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗'}</span>{/if}<Button size="sm" variant="outline" disabled={testing === conn.id} onclick={() => testConn(conn.id)}>{#if testing === conn.id}<Spinner size="sm" />{:else}{m.connection_test()}{/if}</Button></td></tr>{/each}</tbody></table></div>
@@ -358,12 +338,7 @@
   .account-facts div:last-child { border: 0; }
   .account-facts dt { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .05em; }
   .account-facts dd { margin: 4px 0 0; color: var(--text-1); font-size: var(--text-sm); }
-  .limits { padding: 11px 16px; background: var(--bg-inset); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
-  .limits-head { display: flex; align-items: center; gap: 8px; color: var(--text-1); font-size: var(--text-sm); font-weight: 600; }
-  .plan-name { color: var(--text-3); font-size: var(--text-xs); font-weight: 500; text-transform: none; }
-  .limits p { margin: 0; font-size: var(--text-xs); color: var(--text-2); }
-  .limits-foot { display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-2xs); color: var(--text-3); }
-  .limits-foot .checked-at { color: var(--text-3); }
+
   .dup-warning { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--text-xs); color: var(--warning); }
   .connections-block h4 { margin: 0; padding: 10px 16px; color: var(--text-2); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .06em; }
   .connections-block .muted-note { padding: 0 16px 14px; }

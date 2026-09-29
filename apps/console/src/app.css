@@ -73,6 +73,17 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
+
+/*
+ * Base type scale grows with viewport width so a 2K/4K monitor doesn't
+ * render the same physical text size as a 1366px laptop — every --text-*
+ * step and every `rem` value in the app rides on this. Clamp keeps small
+ * screens exactly at today's 14px and caps growth so it never feels
+ * cartoonish on a 5K display.
+ */
+html {
+  font-size: clamp(14px, 12px + 0.28vw, 19px);
+}
 body {
   background: var(--bg-base);
   background-image:
@@ -82,7 +93,7 @@ body {
   background-attachment: fixed;
   color: var(--text-1);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 1rem;
   line-height: 1.5;
   margin: 0;
 }
@@ -93,11 +104,34 @@ body {
 
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Page layout */
+/*
+ * Page layout. The 1440px cap made sense at common laptop widths but wastes
+ * most of a 2560/3840px screen — data-dense panels and tables should use
+ * that room. Grow the ceiling in step with viewport width instead of a
+ * single fixed number, so 1920 gets modestly more room and 4K gets a lot
+ * more, without prose ever running to unreadable line lengths (individual
+ * pages that render paragraphs constrain those with `.prose` / max-width
+ * on the text element itself, not here).
+ *
+ * Percentages are `cqw` (query against `.content`'s inline size, set as a
+ * container in +layout.svelte) rather than `vw`: the sidebar now takes a
+ * fixed slice of the viewport, so sizing off the full viewport width would
+ * overflow or leave a gap depending on whether the sidebar is expanded or
+ * collapsed. `cqw` always measures the space actually left for content.
+ */
 .page {
   padding: 1.5rem 2rem;
-  max-width: 1440px;
+  max-width: min(1440px, 96cqw);
   margin: 0 auto;
+}
+@media (min-width: 1600px) {
+  .page { max-width: min(1800px, 94cqw); }
+}
+@media (min-width: 2200px) {
+  .page { max-width: min(2400px, 92cqw); }
+}
+@media (min-width: 3200px) {
+  .page { max-width: min(3400px, 90cqw); }
 }
 
 /* Typography */
@@ -119,6 +153,10 @@ h2 {
   letter-spacing: 0.04em;
 }
 p { margin: 0 0 0.75rem; color: var(--text-2); }
+/* Free-flowing body copy directly on a wide page — not table/panel content,
+   which should use the available width — stays within a readable measure
+   even when .page grows past 2000px on large monitors. */
+.page > p, .page > section > p:not([class]) { max-width: 78ch; }
 code {
   font-family: var(--font-mono);
   font-size: 0.82rem;

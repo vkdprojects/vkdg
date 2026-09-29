@@ -365,5 +365,16 @@
   "credits_checked_days": "há {n}d",
   "account_duplicate_user": "Conta duplicada",
   "account_duplicate_user_desc": "Esta conta resolve para o mesmo usuário upstream de outra conta abaixo.",
-  "method_pick_title": "Como você quer entrar"
+  "method_pick_title": "Como você quer entrar",
+  "acct_credits_column": "Créditos",
+  "acct_credits_no_account": "Sem conta vinculada",
+  "key_usage_summary": "{used} / {limit}",
+  "key_show_details": "Detalhes",
+  "key_hide_details": "Ocultar detalhes",
+  "key_table_name": "Nome",
+  "key_table_usage": "Uso no mês",
+  "key_table_restrictions": "Restrições",
+  "key_table_actions": "Ações",
+  "shell_collapse_nav": "Recolher navegação",
+  "shell_expand_nav": "Expandir navegação"
 }

@@ -224,6 +224,148 @@ fn oai_content_to_string(content: OaiContent) -> String {
     }
 }
 
+// ── OpenAI Responses API wire types ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct OaiResponsesRequest {
+    model: String,
+    input: OaiResponsesInput,
+    stream: Option<bool>,
+    max_output_tokens: Option<u32>,
+    instructions: Option<String>,
+    reasoning: Option<OaiReasoning>,
+    tools: Option<Vec<OaiTool>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OaiResponsesInput {
+    Text(String),
+    Items(Vec<OaiResponsesItem>),
+}
+
+#[derive(Debug, Deserialize)]
+struct OaiResponsesItem {
+    role: String,
+    content: OaiResponsesContent,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OaiResponsesContent {
+    Text(String),
+    Blocks(Vec<OaiResponsesBlock>),
+}
+
+#[derive(Debug, Deserialize)]
+struct OaiResponsesBlock {
+    #[serde(rename = "type")]
+    type_: String,
+    text: Option<String>,
+    image_url: Option<OaiImageUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OaiReasoning {
+    effort: Option<String>,
+}
+
+// ── Responses decode ──────────────────────────────────────────────────────────
+
+/// Parse raw bytes from an `OpenAI` Responses API request into `(model_name, Operation)`.
+pub fn decode_responses_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
+    let req: OaiResponsesRequest =
+        serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
+            field: "body".to_string(),
+            message: e.to_string(),
+        })?;
+
+    let mut system: Option<String> = req.instructions.clone();
+    let mut messages: Vec<Message> = Vec::new();
+
+    match req.input {
+        OaiResponsesInput::Text(s) => {
+            messages.push(Message {
+                role: Role::User,
+                content: MessageContent::Text(s),
+            });
+        }
+        OaiResponsesInput::Items(items) => {
+            for item in items {
+                let text = responses_content_to_string(item.content);
+                match item.role.as_str() {
+                    "system" => {
+                        // instructions wins; only fall back to system item when absent.
+                        if system.is_none() {
+                            system = Some(text);
+                        }
+                    }
+                    "assistant" => {
+                        messages.push(Message {
+                            role: Role::Assistant,
+                            content: MessageContent::Text(text),
+                        });
+                    }
+                    _ => {
+                        messages.push(Message {
+                            role: Role::User,
+                            content: MessageContent::Text(text),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let tools: Vec<Tool> = req
+        .tools
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| Tool {
+            name: t.function.name,
+            description: t.function.description,
+            input_schema: t.function.parameters,
+        })
+        .collect();
+
+    let thinking =
+        req.reasoning
+            .and_then(|r| r.effort)
+            .map(|effort| vkdg_operations::ThinkingRequest {
+                budget_tokens: None,
+                effort: Some(effort),
+            });
+
+    let operation = Operation::Conversation(ConversationRequest {
+        model: req.model.clone(),
+        messages,
+        tools,
+        max_tokens: req.max_output_tokens,
+        temperature: None,
+        stream: req.stream.unwrap_or(false),
+        system,
+        required_capabilities: CapabilitySet::default(),
+        thinking,
+    });
+
+    Ok((req.model, operation))
+}
+
+fn responses_content_to_string(content: OaiResponsesContent) -> String {
+    match content {
+        OaiResponsesContent::Text(s) => s,
+        OaiResponsesContent::Blocks(blocks) => blocks
+            .into_iter()
+            .filter_map(|b| match b.type_.as_str() {
+                "text" | "output_text" | "input_text" => b.text,
+                "image_url" => b.image_url.map(|u| u.url),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 // ── OpenAI Images API wire type ───────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -417,5 +559,52 @@ mod tests {
         assert_eq!(req.prompt, "a cat");
         assert_eq!(req.n, Some(1));
         assert_eq!(req.size.as_deref(), Some("1024x1024"));
+    }
+
+    // ── Responses API tests ───────────────────────────────────────────────────
+
+    // Defeat: text shorthand not mapped to single user message.
+    #[test]
+    fn decode_responses_text_shorthand() {
+        let body = as_bytes(r#"{"model":"m","input":"hello","max_output_tokens":8}"#);
+        let (model, op) = decode_responses_request(body).unwrap();
+        assert_eq!(model, "m");
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, Role::User);
+        assert!(matches!(&req.messages[0].content, MessageContent::Text(t) if t == "hello"));
+        assert!(!req.stream);
+        assert!(req.system.is_none());
+        assert_eq!(req.max_tokens, Some(8));
+    }
+
+    // Defeat: system item in array input not extracted to system field.
+    #[test]
+    fn decode_responses_items_with_system() {
+        let body = as_bytes(
+            r#"{"model":"m","input":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}"#,
+        );
+        let (_model, op) = decode_responses_request(body).unwrap();
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
+        assert_eq!(req.system, Some("be nice".to_string()));
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, Role::User);
+    }
+
+    // Defeat: instructions not winning over a system item in input.
+    #[test]
+    fn decode_responses_instructions_wins() {
+        let body = as_bytes(
+            r#"{"model":"m","instructions":"override","input":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}"#,
+        );
+        let (_model, op) = decode_responses_request(body).unwrap();
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation")
+        };
+        assert_eq!(req.system, Some("override".to_string()));
     }
 }

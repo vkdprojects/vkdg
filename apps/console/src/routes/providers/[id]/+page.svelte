@@ -161,6 +161,21 @@
   function formatDate(iso: string) {
     return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
   }
+
+  function cooldownRemaining(iso: string): string {
+    const seconds = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 1000));
+    return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+  }
+
+  // The current admin API identifies a connection's provider, not its account.
+  // A single account is unambiguous; otherwise connections stay visibly unassigned.
+  function connectionsForAccount(_account: Account): ConnectionSummary[] {
+    return accounts.length === 1 ? connections : [];
+  }
+
+  const unassignedConnections = $derived(accounts.length === 1 ? [] : connections);
+  type PlanLimitsPlaceholder = { state: 'unavailable' };
+  const planLimits: PlanLimitsPlaceholder = { state: 'unavailable' };
 </script>
 
 <div class="page">
@@ -186,114 +201,30 @@
       </div>
     </div>
 
-    <!-- ── Connections (health) ─────────────────────────────────────── -->
     <div class="section-header">
-      <h2 class="section-title">{m.nav_connections()}</h2>
-      <div class="header-actions">
-        <Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}>
-          <RefreshCwIcon size={14} aria-hidden="true" /> {m.common_refresh()}
-        </Button>
-        <Button size="sm" onclick={openConnDialog}>
-          <PlusIcon size={14} aria-hidden="true" /> {m.connection_add()}
-        </Button>
-      </div>
+      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: timeFmt.format(updatedAt) })}</p>{/if}</div>
+      <div class="header-actions"><Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}><RefreshCwIcon size={14} /> {m.common_refresh()}</Button>{#if provider.category === 'oauth_ide'}<Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>{/if}<Button size="sm" onclick={openConnDialog}><PlusIcon size={14} /> {m.connection_add()}</Button></div>
     </div>
-    {#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: timeFmt.format(updatedAt) })}</p>{/if}
-
-    {#if connections.length === 0}
-      <p class="muted-note">{m.connection_empty()}</p>
+    {#if accounts.length === 0 && provider.category === 'oauth_ide'}
+      <EmptyState title={m.provider_detail_no_accounts()} description={m.providers_connect_first()} />
     {:else}
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{m.connection_id()}</th>
-            <th scope="col">{m.connection_status()}</th>
-            <th scope="col">{m.connection_models()}</th>
-            <th scope="col">{m.connection_active_requests()}</th>
-            <th scope="col">{m.connection_cooldown()}</th>
-            <th scope="col"><span class="sr-only">Test</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each connections as conn (conn.id)}
-            <tr>
-              <td class="mono">{conn.id}</td>
-              <td>
-                <div class="status-cell">
-                  <StatusDot status={conn.status} />
-                  <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
-                </div>
-              </td>
-              <td>{conn.model_count}</td>
-              <td class="mono">{conn.active_requests}/{conn.max_concurrent}</td>
-              <td class="cooldown-cell">
-                {#if conn.cooldown_until}
-                  <div>{m.connection_cooldown_until({ time: timeFmt.format(new Date(conn.cooldown_until)) })}</div>
-                  {#if conn.failure_count != null}<div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>{/if}
-                {:else}
-                  {m.common_none()}
-                {/if}
-              </td>
-              <td class="test-cell">
-                {#if testResults[conn.id]}
-                  <span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}
-                    title={testResults[conn.id].error ?? `${testResults[conn.id].latency_ms}ms`}>
-                    {testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗ fail'}
-                  </span>
-                {/if}
-                <Button size="sm" variant="outline" disabled={testing === conn.id}
-                  onclick={() => testConn(conn.id)}>
-                  {#if testing === conn.id}<Spinner size="sm" />{:else}Test{/if}
-                </Button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {/if}
-
-    <!-- ── Accounts ─────────────────────────────────────────────────── -->
-    {#if accounts.length > 0 || provider.category === 'oauth_ide'}
-      <div class="section-header" style="margin-top: 2rem;">
-        <h2 class="section-title">{m.provider_detail_accounts()}</h2>
-        <Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>
+      <div class="accounts-stack">
+        {#each accounts as a (a.id)}
+          <article class="account-panel">
+            <header class="account-head"><div><span class="eyebrow">{m.provider_account()}</span><h3>{a.label}</h3><span class="mono account-id">{a.id}</span></div><div class="account-actions"><Badge status={a.status === 'active' ? 'healthy' : 'degraded'} label={a.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()} /><Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm" onclick={() => connect(a.id)}>{m.acct_reauth()}</Button><Button variant="danger" size="sm" disabled={deleting === a.id} onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button></div></header>
+            <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDate(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
+            <div class="limits" data-state={planLimits.state}><div><span>{m.plan_limits_title()}</span><Badge status="unknown" label={m.plan_limits_unavailable()} /></div><p>{m.plan_limits_unavailable_desc()}</p></div>
+            <div class="connections-block"><h4>{m.account_connections()}</h4>
+              {#if connectionsForAccount(a).length === 0}<p class="muted-note">{m.account_connections_unassigned()}</p>{:else}
+                <div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th><th><span class="sr-only">{m.connection_test()}</span></th></tr></thead><tbody>{#each connectionsForAccount(a) as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td><td class="test-cell">{#if testResults[conn.id]}<span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}>{testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗'}</span>{/if}<Button size="sm" variant="outline" disabled={testing === conn.id} onclick={() => testConn(conn.id)}>{#if testing === conn.id}<Spinner size="sm" />{:else}{m.connection_test()}{/if}</Button></td></tr>{/each}</tbody></table></div>
+              {/if}
+            </div>
+          </article>
+        {/each}
       </div>
-
-      {#if accounts.length === 0}
-        <EmptyState title={m.provider_detail_no_accounts()} description={m.providers_connect_first()} />
-      {:else}
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">{m.acct_label()}</th>
-              <th scope="col">{m.acct_expires()}</th>
-              <th scope="col">{m.acct_status()}</th>
-              <th scope="col"><span class="sr-only">{m.common_actions()}</span></th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each accounts as a (a.id)}
-              <tr>
-                <td class="label-cell">{a.label}</td>
-                <td class="date-cell">{a.expires_at ? formatDate(a.expires_at) : m.acct_never()}</td>
-                <td>
-                  {#if a.status === 'needs_login'}
-                    <span class="badge warn">{m.acct_status_needs_login()}</span>
-                  {:else}
-                    <span class="badge ok">{m.acct_status_active()}</span>
-                  {/if}
-                </td>
-                <td class="action-cell">
-                  <Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm"
-                    onclick={() => connect(a.id)}>{m.acct_reauth()}</Button>
-                  <Button variant="danger" size="sm" disabled={deleting === a.id}
-                    onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      {/if}
+    {/if}
+    {#if unassignedConnections.length > 0}
+      <section class="unassigned"><div class="section-header"><div><h2 class="section-title">{m.unassigned_connections()}</h2><p class="refresh-note">{m.unassigned_connections_desc()}</p></div></div><div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th></tr></thead><tbody>{#each unassignedConnections as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td></tr>{/each}</tbody></table></div></section>
     {/if}
   {/if}
 </div>
@@ -388,15 +319,28 @@
   .muted-note { color: var(--text-3); font-size: 0.875rem; }
   .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; }
   .status-cell { display: flex; align-items: center; gap: 6px; }
-  .cooldown-cell .hint { color: var(--text-3); font-size: 0.75rem; }
-  .label-cell { font-weight: 500; color: var(--text-1); }
-  .date-cell { font-size: 0.8125rem; white-space: nowrap; }
-  .action-cell { text-align: right; white-space: nowrap; }
-  .action-cell :global(.btn + .btn) { margin-left: 6px; }
-  .badge { display: inline-flex; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
-  .badge.ok { background: color-mix(in oklch, var(--success) 15%, transparent); color: var(--success); }
-  .badge.warn { background: color-mix(in oklch, var(--warning) 15%, transparent); color: var(--warning); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .accounts-stack { display: grid; gap: 16px; }
+  .account-panel { border: 1px solid var(--border); background: var(--bg-surface); }
+  .account-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
+  .account-head h3 { margin: 2px 0; font-size: var(--text-md); }
+  .eyebrow { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .07em; }
+  .account-id { color: var(--text-3); font-size: var(--text-2xs); }
+  .account-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .account-facts { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; border-bottom: 1px solid var(--border); }
+  .account-facts div { padding: 11px 16px; border-right: 1px solid var(--border); }
+  .account-facts div:last-child { border: 0; }
+  .account-facts dt { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .05em; }
+  .account-facts dd { margin: 4px 0 0; color: var(--text-1); font-size: var(--text-sm); }
+  .limits { padding: 11px 16px; background: var(--bg-inset); border-bottom: 1px solid var(--border); }
+  .limits > div { display: flex; align-items: center; gap: 8px; color: var(--text-1); font-size: var(--text-sm); font-weight: 600; }
+  .limits p { margin: 3px 0 0; font-size: var(--text-xs); }
+  .connections-block h4 { margin: 0; padding: 10px 16px; color: var(--text-2); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .06em; }
+  .connections-block .muted-note { padding: 0 16px 14px; }
+  .table-wrap { overflow-x: auto; }
+  .unassigned { margin-top: 24px; border: 1px solid var(--border); background: var(--bg-surface); }
+  .unassigned .section-header { padding: 12px 15px 0; }
+  @media (max-width: 700px) { .account-head { flex-direction: column; } .account-actions { justify-content: flex-start; } .account-facts { grid-template-columns: 1fr; } .account-facts div { border-right: 0; border-bottom: 1px solid var(--border); } .header-actions { flex-wrap: wrap; justify-content: flex-end; } }
   :global(.dialog-overlay) { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 50; }
   :global(.dialog-content) { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 51; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); width: min(480px,calc(100vw - 32px)); box-shadow: 0 8px 32px rgba(0,0,0,.25); }
   :global(.dialog-title) { font-size: 1rem; font-weight: 600; color: var(--text-1); margin: 0; }

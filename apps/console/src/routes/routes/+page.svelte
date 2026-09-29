@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { RouteSummary, RoutePreview } from '$lib/api.js';
-  import { EmptyState, Spinner } from '$lib/components/index.js';
+  import { m } from '$lib/paraglide/messages.js';
+  import { Badge, Button, Card, EmptyState, Spinner } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
 
   let routes = $state<RouteSummary[]>([]);
@@ -40,16 +41,18 @@
 </script>
 
 <div class="page">
-  <h1>Routes ({routes.length})</h1>
+  <div class="page-header">
+    <h1 class="page-title">{m.nav_routes()} ({routes.length})</h1>
+  </div>
 
-  <section aria-labelledby="preview-heading">
-    <h2 id="preview-heading">Preview routing for model</h2>
+  <Card>
+    <h2 id="preview-heading">{m.route_preview_heading()}</h2>
     <form onsubmit={doPreview} class="preview-form">
       <label>
-        Model name
+        {m.route_preview_model_label()}
         <input type="text" bind:value={previewModel} placeholder="e.g. claude-3-5-sonnet-20241022" />
       </label>
-      <button type="submit" disabled={previewing}>Preview</button>
+      <Button type="submit" disabled={previewing}>{m.route_preview_button()}</Button>
     </form>
 
     {#if previewError}
@@ -58,52 +61,52 @@
 
     {#if preview}
       <div class="preview-result">
-        <p><strong>Model:</strong> {preview.model}</p>
-        <p><strong>Eligible connections:</strong></p>
+        <p><strong>{m.route_preview_model_label()}</strong> <span class="mono">{preview.model}</span></p>
+        <p><strong>{m.route_eligible_connections()}</strong></p>
         {#if preview.eligible_connections.length === 0}
-          <p class="muted">None</p>
+          <p class="muted">{m.route_none()}</p>
         {:else}
           <ul>
             {#each preview.eligible_connections as id}
-              <li>{id}</li>
+              <li class="mono">{id}</li>
             {/each}
           </ul>
         {/if}
         {#if preview.excluded_connections.length > 0}
-          <p><strong>Excluded:</strong></p>
+          <p><strong>{m.route_excluded_connections()}</strong></p>
           <ul>
             {#each preview.excluded_connections as ex}
-              <li>{ex.id} — {ex.reason}</li>
+              <li><span class="mono">{ex.id}</span> — {ex.reason}</li>
             {/each}
           </ul>
         {/if}
       </div>
     {/if}
-  </section>
+  </Card>
 
   <section aria-labelledby="routes-heading">
-    <h2 id="routes-heading">All routes</h2>
+    <h2 id="routes-heading">{m.nav_routes()}</h2>
     {#if loading}
-      <div class="loading"><Spinner size="sm" /> Loading…</div>
+      <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
     {:else if routes.length === 0}
-      <EmptyState title="No routes configured." description="Routes define how models are matched to connection combos." />
+      <EmptyState title={m.route_empty()} />
     {:else}
       <table>
         <thead>
           <tr>
-            <th scope="col">ID</th>
-            <th scope="col">Strategy</th>
-            <th scope="col">Match models</th>
-            <th scope="col">Targets</th>
+            <th scope="col">{m.route_id()}</th>
+            <th scope="col">{m.route_strategy()}</th>
+            <th scope="col">{m.route_match_models()}</th>
+            <th scope="col">{m.route_targets()}</th>
           </tr>
         </thead>
         <tbody>
           {#each routes as r (r.id)}
             <tr>
-              <td>{r.id}</td>
-              <td>{r.strategy}</td>
-              <td>{r.match_models.join(', ') || '*'}</td>
-              <td>{r.targets.join(', ')}</td>
+              <td class="mono">{r.id}</td>
+              <td><Badge status={r.strategy} /></td>
+              <td class="mono">{r.match_models.join(', ') || m.common_any()}</td>
+              <td class="mono">{r.targets.join(', ') || m.common_none()}</td>
             </tr>
           {/each}
         </tbody>
@@ -113,6 +116,17 @@
 </div>
 
 <style>
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+  }
+
+  .page-title {
+    margin: 0;
+  }
+
   .loading {
     display: flex;
     align-items: center;
@@ -139,44 +153,7 @@
   }
 
   .preview-form input {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
     min-width: 280px;
-    transition: border-color 0.15s;
-  }
-
-  .preview-form input:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  .preview-form input::placeholder {
-    color: var(--text-3);
-  }
-
-  .preview-form button {
-    padding: 0.4375rem 0.875rem;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    transition: background 0.1s;
-  }
-
-  .preview-form button:hover:not(:disabled) {
-    background: var(--accent-hover);
-  }
-
-  .preview-form button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
   }
 
   .error-msg {

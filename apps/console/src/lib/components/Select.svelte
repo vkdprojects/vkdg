@@ -29,8 +29,8 @@
     onchange,
   }: Props = $props();
 
-  let inputId = $state(id ?? `select-${Math.random().toString(36).slice(2)}`);
-  let errorId = $derived(`${inputId}-error`);
+  const inputId = $derived(id ?? `select-${Math.random().toString(36).slice(2)}`);
+  const errorId = $derived(`${inputId}-error`);
 
   const selectedLabel = $derived(options.find((o) => o.value === value)?.label ?? '');
 </script>

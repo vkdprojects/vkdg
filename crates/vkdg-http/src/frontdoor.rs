@@ -12,7 +12,6 @@ use crate::admission::AdmissionGuard;
 pub struct ServerConfig {
     pub listen_addr: String,
     pub max_body_bytes: u64,
-    pub request_timeout_secs: u64,
     pub max_concurrent_requests: usize,
 }
 
@@ -21,7 +20,6 @@ impl Default for ServerConfig {
         Self {
             listen_addr: "0.0.0.0:8080".to_string(),
             max_body_bytes: 4 * 1024 * 1024, // 4 MB
-            request_timeout_secs: 120,
             max_concurrent_requests: 1000,
         }
     }

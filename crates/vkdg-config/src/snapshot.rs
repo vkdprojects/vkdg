@@ -37,7 +37,6 @@ impl ConfigSnapshot {
         let limits = Arc::new(cfg.limits.clone().unwrap_or(LimitsDef {
             max_concurrent_requests: None,
             max_body_bytes: None,
-            request_timeout_secs: None,
             ip_allowlist: vec![],
             ip_blocklist: vec![],
         }));
@@ -83,7 +82,6 @@ impl ConfigSnapshot {
             limits: Arc::new(LimitsDef {
                 max_concurrent_requests: None,
                 max_body_bytes: None,
-                request_timeout_secs: None,
                 ip_allowlist: vec![],
                 ip_blocklist: vec![],
             }),

@@ -7,6 +7,7 @@
   import { api } from '$lib/api.js';
   import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
+  import { getLocale } from '$lib/paraglide/runtime.js';
   import { Badge, Button, CopyButton, EmptyState, Meter, Select, Spinner, StatusDot } from '$lib/components/index.js';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
   import { toast } from 'svelte-sonner';
@@ -114,7 +115,9 @@
     circuit_open: m.connection_status_circuit_open, cooldown: m.connection_status_cooldown,
     unknown: m.connection_status_unknown,
   };
-  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  function fmtTime(d: Date): string {
+    return new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(d);
+  }
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   async function load() {
@@ -159,7 +162,7 @@
   }
 
   function formatDate(iso: string) {
-    return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+    return new Intl.DateTimeFormat(getLocale(), { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
   }
 
   function cooldownRemaining(iso: string): string {
@@ -185,9 +188,8 @@
     return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());
   });
 
-  const dateTimeFmt = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   function formatPeriodEnd(unixSecs: number): string {
-    return dateTimeFmt.format(new Date(unixSecs * 1000));
+    return new Intl.DateTimeFormat(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(unixSecs * 1000));
   }
 
   /** Coarse "checked X ago" — a cache-age hint, not a live clock. */
@@ -226,7 +228,7 @@
     </div>
 
     <div class="section-header">
-      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: timeFmt.format(updatedAt) })}</p>{/if}</div>
+      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: fmtTime(updatedAt) })}</p>{/if}</div>
       <div class="header-actions"><Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}><RefreshCwIcon size={14} /> {m.common_refresh()}</Button>{#if provider.category === 'oauth_ide'}<Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>{/if}<Button size="sm" onclick={openConnDialog}><PlusIcon size={14} /> {m.connection_add()}</Button></div>
     </div>
     {#if accounts.length === 0 && provider.category === 'oauth_ide'}
@@ -240,7 +242,7 @@
             {#if a.credits_source === 'reported' && a.credits_used != null && a.credits_limit != null}
               <div class="limits" data-state="reported">
                 <div class="limits-head"><span>{m.plan_limits_title()}</span>{#if a.credits_plan}<span class="plan-name">{a.credits_plan}</span>{/if}</div>
-                <Meter value={a.credits_used} limit={a.credits_limit} valueText={`${a.credits_used.toLocaleString()} / ${a.credits_limit.toLocaleString()}`} />
+                <Meter value={a.credits_used} limit={a.credits_limit} valueText={`${a.credits_used.toLocaleString(getLocale())} / ${a.credits_limit.toLocaleString(getLocale())}`} />
                 <div class="limits-foot">
                   {#if a.credits_period_end != null}<span>{m.credits_resets_on({ date: formatPeriodEnd(a.credits_period_end) })}</span>{/if}
                   {#if a.credits_checked_at}<span class="checked-at">{m.credits_last_checked({ time: checkedAgo(a.credits_checked_at) })}</span>{/if}

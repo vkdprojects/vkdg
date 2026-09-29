@@ -9,4 +9,4 @@ pub(crate) mod helpers;
 pub(crate) mod inner;
 pub mod phases;
 
-pub use entry::run_conversation_pipeline;
+pub use entry::{run_conversation_pipeline, PendingLog};

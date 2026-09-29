@@ -78,6 +78,8 @@ pub fn parse_sse_line(data: &str, request_id: &RequestId) -> Vec<ConversationEve
             return vec![ConversationEvent::Usage {
                 input_tokens: UsageCount::Reported(usage.prompt_tokens),
                 output_tokens: UsageCount::Reported(usage.completion_tokens),
+                cache_read_tokens: UsageCount::Unknown,
+                cache_creation_tokens: UsageCount::Unknown,
             }];
         }
     }
@@ -288,6 +290,7 @@ mod tests {
                 [ConversationEvent::Usage {
                     input_tokens: UsageCount::Reported(10),
                     output_tokens: UsageCount::Reported(20),
+                    ..
                 }]
             ),
             "{events:?}"

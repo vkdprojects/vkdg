@@ -49,6 +49,17 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
             "model": "",
             "choices": [{"index": index, "delta": {"content": delta}, "finish_reason": null}]
         }),
+        // OpenAI exposes model reasoning as a separate `reasoning_content` delta.
+        ConversationEvent::ReasoningDelta { delta, index } => json!({
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "",
+            "choices": [{"index": index, "delta": {"reasoning_content": delta}, "finish_reason": null}]
+        }),
+
+        // OpenAI has no per-tool-call terminator: arguments simply stop arriving.
+        ConversationEvent::ToolCallEnd { .. } => return None,
 
         ConversationEvent::ToolCallDelta {
             tool_use_id,
@@ -77,6 +88,7 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
         ConversationEvent::Usage {
             input_tokens,
             output_tokens,
+            ..
         } => json!({
             "id": request_id,
             "object": "chat.completion.chunk",

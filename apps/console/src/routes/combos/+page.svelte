@@ -1,49 +1,55 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { ComboSummary } from '$lib/api.js';
+  import type { ComboInput, ComboStrategy, ComboSummary, ConnectionSummary } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Badge, EmptyState, Button, Select, Spinner } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
 
   let combos = $state<ComboSummary[]>([]);
+  let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
   let formError = $state('');
+  let saving = $state(false);
 
   let dialogEl = $state<HTMLDialogElement | null>(null);
+  /** Id of the combo being edited; null = creating. */
+  let editingId = $state<string | null>(null);
   let name = $state('');
   let patterns = $state('');
   let strategy = $state('round_robin');
-  let targets = $state('');
+  let targets = $state<string[]>([]);
+  let model = $state('');
+  let maxCostUsd = $state<number | null>(null);
 
-  function openDialog() {
-    name = '';
-    patterns = '';
-    strategy = 'round_robin';
-    targets = '';
-    dialogEl?.showModal();
-  }
-
-  function closeDialog() {
-    dialogEl?.close();
-  }
-
+  // Only what the router runs; anything else would be refused by the API.
   const strategyOptions = [
     { value: 'round_robin', label: m.combo_strategy_round_robin() },
-    { value: 'weighted', label: m.combo_strategy_weighted() },
     { value: 'fallback_chain', label: m.combo_strategy_fallback_chain() },
     { value: 'lowest_latency', label: m.combo_strategy_lowest_latency() },
     { value: 'power_of_two_choices', label: m.combo_strategy_power_of_two_choices() },
-    { value: 'last_known_good', label: m.combo_strategy_last_known_good() },
     { value: 'fusion', label: m.combo_strategy_fusion() },
-    { value: 'prompt_chain', label: m.combo_strategy_prompt_chain() },
-    { value: 'auto', label: m.combo_strategy_auto() },
   ];
+
+  function strategyName(s: ComboSummary['strategy']): string {
+    return typeof s === 'string' ? s : Object.keys(s)[0] ?? 'unknown';
+  }
+
+  function strategyValue(v: string): ComboStrategy {
+    return v === 'fusion' ? { fusion: { max_candidates: null } } : (v as ComboStrategy);
+  }
+
+  const splitList = (v: string) => v.split(',').map((x) => x.trim()).filter(Boolean);
+
+  async function refresh() {
+    const res = await api.listCombos();
+    combos = res.items;
+  }
 
   onMount(async () => {
     try {
-      const res = await api.listCombos();
-      combos = res.items;
+      const [, conns] = await Promise.all([refresh(), api.listConnections()]);
+      connections = conns.items;
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -51,24 +57,86 @@
     }
   });
 
-  async function createCombo(e: Event) {
+  function openCreate() {
+    editingId = null;
+    name = '';
+    patterns = '';
+    strategy = 'round_robin';
+    targets = [];
+    model = '';
+    maxCostUsd = null;
+    formError = '';
+    dialogEl?.showModal();
+  }
+
+  function openEdit(c: ComboSummary) {
+    editingId = c.id;
+    name = c.id;
+    patterns = c.match_patterns.join(', ');
+    strategy = strategyName(c.strategy);
+    targets = [...c.targets];
+    model = c.model ?? '';
+    maxCostUsd = c.max_cost_microdollars != null ? c.max_cost_microdollars / 1_000_000 : null;
+    formError = '';
+    dialogEl?.showModal();
+  }
+
+  function closeDialog() {
+    dialogEl?.close();
+  }
+
+  async function save(e: Event) {
     e.preventDefault();
-    formError = 'Not yet implemented';
-    toast.info('Combo creation via UI is coming in the next release. Use vkdg.yaml for now.');
-    closeDialog();
+    formError = '';
+    if (!name.trim()) { formError = m.combo_name_required(); return; }
+    if (targets.length === 0) { formError = m.combo_targets_required(); return; }
+    if (!model.trim()) { formError = m.combo_model_required(); return; }
+    const body: ComboInput = {
+      match_patterns: splitList(patterns),
+      strategy: strategyValue(strategy),
+      targets,
+      model: model.trim(),
+    };
+    if (maxCostUsd != null) body.max_cost_microdollars = Math.round(maxCostUsd * 1_000_000);
+    saving = true;
+    try {
+      if (editingId) {
+        await api.updateCombo(editingId, body);
+      } else {
+        await api.createCombo({ ...body, id: name.trim() });
+      }
+      await refresh();
+      closeDialog();
+      toast.success(m.combo_saved());
+    } catch (err) {
+      // Backend 400/409 (unknown target, bad id, duplicate) shows in the form.
+      formError = (err as Error).message;
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function remove(c: ComboSummary) {
+    if (!confirm(m.combo_delete_confirm({ id: c.id }))) return;
+    try {
+      await api.deleteCombo(c.id);
+      await refresh();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
   }
 </script>
 
 <div class="page">
   <div class="page-header">
     <h1 class="page-title">{m.nav_combos()} ({combos.length})</h1>
-    <Button onclick={openDialog}>{m.combo_create()}</Button>
+    <Button onclick={openCreate}>{m.combo_create()}</Button>
   </div>
 
   {#if loading}
     <div class="loading"><Spinner size="sm" /> Loading…</div>
   {:else if combos.length === 0}
-    <EmptyState title={m.combo_empty()} description="Create a combo to define routing strategy across connections." />
+    <EmptyState title={m.combo_empty()} description={m.combo_empty_desc()} />
   {:else}
     <table>
       <thead>
@@ -77,21 +145,28 @@
           <th scope="col">{m.combo_strategy()}</th>
           <th scope="col">{m.combo_patterns()}</th>
           <th scope="col">{m.combo_targets()}</th>
+          <th scope="col">{m.combo_model()}</th>
           <th scope="col">{m.combo_policies()}</th>
+          <th scope="col"><span class="sr-only">{m.combo_actions()}</span></th>
         </tr>
       </thead>
       <tbody>
         {#each combos as c (c.id)}
           <tr>
             <td>{c.id}</td>
-            <td>{c.strategy}</td>
+            <td>{strategyName(c.strategy)}</td>
             <td>{c.match_patterns.join(', ') || m.common_none()}</td>
             <td>{c.targets.join(', ') || m.common_none()}</td>
+            <td class="mono">{c.model ?? m.common_none()}</td>
             <td class="badges">
               {#if c.has_compression}<Badge status="compression" label="compression" />{/if}
               {#if c.has_cache}<Badge status="cache" label="cache" />{/if}
               {#if c.has_budget}<Badge status="budget" label="budget" />{/if}
               {#if !c.has_compression && !c.has_cache && !c.has_budget}<span class="muted">{m.common_none()}</span>{/if}
+            </td>
+            <td class="actions">
+              <Button size="sm" variant="outline" onclick={() => openEdit(c)} ariaLabel={m.combo_edit_label({ id: c.id })}>{m.common_edit()}</Button>
+              <Button size="sm" variant="ghost" onclick={() => remove(c)} ariaLabel={m.combo_delete_label({ id: c.id })}>{m.common_delete()}</Button>
             </td>
           </tr>
         {/each}
@@ -102,11 +177,11 @@
 
 <dialog bind:this={dialogEl} class="modal" aria-labelledby="dialog-title">
   <div class="modal-header">
-    <h2 id="dialog-title">{m.combo_create()}</h2>
+    <h2 id="dialog-title">{editingId ? m.combo_edit_title({ id: editingId }) : m.combo_create()}</h2>
     <button class="close-btn" onclick={closeDialog} aria-label={m.common_cancel()}>✕</button>
   </div>
 
-  <form onsubmit={createCombo} class="modal-form">
+  <form onsubmit={save} class="modal-form">
     <div class="field">
       <label for="name-input">{m.combo_name_label()}</label>
       <input
@@ -115,6 +190,7 @@
         bind:value={name}
         placeholder={m.combo_name_placeholder()}
         required
+        disabled={editingId !== null}
       />
     </div>
 
@@ -135,15 +211,31 @@
       bind:value={strategy}
     />
 
-    <div class="field">
-      <label for="targets-input">{m.combo_targets_label()}</label>
-      <input
-        id="targets-input"
-        type="text"
-        bind:value={targets}
-        placeholder={m.combo_targets_placeholder()}
-      />
+    <fieldset class="field">
+      <legend>{m.combo_targets_label()}</legend>
+      {#if connections.length === 0}
+        <p class="hint">{m.combo_no_connections()}</p>
+      {/if}
+      {#each connections as conn (conn.id)}
+        <label class="check-row">
+          <input type="checkbox" value={conn.id} bind:group={targets} />
+          <span class="mono">{conn.id}</span>
+          <span class="muted">{conn.provider}</span>
+        </label>
+      {/each}
       <p class="hint">{m.combo_targets_hint()}</p>
+    </fieldset>
+
+    <div class="field">
+      <label for="model-input">{m.combo_model()}</label>
+      <input id="model-input" type="text" bind:value={model} placeholder="claude-sonnet-4-5" required aria-describedby="model-hint" />
+      <p id="model-hint" class="hint">{m.combo_model_hint()}</p>
+    </div>
+
+    <div class="field">
+      <label for="budget-input">{m.combo_budget_label()}</label>
+      <input id="budget-input" type="number" min="0" step="0.000001" bind:value={maxCostUsd} aria-describedby="budget-hint" />
+      <p id="budget-hint" class="hint">{m.combo_budget_hint()}</p>
     </div>
 
     {#if formError}
@@ -152,7 +244,7 @@
 
     <div class="modal-actions">
       <Button variant="ghost" type="button" onclick={closeDialog}>{m.common_cancel()}</Button>
-      <Button type="submit">{m.combo_create()}</Button>
+      <Button type="submit" disabled={saving}>{editingId ? m.common_save() : m.combo_create()}</Button>
     </div>
   </form>
 </dialog>
@@ -175,6 +267,41 @@
 
   .muted {
     color: var(--text-3);
+  }
+
+  .actions {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+  }
+
+  .check-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.875rem;
+  }
+
+  fieldset.field {
+    border: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  fieldset.field legend {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--text-2);
+    margin-bottom: 0.375rem;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .modal {

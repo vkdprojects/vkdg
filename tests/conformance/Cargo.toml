@@ -28,6 +28,9 @@ http-body = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
 vkdg-provider-openai = { workspace = true }
 vkdg-provider-sdk = { workspace = true }
+vkdg-provider-kiro = { workspace = true }
+aws-smithy-eventstream = "=0.61.4"
+aws-smithy-types = "=1.8.1"
 
 [lints]
 workspace = true

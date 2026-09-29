@@ -7,11 +7,22 @@ license.workspace = true
 [dependencies]
 vkdg-core       = { workspace = true }
 vkdg-operations = { workspace = true }
+vkdg-provider-sdk = { workspace = true }
+vkdg-connections = { workspace = true }
+vkdg-policy-compress = { workspace = true }
+vkdg-routing     = { workspace = true }
+vkdg-cache       = { workspace = true }
+async-trait      = { workspace = true }
+http            = { workspace = true }
+serde_yaml      = { workspace = true }
+sha2            = { workspace = true }
+thiserror       = { workspace = true }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 anyhow          = { workspace = true }
 tokio           = { workspace = true }
 wasmtime        = { workspace = true }
+wasmtime-wasi   = { workspace = true }
 bytes           = { workspace = true }
 
 [lib]
@@ -24,3 +35,8 @@ workspace = true
 # These deps are used by Wasmtime internals, WASM component loading,
 # or test fixtures — machete cannot detect macro/indirect usage.
 ignored = ["anyhow", "bytes", "serde_json", "tokio", "vkdg-core", "vkdg-operations"]
+
+[dev-dependencies]
+wit-parser      = { workspace = true }
+wat             = { workspace = true }
+sha2            = { workspace = true }

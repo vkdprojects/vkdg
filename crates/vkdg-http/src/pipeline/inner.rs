@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -50,11 +51,10 @@ pub(super) async fn run_pipeline_inner(
 
     // 0. IP policy ─────────────────────────────────────────────────────────────
     // Checked before admission so blocked IPs don't consume capacity slots.
+    // An unknown client IP fails an allowlist instead of skipping it.
     if let Some(ip_policy) = &pipeline.ip_policy {
-        if let Some(client_ip) = &ctx.envelope.client_ip {
-            if !ip_policy.allows(client_ip) {
-                return Err(VkdgError::Unauthorized);
-            }
+        if !ip_policy.allows(ctx.envelope.client_ip) {
+            return Err(VkdgError::Unauthorized);
         }
     }
 
@@ -87,8 +87,18 @@ pub(super) async fn run_pipeline_inner(
             } else {
                 0
             };
-            // Rough rate: $3/M tokens = 3 microdollars per token.
-            let estimated_cost_microdollars = estimated_tokens * 3;
+            // Input-only estimate at the highest price any provider lists for
+            // the model; $3/M when none does, so an unpriced model still counts.
+            let model = match &operation {
+                Operation::Conversation(c) => c.model.as_str(),
+                _ => ctx.envelope.model_requested.as_str(),
+            };
+            let per_mtok = pipeline
+                .provider_registry
+                .max_price(model)
+                .map_or(3_000_000, |p| p.input_per_mtok);
+            let estimated_cost_microdollars =
+                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000) as u64;
             if estimated_cost_microdollars > max_cost {
                 return Err(VkdgError::BudgetExceeded {
                     estimated_usd: estimated_cost_microdollars as f64 / 1_000_000.0,
@@ -99,15 +109,32 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // 3. Route ─────────────────────────────────────────────────────────────────
-    let filter = if excluded.is_empty() {
-        EligibilityFilter::default()
-    } else {
+    // A route names its targets by id and matches only on its own `match_models`,
+    // so on its own it will happily pick a connection that cannot take the
+    // request: one whose catalogue lacks the model (upstream answers 400), one in
+    // cooldown, or one already at `max_concurrent` — the last dies later as
+    // "no eligible connection" at reservation, without ever trying a sibling.
+    // Excluding them here lets the strategy choose among targets that can serve.
+    //
+    // The model is the one that will actually go upstream: a combo request names
+    // the combo id (`coding-fast`), which no connection lists, and the combo's
+    // own `model` is what the provider receives. Filtering on the raw envelope
+    // would exclude every target of every combo.
+    let effective_model = csr
+        .combo_model
+        .clone()
+        .unwrap_or_else(|| ctx.envelope.model_requested.clone());
+    let filter = {
+        let mut reason_map: HashMap<ConnectionId, String> = excluded
+            .iter()
+            .map(|id| (id.clone(), "rate_limited".to_owned()))
+            .collect();
+        for (id, reason) in pipeline.catalog.unroutable(&effective_model) {
+            reason_map.entry(id).or_insert_with(|| reason.to_owned());
+        }
         EligibilityFilter {
-            excluded_connections: excluded.to_vec(),
-            reason_map: excluded
-                .iter()
-                .map(|id| (id.clone(), "rate_limited".into()))
-                .collect(),
+            excluded_connections: reason_map.keys().cloned().collect(),
+            reason_map,
         }
     };
     // Build routing hints from live quota signals.
@@ -140,7 +167,10 @@ pub(super) async fn run_pipeline_inner(
         .await
     {
         Ok(r) => r,
-        Err(VkdgError::NoEligibleConnection) => {
+        // Only when no route claims the model. A route that matched but has no
+        // usable target stays failed: falling through would send its traffic to
+        // connections outside its `targets` and around its policy.
+        Err(VkdgError::NoRouteMatched) => {
             // Auto-route: find any healthy catalog connection that serves the model.
             let model = &ctx.envelope.model_requested;
             let excluded_ids = filter.excluded_connections.to_vec();
@@ -157,10 +187,42 @@ pub(super) async fn run_pipeline_inner(
                 excluded: vec![],
                 fusion_targets: vec![],
                 chain_steps: vec![],
+                hooks: Default::default(),
             }
         }
         Err(e) => return Err(e),
     };
+    ctx.route_id = Some(route_result.route_id.0.clone());
+    ctx.excluded = route_result.excluded.clone();
+    // A combo id (`coding-fast`) is not a model any provider knows. A request
+    // naming the combo itself is sent upstream as the combo's model, before any
+    // dispatch branch, so fusion and chain targets get the same name. A request
+    // that reached a combo through a pattern keeps the model it asked for.
+    if let (Some(id), Some(model)) = (&csr.combo_id, &csr.combo_model) {
+        if *id == ctx.envelope.model_requested {
+            if let Operation::Conversation(conv) = &mut operation {
+                conv.model = model.clone();
+            }
+        }
+    }
+
+    // Route hooks run before any dispatch path, fusion and chains included.
+    if !route_result.hooks.auth.is_empty() {
+        pipeline
+            .hooks
+            .authorize(
+                &route_result.hooks.auth,
+                crate::hooks::HookRequest {
+                    key_id: ctx.envelope.client_id.0.clone(),
+                    tenant_id: ctx.envelope.tenant_id.0.clone(),
+                    client_ip: ctx.envelope.client_ip,
+                    model: ctx.envelope.model_requested.clone(),
+                    route_id: route_result.route_id.0.clone(),
+                },
+            )
+            .await?;
+    }
+
     // Fusion fast-path: fan-out to all targets in parallel, return first success.
     if route_result.fusion_targets.len() > 1 {
         return run_fusion_dispatch(
@@ -186,44 +248,24 @@ pub(super) async fn run_pipeline_inner(
         .await;
     }
 
-    // Priority: session pin > combo redirect > routed connection.
+    // Priority: session pin > routed connection. Combos route through the
+    // router as priority routes, so their strategy already chose the target.
     // Save the preferred connection before it is moved into the if-let so we
     // can detect rotation afterwards for context-relay.
     let session_preferred_saved = csr.session_preferred.clone();
-    let connection_id = if let Some(preferred) = csr.session_preferred {
+    let connection_id = match csr.session_preferred {
         // Only use the pin if the connection is still in the catalog (healthy check
         // happens inside acquire() at step 3; here we just guard against stale pins
         // for connections that were removed from the catalog entirely).
-        if pipeline.catalog.get(&preferred).is_some() {
+        Some(preferred) if pipeline.catalog.get(&preferred).is_some() => {
             tracing::debug!(
                 session_key = ?ctx.envelope.session_key,
                 pinned = %preferred.0,
                 "session stickiness: using pinned connection",
             );
             preferred
-        } else if let Some(targets) = &csr.resolved_targets {
-            if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
-                targets[0].clone()
-            } else {
-                route_result.connection_id
-            }
-        } else {
-            route_result.connection_id
         }
-    } else if let Some(targets) = &csr.resolved_targets {
-        if !targets.is_empty() && !targets.contains(&route_result.connection_id) {
-            tracing::debug!(
-                combo_id = %csr.combo_id.as_deref().unwrap_or(""),
-                routed   = %route_result.connection_id.0,
-                redirect = %targets[0].0,
-                "combo redirect: routed connection not in combo targets",
-            );
-            targets[0].clone()
-        } else {
-            route_result.connection_id
-        }
-    } else {
-        route_result.connection_id
+        _ => route_result.connection_id,
     };
     ctx.connection_id = Some(connection_id.clone());
     ctx.transition(AttemptState::AccountReserved);
@@ -252,9 +294,8 @@ pub(super) async fn run_pipeline_inner(
         let guard = conn.acquire().ok_or(VkdgError::NoEligibleConnection)?;
         (conn.config.clone(), guard)
     };
-
     // 4. Credential ────────────────────────────────────────────────────────────
-    let token = pipeline.credentials.get_token(&config).await?;
+    let credential = pipeline.credentials.get_token(&config).await?;
     ctx.transition(AttemptState::CredentialReady);
     // 4b. VideoGenerate: async job path — skip upstream send, return 202 immediately.
     // The provider adapter still builds the request so we validate the operation;
@@ -347,8 +388,21 @@ pub(super) async fn run_pipeline_inner(
             ))
         })?;
     let prepared = adapter
-        .prepare(&operation, &config, &token)
+        .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
+    // Priced on the model actually sent upstream. A compatible endpoint borrows
+    // the OpenAI or Anthropic adapter for its wire format, not their prices.
+    ctx.price = match (&config.provider, &operation) {
+        (
+            vkdg_connections::ProviderKind::Custom { .. }
+            | vkdg_connections::ProviderKind::AnthropicCompat { .. },
+            _,
+        ) => None,
+        (_, Operation::Conversation(conv)) => {
+            vkdg_core::pricing::price_for(adapter.prices(), &conv.model).cloned()
+        }
+        _ => None,
+    };
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
         method: http::Method::POST,
@@ -425,6 +479,22 @@ pub(super) async fn run_pipeline_inner(
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
+            // Providers whose wire protocol is not SSE (e.g. Kiro's AWS EventStream)
+            // are decoded to events and re-encoded in the client's dialect.
+            let body = if let Some(decoder) = adapter.stream_decoder() {
+                super::helpers::decode_stream_to_sse(
+                    body,
+                    decoder,
+                    &ctx.envelope.api_type,
+                    &vkdg_operations::StreamContext {
+                        model: &ctx.envelope.model_requested,
+                        request_id: &ctx.envelope.request_id,
+                    },
+                )
+            } else {
+                body
+            };
+
             // Streaming responses are never cached — the body is a stream.
             // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
             let filtered_body = if !ctx.envelope.include_think_tags {
@@ -498,14 +568,15 @@ async fn run_fusion_dispatch(
     operation = op;
 
     // Race all targets; return first Ok, or NoEligibleConnection if all fail.
+    let envelope = ctx.envelope.clone();
     let mut futs: FuturesUnordered<_> = fusion_targets
         .into_iter()
         .map(|conn_id| {
             let operation = operation.clone();
-            async move { fusion_one_target(pipeline, conn_id, operation).await }
+            let envelope = envelope.clone();
+            async move { fusion_one_target(pipeline, conn_id, operation, envelope).await }
         })
         .collect();
-
     let mut last_err = VkdgError::NoEligibleConnection;
     while let Some(result) = futs.next().await {
         match result {
@@ -519,11 +590,11 @@ async fn run_fusion_dispatch(
     Err(last_err)
 }
 
-/// Execute a single upstream call for one fusion target.
 async fn fusion_one_target(
     pipeline: &PipelineState,
     conn_id: ConnectionId,
     operation: Operation,
+    envelope: vkdg_core::RequestEnvelope,
 ) -> Result<Response, VkdgError> {
     let conn_arc = pipeline
         .catalog
@@ -535,7 +606,7 @@ async fn fusion_one_target(
         (conn.config.clone(), guard)
     };
 
-    let token = pipeline.credentials.get_token(&config).await?;
+    let credential = pipeline.credentials.get_token(&config).await?;
 
     let adapter = pipeline
         .provider_registry
@@ -547,7 +618,7 @@ async fn fusion_one_target(
             ))
         })?;
     let prepared = adapter
-        .prepare(&operation, &config, &token)
+        .prepare(&operation, &config, &credential)
         .map_err(|e| VkdgError::Internal(e.to_string()))?;
     let is_streaming = prepared.is_streaming;
     let upstream_req = UpstreamRequest {
@@ -568,13 +639,28 @@ async fn fusion_one_target(
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
             .map_err(|e| VkdgError::Internal(e.to_string()))?,
-        UpstreamResponse::Streaming { status: _, body } => axum::response::Response::builder()
-            .status(http::StatusCode::OK)
-            .header(header::CONTENT_TYPE, "text/event-stream")
-            .header("cache-control", "no-cache")
-            .header("x-accel-buffering", "no")
-            .body(axum::body::Body::from_stream(body))
-            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+        UpstreamResponse::Streaming { status: _, body } => {
+            let body = if let Some(decoder) = adapter.stream_decoder() {
+                super::helpers::decode_stream_to_sse(
+                    body,
+                    decoder,
+                    &envelope.api_type,
+                    &vkdg_operations::StreamContext {
+                        model: &envelope.model_requested,
+                        request_id: &envelope.request_id,
+                    },
+                )
+            } else {
+                body
+            };
+            axum::response::Response::builder()
+                .status(http::StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/event-stream")
+                .header("cache-control", "no-cache")
+                .header("x-accel-buffering", "no")
+                .body(axum::body::Body::from_stream(body))
+                .map_err(|e| VkdgError::Internal(e.to_string()))?
+        }
     };
 
     Ok(resp)
@@ -688,7 +774,8 @@ async fn run_prompt_chain(
         );
 
         // Execute the step.
-        let resp = fusion_one_target(pipeline, conn_id, operation.clone()).await?;
+        let resp =
+            fusion_one_target(pipeline, conn_id, operation.clone(), ctx.envelope.clone()).await?;
 
         if step_idx + 1 < step_count {
             // Not the last step: consume the body and extract text for the next step.
@@ -764,7 +851,7 @@ mod tests {
             &self,
             _op: &Operation,
             _cfg: &vkdg_connections::ConnectionConfig,
-            _token: &str,
+            _credential: &vkdg_provider_sdk::Credential,
         ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
             Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
         }
@@ -804,6 +891,7 @@ mod tests {
 
     fn make_conv_op() -> Operation {
         Operation::Conversation(ConversationRequest {
+            model: "test-model".into(),
             messages: vec![],
             tools: vec![],
             max_tokens: Some(100),
@@ -811,6 +899,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         })
     }
 
@@ -953,6 +1042,7 @@ mod tests {
             cache: None,
             budget: None,
             mode_pack: None,
+            model: None,
         };
         let mut r = ProviderRegistry::empty();
         r.register(Arc::new(StubAdapter));
@@ -1028,6 +1118,7 @@ mod tests {
                 overflow: "strict".into(),
             }),
             mode_pack: None,
+            model: None,
         };
         let mut r = ProviderRegistry::empty();
         r.register(Arc::new(StubAdapter));
@@ -1047,6 +1138,7 @@ mod tests {
         // and estimated_cost_microdollars (tokens * 3) > 0 = max_cost.
         use vkdg_operations::{Message, MessageContent, Role};
         let op = Operation::Conversation(ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text("hello world".into()),
@@ -1057,6 +1149,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         });
 
         let ctx = make_ctx("zero-budget");
@@ -1092,6 +1185,7 @@ mod tests {
             max_concurrent: 100,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         };
         let route = RouteConfig {
@@ -1121,5 +1215,243 @@ mod tests {
             http::StatusCode::INTERNAL_SERVER_ERROR,
             "adapter prepare() returning Err must produce 500, not panic"
         );
+    }
+
+    use vkdg_routing::{RouteConfig, StrategyKind};
+
+    struct Fixed(
+        crate::hooks::HookVerdict,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    );
+    impl crate::hooks::AuthHook for Fixed {
+        fn check(&self, r: &crate::hooks::HookRequest) -> crate::hooks::HookVerdict {
+            self.1
+                .lock()
+                .unwrap()
+                .push(serde_json::to_string(r).unwrap());
+            self.0.clone()
+        }
+    }
+
+    fn hooked_pipeline(
+        strategy: StrategyKind,
+        hooks: &[&str],
+    ) -> (Arc<PipelineState>, Arc<std::sync::Mutex<Vec<String>>>) {
+        use crate::hooks::{HookRegistry, HookVerdict};
+        let ids: Vec<ConnectionId> = ["h1", "h2"]
+            .iter()
+            .map(|i| ConnectionId((*i).into()))
+            .collect();
+        let conns = ids
+            .iter()
+            .map(|id| vkdg_connections::ConnectionConfig {
+                id: id.clone(),
+                provider: vkdg_connections::ProviderKind::Custom {
+                    base_url: "http://127.0.0.1:1".into(),
+                },
+                auth: vkdg_connections::AuthKind::ApiKey {
+                    env_var: "UNUSED".into(),
+                },
+                models: vec!["hooked".into()],
+                max_concurrent: 10,
+                weight: 1,
+                tags: vec![],
+                endpoint: None,
+                capabilities: CapabilitySet::default(),
+            })
+            .collect();
+        let route = RouteConfig {
+            id: RouteId("guarded".into()),
+            match_models: vec!["hooked".into()],
+            strategy,
+            targets: ids,
+            plugin_hooks: vkdg_routing::PluginHooks {
+                auth: hooks.iter().map(|h| (*h).to_owned()).collect(),
+            },
+        };
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut reg = HookRegistry::default();
+        reg.register_auth(
+            "allow",
+            Arc::new(Fixed(HookVerdict::Allow, Arc::clone(&seen))),
+        );
+        reg.register_auth(
+            "deny",
+            Arc::new(Fixed(HookVerdict::Deny("nope".into()), Arc::clone(&seen))),
+        );
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(StubAdapter));
+        let mut p = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(10)),
+            Arc::new(VkdgRouter::new(vec![route])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        );
+        p.hooks = Arc::new(reg);
+        (Arc::new(p), seen)
+    }
+
+    // Found in review: route hooks were parsed and never run.
+    #[tokio::test]
+    async fn route_auth_hook_denial_is_forbidden_on_every_dispatch_path() {
+        for strategy in [
+            StrategyKind::RoundRobin,
+            StrategyKind::Fusion {
+                max_candidates: None,
+            },
+        ] {
+            let (p, _) = hooked_pipeline(strategy.clone(), &["allow", "deny"]);
+            let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+            assert_eq!(resp.status(), http::StatusCode::FORBIDDEN, "{strategy:?}");
+        }
+    }
+
+    // A hook that is not installed must deny, not be skipped.
+    #[tokio::test]
+    async fn unknown_route_hook_denies() {
+        let (p, _) = hooked_pipeline(StrategyKind::RoundRobin, &["not-installed"]);
+        let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+        assert_eq!(resp.status(), http::StatusCode::FORBIDDEN);
+    }
+
+    // Allowed requests go on to dispatch; the hook sees identity, not secrets.
+    #[tokio::test]
+    async fn allowing_hook_passes_and_sees_no_credentials() {
+        let (p, seen) = hooked_pipeline(StrategyKind::RoundRobin, &["allow"]);
+        let resp = run_conversation_pipeline(p, make_ctx("hooked"), make_conv_op()).await;
+        assert_ne!(resp.status(), http::StatusCode::FORBIDDEN);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].contains("\"route_id\":\"guarded\""), "{}", seen[0]);
+        assert!(
+            !seen[0].to_lowercase().contains("api-key") && !seen[0].contains("vkdg_"),
+            "{}",
+            seen[0]
+        );
+    }
+
+    // The admin request log always recorded `decision: None`, so the console
+    // could never show which route handled a request or why targets were skipped.
+    #[tokio::test]
+    async fn request_log_records_the_routing_decision() {
+        let (p, _) = hooked_pipeline(StrategyKind::RoundRobin, &[]);
+        let log = vkdg_admin::handlers::requests::RequestLog::new();
+        let mut p = Arc::try_unwrap(p).ok().expect("sole owner");
+        p.request_log = Some(Arc::clone(&log));
+        let ctx = make_ctx("hooked");
+        let id = ctx.envelope.request_id.0.to_string();
+        let resp = run_conversation_pipeline(Arc::new(p), ctx, make_conv_op()).await;
+        // The pipeline hands the row to the auth middleware; it writes nothing itself.
+        assert!(log.get(&id).is_none());
+        let rec = resp
+            .extensions()
+            .get::<crate::pipeline::PendingLog>()
+            .expect("row attached")
+            .record
+            .clone();
+        assert_eq!(rec.request_id, id);
+        let d = rec.decision.expect("decision recorded");
+        assert_eq!(d.route_id.as_deref(), Some("guarded"));
+        assert!(d.attempt_count >= 1);
+    }
+
+    /// Records what reached `prepare` (the last step before upstream), then
+    /// fails, so no network is needed.
+    struct Recording(Arc<std::sync::Mutex<Vec<(String, String)>>>);
+    impl ProviderAdapter for Recording {
+        fn id(&self) -> &str {
+            "openai"
+        }
+        fn display_name(&self) -> &str {
+            "Recording"
+        }
+        fn prepare(
+            &self,
+            op: &Operation,
+            cfg: &vkdg_connections::ConnectionConfig,
+            _credential: &vkdg_provider_sdk::Credential,
+        ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            if let Operation::Conversation(c) = op {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((cfg.id.0.clone(), c.model.clone()));
+            }
+            Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
+        }
+    }
+
+    // Found in review: a combo called by its id failed with NoEligibleConnection
+    // (routing ran before the combo), always went to targets[0] whatever its
+    // strategy, and sent the combo id itself upstream as the model.
+    #[tokio::test]
+    async fn a_combo_called_by_id_routes_with_its_strategy_and_sends_its_model() {
+        std::env::set_var("VKDG_TEST_COMBO_KEY", "k");
+        let conns = ["h1", "h2"]
+            .iter()
+            .map(|id| vkdg_connections::ConnectionConfig {
+                id: ConnectionId((*id).into()),
+                provider: vkdg_connections::ProviderKind::Custom {
+                    base_url: "http://127.0.0.1:1".into(),
+                },
+                auth: vkdg_connections::AuthKind::ApiKey {
+                    env_var: "VKDG_TEST_COMBO_KEY".into(),
+                },
+                models: vec!["m-*".into()],
+                max_concurrent: 10,
+                weight: 1,
+                tags: vec![],
+                endpoint: None,
+                capabilities: CapabilitySet::default(),
+            })
+            .collect();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(Recording(Arc::clone(&seen))));
+        let mut p = PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(10)),
+            Arc::new(VkdgRouter::new(vec![])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        );
+        let dir = std::env::temp_dir().join(format!("vkdg-combo-{}", uuid::Uuid::new_v4()));
+        let resolver = Arc::new(vkdg_combos::ComboResolver::new(vec![]));
+        let svc = vkdg_combos::ComboService::open(
+            vkdg_combos::ComboStore::new(dir.join("combos.json")),
+            Arc::clone(&resolver),
+            Some(Arc::clone(&p.router)),
+        )
+        .unwrap();
+        svc.create(vkdg_combos::Combo {
+            id: "coding-fast".into(),
+            match_patterns: vec![],
+            strategy: StrategyKind::RoundRobin,
+            targets: vec![ConnectionId("h1".into()), ConnectionId("h2".into())],
+            model: Some("m-real".into()),
+            compression: None,
+            cache: None,
+            budget: None,
+            mode_pack: None,
+        })
+        .unwrap();
+        p.combo_resolver = Some(resolver);
+        let p = Arc::new(p);
+
+        for _ in 0..2 {
+            let _ =
+                run_conversation_pipeline(Arc::clone(&p), make_ctx("coding-fast"), make_conv_op())
+                    .await;
+        }
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "both calls reached a provider: {seen:?}");
+        assert!(seen.iter().all(|(_, m)| m == "m-real"), "{seen:?}");
+        assert_ne!(seen[0].0, seen[1].0, "round_robin rotates: {seen:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

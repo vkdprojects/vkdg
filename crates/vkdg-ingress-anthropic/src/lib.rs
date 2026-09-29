@@ -46,10 +46,19 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
+    // bug, so refuse rather than serve an unidentified caller.
+    let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
+        tracing::error!("data-plane route mounted without require_api_key");
+        return vkdg_error_to_anthropic_response(VkdgError::Unauthenticated);
+    };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_anthropic_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
-        client_id: ClientId("anonymous".into()),
-        tenant_id: TenantId("default".into()),
+        client_id: ClientId(identity.key_id.clone()),
+        tenant_id: TenantId(identity.tenant_id.clone()),
         session_key: None,
         api_type: ApiType::AnthropicMessages,
         model_requested: model,
@@ -58,7 +67,7 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip,
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);

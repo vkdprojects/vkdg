@@ -57,7 +57,8 @@
 
     <Select.Content class="select-content" sideOffset={4}>
       {#each options as opt}
-        <Select.Item value={opt.value} class="select-item">
+        <!-- `label` drives bits-ui typeahead: without it, typing selects nothing. -->
+        <Select.Item value={opt.value} label={opt.label} class="select-item">
           {opt.label}
         </Select.Item>
       {/each}

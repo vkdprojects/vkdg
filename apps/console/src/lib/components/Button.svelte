@@ -7,6 +7,8 @@
     type?: 'button' | 'submit' | 'reset';
     disabled?: boolean;
     onclick?: () => void;
+    /** Accessible name when the visible text alone is ambiguous (e.g. a row of "Revoke"). */
+    ariaLabel?: string;
     children?: Snippet;
   }
 
@@ -16,11 +18,12 @@
     type = 'button',
     disabled = false,
     onclick,
+    ariaLabel,
     children,
   }: Props = $props();
 </script>
 
-<button {type} {disabled} {onclick} class="btn {variant} {size}">
+<button {type} {disabled} {onclick} aria-label={ariaLabel} class="btn {variant} {size}">
   {#if children}{@render children()}{/if}
 </button>
 

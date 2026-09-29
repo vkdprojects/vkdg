@@ -15,12 +15,15 @@ vkdg-observe     = { workspace = true }
 vkdg-cli         = { workspace = true }
 vkdg-connections = { workspace = true }
 vkdg-routing     = { workspace = true }
+vkdg-combos      = { workspace = true }
 vkdg-ingress-anthropic = { workspace = true }
 vkdg-ingress-openai     = { workspace = true }
 axum                   = { workspace = true }
 vkdg-operations        = { workspace = true }
+vkdg-plugin-host       = { workspace = true }
 serde_json       = { workspace = true }
 anyhow           = { workspace = true }
+reqwest          = { workspace = true }
 tokio            = { workspace = true }
 clap             = { workspace = true }
 tracing          = { workspace = true }
@@ -44,14 +47,20 @@ vkdg-provider-nvidia-nim     = { workspace = true }
 vkdg-provider-sdk        = { workspace = true }
 vkdg-config      = { workspace = true }
 vkdg-admin       = { workspace = true }
+vkdg-governance  = { workspace = true }
 uuid             = { workspace = true }
+futures          = { workspace = true }
+chrono           = { workspace = true }
 rust-embed  = { workspace = true }
 axum-embed  = { workspace = true }
 inquire     = { workspace = true }
 self_update = { workspace = true }
-serde_yaml  = { workspace = true }
 console     = { workspace = true }
 indicatif   = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+wat      = { workspace = true }
+tempfile = { workspace = true }

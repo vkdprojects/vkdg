@@ -37,6 +37,7 @@ mod tests {
 
     fn empty_req() -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![],
             tools: vec![],
             max_tokens: None,
@@ -44,6 +45,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         }
     }
 

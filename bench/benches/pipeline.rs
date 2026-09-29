@@ -24,6 +24,7 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
         })
         .collect();
     Operation::Conversation(ConversationRequest {
+        model: "bench-model".into(),
         messages,
         tools: vec![],
         max_tokens: Some(100),
@@ -31,6 +32,7 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     })
 }
 
@@ -58,6 +60,7 @@ fn bench_admission_routing(c: &mut Criterion) {
         max_concurrent: 10_000,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     }]));
 
@@ -147,10 +150,11 @@ fn bench_provider_prepare(c: &mut Criterion) {
         max_concurrent: 1_000,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let adapter = AnthropicAdapter;
-    let token = "sk-bench-token";
+    let credential = vkdg_connections::Credential::bearer("sk-bench-token");
 
     let mut group = c.benchmark_group("provider_prepare");
     for n_messages in [1usize, 10, 50].iter() {
@@ -158,7 +162,7 @@ fn bench_provider_prepare(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::from_parameter(n_messages),
             n_messages,
-            |b, _| b.iter(|| criterion::black_box(adapter.prepare(&op, &config, token))),
+            |b, _| b.iter(|| criterion::black_box(adapter.prepare(&op, &config, &credential))),
         );
     }
     group.finish();

@@ -30,6 +30,7 @@ mod tests {
 
     fn make_req(msg: &str) -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text(msg.into()),
@@ -40,6 +41,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         }
     }
 

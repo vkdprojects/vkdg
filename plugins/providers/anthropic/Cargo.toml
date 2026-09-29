@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 vkdg-provider-sdk = { workspace = true }
+vkdg-core         = { workspace = true }
 vkdg-operations  = { workspace = true }
 vkdg-connections = { workspace = true }
 bytes            = { workspace = true }

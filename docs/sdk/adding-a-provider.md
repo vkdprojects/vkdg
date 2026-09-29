@@ -4,192 +4,129 @@ There are three paths. Pick the one that matches your situation.
 
 ---
 
-## Tier 1 — Config only (no code, no restart)
+## Tier 1: config only (no code)
 
-For any endpoint that speaks OpenAI or Anthropic wire format.
+For any endpoint that speaks the OpenAI Chat Completions or Anthropic Messages wire format.
 
 ```yaml
 # vkdg.yaml
 connections:
   - id: my-local-llama
-    provider: openai-compat
-    base_url: http://localhost:11434
+    provider: openai-compat          # or anthropic-compat for a /v1/messages endpoint
+    base_url: http://localhost:11434 # host only: the adapter appends /v1/chat/completions
     auth:
       type: api_key
-      env_var: MY_KEY          # or omit for keyless endpoints
+      env_var: MY_KEY                # any value works if the endpoint ignores it
     models: ["llama3.3:70b"]
     max_concurrent: 4
     weight: 1
 ```
 
-That's it. No code. No binary rebuild. The `openai-compat` and `anthropic-compat` provider types
-are handled by the built-in adapters; you only supply the URL and credentials.
+Check it before you start the gateway:
+
+```bash
+vkdg config check vkdg.yaml
+# OK: config valid (version 0, 1 connections, 0 routes)
+```
+
+`config check` refuses what `serve` would refuse: an unknown field (`base_ur:`), a `base_url` on any
+provider other than the two compatible kinds, a missing `base_url` on them, and a provider id with no
+adapter behind it. When the gateway runs with `vkdg serve --config <file>`, edits to that file apply
+on save; an invalid edit is refused and the running config stays.
 
 **When to use this:**
 - Local Ollama, vLLM, LM Studio, llama.cpp
-- Any hosted API that exposes `/v1/chat/completions` (OpenAI) or `/v1/messages` (Anthropic)
-- Self-hosted Open WebUI, LocalAI, etc.
-- Internal corporate LLM endpoints
+- Any hosted API that exposes `/v1/chat/completions` or `/v1/messages`
+- Internal corporate endpoints
 
-**Not for:** providers with custom wire formats, OAuth flows, or non-standard auth.
+**Not for:** custom wire formats or OAuth logins. Compatible endpoints get no list price, so their
+requests show an unknown cost in the request history, never an invented one.
 
 ---
 
-## Tier 2 — WASM plugin (custom protocol, no fork)
+## Tier 2: WASM plugin (custom request, no fork)
 
-For a provider with a custom wire format — when you need to control the exact bytes sent and
-received. Write a `.wasm` file; VKDG loads it at startup from the `plugins/` directory.
+For a provider that needs its own URL, headers or request body. You ship a WebAssembly component and a
+manifest; the gateway loads it without being rebuilt.
 
-**You do not need to clone the VKDG repo. You do not rebuild the gateway binary.**
+### What the gateway calls today
 
-### What to implement
+The full contract is in [`wit/provider.wit`](../../wit/provider.wit). The host currently calls four of
+its exports, each taking and returning a JSON string:
 
-The contract is in [`wit/provider.wit`](../../wit/provider.wit):
+| Export | Input | Output |
+|---|---|---|
+| `name` | `""` | provider id, e.g. `"my-provider"`; falls back to the manifest `name` |
+| `display-name` | `""` | label for the console |
+| `model-patterns` | `""` | JSON array of globs, e.g. `["my-model-*"]` |
+| `prepare` | `{operation, connection, credential}` | `{url, headers, body, is_streaming}` |
 
-```wit
-interface provider-plugin {
-    // Build the HTTP request your provider expects.
-    // Returns: (url, body-bytes, is-streaming)
-    // You own the URL, body, and streaming flag.
-    // VKDG owns TLS, retries, auth injection, and the HTTP client.
-    translate-request: func(
-        req: request,
-        connection-config-json: string,
-        token: string,
-    ) -> result<tuple<string, list<u8>, bool>, plugin-error>;
+`connection` is the connection without secrets (`id`, `provider`, `models`, `max_concurrent`, `weight`,
+`tags`). `credential` is `{token, extra}`. `body` is a byte array, so a JSON body goes out as its UTF-8
+bytes. The gateway sends the request and streams the response back to the client unchanged.
 
-    // Convert a complete (non-streaming) response body to VKDG format.
-    translate-response: func(
-        body: list<u8>,
-        request-id: string,
-    ) -> result<response, plugin-error>;
+### Limitations
 
-    // Convert one SSE chunk. Return None to skip (heartbeat/comment).
-    // Return Err(not-applicable) once if you don't support streaming.
-    translate-chunk: func(
-        chunk: list<u8>,
-        request-id: string,
-    ) -> result<option<response>, plugin-error>;
-
-    // Model IDs or glob patterns this plugin handles.
-    model-patterns: func() -> list<string>;
-
-    name: func() -> string;
-}
-```
-
-### Minimal Rust implementation
-
-```rust
-// Cargo.toml
-// [dependencies]
-// vkdg-provider-sdk = "0.1"   (when published — uses wit-bindgen internally)
-// wit-bindgen = "0.35"
-
-wit_bindgen::generate!({ world: "provider", path: "wit/" });
-
-struct MyProvider;
-
-impl Guest for MyProvider {
-    fn name() -> String {
-        "my-provider".into()
-    }
-
-    fn model_patterns() -> Vec<String> {
-        vec!["my-model-*".into()]
-    }
-
-    fn translate_request(
-        req: Request,
-        config_json: String,
-        token: String,
-    ) -> Result<(String, Vec<u8>, bool), PluginError> {
-        let config: serde_json::Value = serde_json::from_str(&config_json).unwrap_default();
-        let model = config["models"][0].as_str().unwrap_or("default");
-
-        // Build your provider's wire format
-        let body = serde_json::json!({
-            "model": model,
-            "messages": req.messages,  // already in VKDG internal format
-        });
-
-        let url = "https://api.my-provider.example/v1/generate".into();
-        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-        let is_streaming = req.stream;
-
-        Ok((url, body_bytes, is_streaming))
-    }
-
-    fn translate_response(body: Vec<u8>, _request_id: String) -> Result<Response, PluginError> {
-        // Parse your provider's response and convert to VKDG Response format
-        let value: serde_json::Value = serde_json::from_slice(&body)
-            .map_err(|e| PluginError::Internal(e.to_string()))?;
-
-        Ok(Response {
-            content: value["output"].as_str().unwrap_or("").into(),
-            // ... other fields
-        })
-    }
-
-    fn translate_chunk(chunk: Vec<u8>, _request_id: String) -> Result<Option<Response>, PluginError> {
-        // Parse one SSE chunk from your provider
-        // Return Ok(None) to skip (heartbeat, comment, empty)
-        // Return Err(PluginError::NotApplicable) once if you don't support streaming
-        todo!()
-    }
-}
-
-export!(MyProvider);
-```
-
-Compile to WASM:
-```bash
-cargo build --target wasm32-wasip2 --release
-# produces target/wasm32-wasip2/release/my_provider.wasm
-```
+- The response must already be OpenAI or Anthropic shaped. `decode-response`, `decode-chunk` and
+  `finish-stream` are in the WIT, but the host does not call them yet, so a binary or custom stream
+  protocol still needs Tier 3.
+- No login from WASM: `login-methods`, the device, PKCE and import functions, and `refresh-token` are
+  not called yet. Use `auth: { type: api_key }` for a WASM provider.
+- There is no published guest SDK. Build the component with `cargo component` against `wit/`, or any
+  toolchain that produces a `wasm32-wasip2` component.
+  `crates/vkdg-plugin-host/tests/wasm_provider_call.rs` is a working component, written in WAT, that
+  returns a fixed `prepare` result.
 
 ### Install
 
+A plugin is a directory with two files:
+
 ```
-~/.config/vkdg/plugins/
-  my-provider/
-    provider.wasm
-    manifest.toml
+my-provider/
+  manifest.yaml
+  plugin.wasm
 ```
 
-```toml
-# manifest.toml
-name = "my-provider"
-kind = "provider"
-version = "1.0.0"
+```yaml
+# manifest.yaml
+name: my-provider          # kebab-case; also the `provider:` id in config
+version: "1.0.0"
+kind: provider
+description: "My provider"
+license: MIT
+models: ["my-model-*"]
+install:
+  wasm: "https://example.com/my-provider.wasm"
+  checksum: "sha256:<64 hex>"  # sha256 of plugin.wasm; the install is refused on mismatch
 ```
 
-Then add a connection pointing at it:
+```bash
+vkdg plugin validate-manifest my-provider/manifest.yaml  # same check the registry bot runs
+vkdg plugin install ./my-provider/                        # verifies the checksum, compiles the component
+```
+
+`vkdg plugin install` writes to the plugin directory (`$VKDG_PLUGINS_DIR`, else `plugins/` next to
+`accounts.db`). A running gateway picks it up on restart. Installing through the console, or
+`POST /admin/v1/plugins`, applies to the next request with no restart.
+
+Then point a connection at it:
+
 ```yaml
 connections:
   - id: my-provider-prod
-    provider: my-provider       # matches name() from the plugin
+    provider: my-provider    # the plugin's name
     auth:
       type: api_key
       env_var: MY_PROVIDER_KEY
     models: ["my-model-*"]
-    max_concurrent: 8
-    weight: 1
 ```
 
-VKDG loads it on startup (or hot-reloads if `watch_plugins: true`). No binary involved.
-
-**When to use this:**
-- Provider has a custom protocol (not OpenAI/Anthropic format)
-- You need to control exact request/response transformation
-- You want to ship a closed-source provider adapter
-- You work with a provider whose API changes frequently and you own the update cycle
-
-**Languages:** anything that compiles to `wasm32-wasip2` — Rust, C, Go (TinyGo), Python (Componentize-py), JavaScript (jco).
+A plugin cannot take the id of a built-in provider (`anthropic`, `kiro`, ...). It would receive their
+credentials, so the gateway refuses it at load.
 
 ---
 
-## Tier 3 — Contribute to `plugins/providers/` (first-party, compiled in)
+## Tier 3: contribute to `plugins/providers/` (first-party, compiled in)
 
 For providers that should ship with VKDG and be maintained by the project.
 
@@ -204,7 +141,7 @@ The full ecosystem of built-in providers (Anthropic, OpenAI, Gemini, Groq, etc.)
 
 ### For OpenAI-compatible providers
 
-9 lines total. Most providers fall here.
+One function. Most hosted APIs fall here.
 
 ```
 plugins/providers/my-provider/
@@ -254,15 +191,18 @@ Open a PR. That's it.
 
 ### For providers with OAuth or custom protocol
 
-Implement `ProviderAdapter` (and optionally `OAuthProvider`) from `vkdg-provider-sdk`:
+Implement `ProviderAdapter` from `vkdg-provider-sdk`. For OAuth, also implement `OAuthProvider` and return `Some(self)` from `ProviderAdapter::oauth()`. The core then handles login, persistence, refresh, the CLI and the admin API, so it needs no provider-specific code.
 
 ```rust
-use vkdg_provider_sdk::{OAuthConfig, OAuthFlow, OAuthProvider, ProviderAdapter,
-                         PreparedRequest, ProviderError, TokenPair};
-use vkdg_connections::ConnectionConfig;
-use vkdg_operations::Operation;
 use std::collections::HashMap;
 use futures::future::BoxFuture;
+use vkdg_connections::ConnectionConfig;
+use vkdg_operations::Operation;
+use vkdg_provider_sdk::{
+    Credential, DeviceAuthorization, DevicePoll, LoginField, LoginMethod, LoginParams,
+    LoginResult, LoginState, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest,
+    ProviderAdapter, ProviderError, TokenPair,
+};
 
 pub struct MyProvider;
 
@@ -270,56 +210,90 @@ impl ProviderAdapter for MyProvider {
     fn id(&self) -> &str { "my-provider" }
     fn display_name(&self) -> &str { "My Provider" }
 
+    // Opt in to login + refresh.
+    fn oauth(&self) -> Option<&dyn OAuthProvider> { Some(self) }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
-        // Build your upstream request
-        // See plugins/providers/anthropic/src/lib.rs for a complete example
-        todo!()
+        // credential.token = access token (or API key).
+        // credential.extra = per-account data you returned at login/refresh
+        //                    (region, profile ARN, device id, …). Empty for API keys.
+        todo!("see plugins/providers/anthropic/src/lib.rs")
     }
 }
 
 impl OAuthProvider for MyProvider {
-    fn oauth_config(&self) -> OAuthConfig {
-        OAuthConfig {
-            flow: OAuthFlow::AuthorizationCodePkce,
-            authorize_url: Some("https://my-provider.example/oauth/authorize".into()),
-            token_url: "https://my-provider.example/oauth/token".into(),
-            client_id: std::env::var("MY_PROVIDER_CLIENT_ID").unwrap_or_default(),
-            scopes: vec!["inference".into()],
-            redirect_uri: None,
-            extra_auth_params: HashMap::new(),
-        }
+    fn oauth_config(&self) -> OAuthConfig { todo!() }
+
+    // Advertise methods; CLI and console render them generically.
+    fn login_methods(&self) -> Vec<LoginMethod> {
+        vec![LoginMethod {
+            id: "device".into(),
+            label: "Device code".into(),
+            flow: OAuthFlow::DeviceCode,
+            fields: vec![LoginField {
+                id: "region".into(), label: "Region".into(),
+                required: true, secret: false, default: Some("us-east-1".into()),
+            }],
+        }]
     }
 
-    fn refresh_token<'a>(
-        &'a self,
-        refresh_token: &'a str,
-        _extra: &'a HashMap<String, String>,
-    ) -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
-        Box::pin(async move {
-            // POST to token_url with grant_type=refresh_token
-            todo!()
-        })
+    fn start_device_login<'a>(&'a self, _method: &'a str, params: &'a LoginParams)
+        -> BoxFuture<'a, Result<DeviceAuthorization, ProviderError>> {
+        // Call the device authorization endpoint. Put device_code etc. in `state`:
+        // it stays server-side and comes back on every poll.
+        todo!()
+    }
+
+    fn poll_device_login<'a>(&'a self, _method: &'a str, state: &'a LoginState)
+        -> BoxFuture<'a, Result<DevicePoll, ProviderError>> {
+        // Map authorization_pending → Pending, slow_down → SlowDown,
+        // success → Done(LoginResult { tokens, label }), denial/expiry → Failed(msg).
+        todo!()
+    }
+
+    fn refresh_token<'a>(&'a self, refresh_token: &'a str, extra: &'a HashMap<String, String>)
+        -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
+        // Keys you return in TokenPair::extra overwrite stored ones; others are kept.
+        // refresh_token: None keeps the stored refresh token.
+        todo!()
     }
 }
 ```
 
-See `plugins/providers/claude-code/` and `plugins/providers/kiro/` for complete OAuth examples.
+| Hook | Flow | Default |
+|---|---|---|
+| `login_methods()` | all | empty (refresh only) |
+| `start_device_login` / `poll_device_login` | `DeviceCode` (RFC 8628) | `UnsupportedOperation` |
+| `start_pkce_login` / `finish_pkce_login` | `AuthorizationCodePkce` | `UnsupportedOperation` |
+| `import_token` | `ImportToken` (pasted refresh token / credential blob) | `UnsupportedOperation` |
+| `refresh_token` | all | required |
+
+What the core does with it:
+
+- `vkdg login <provider> [--method <id>] [--opt key=value …]` runs the method, saves an account to the account store, and prints the `auth: { type: account, account: <id> }` snippet. `vkdg login <provider> --list-methods` shows the methods and fields. `vkdg accounts list|remove <id>` manages saved accounts.
+- Admin API (loopback, session required): `GET /admin/v1/providers/{id}/login-methods`, `POST /admin/v1/oauth/{provider}/start` (`{method?, params}`), `POST /admin/v1/oauth/{provider}/poll` (`{login_id, code?}`; `code` is for PKCE), `POST /admin/v1/oauth/{provider}/import`, `GET /admin/v1/accounts`, `DELETE /admin/v1/accounts/{id}`. Responses never include tokens or plugin login state.
+- At request time, `CredentialManager` loads the account and calls `refresh_token` through the registry once the token is within 5 minutes of expiry, with one refresh per account at a time. It persists the result and then passes `Credential { token, extra }` to `prepare()`.
+
+See `plugins/providers/claude-code/` and `plugins/providers/kimi-coding/` for OAuth examples.
 
 ---
 
 ## Decision guide
 
 ```
-Need a custom endpoint (OpenAI/Anthropic format)?
-  → Tier 1: YAML config, done.
+Endpoint speaks OpenAI or Anthropic format?
+  → Tier 1: YAML config.
 
-Need custom protocol / full control over bytes?
+Needs its own URL, headers or body, and answers in OpenAI/Anthropic format?
   → Tier 2: WASM plugin, no fork.
+
+Custom stream protocol, or an OAuth login?
+  → Tier 3.
 
 Want it bundled with VKDG for everyone?
   → Tier 3: PR to plugins/providers/.

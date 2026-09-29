@@ -47,6 +47,7 @@ connections:
 | `models` | list of strings | yes | none | Model names or patterns this connection serves |
 | `max_concurrent` | integer | no | `u32::MAX` | Maximum simultaneous in-flight requests |
 | `weight` | integer | no | `1` | Relative weight for `weighted` strategy |
+| `endpoint` | string | no | — | Which endpoint of the provider to use, when it has more than one. Only `kiro` today: `runtime` or `codewhisperer`. Refused for every other provider. |
 
 ### provider values
 
@@ -55,7 +56,10 @@ connections:
 | `anthropic` | Anthropic Messages API (`https://api.anthropic.com`) |
 | `openai` | OpenAI API (`https://api.openai.com`) |
 | `google` | Google Generative Language API |
+| `kiro` | Kiro / Amazon Q. Two endpoints, see `endpoint` above: `runtime.{region}.kiro.dev` (OAuth accounts) and `codewhisperer.us-east-1.amazonaws.com` (OAuth or `ksk_` API key) |
 | `custom:<url>` | Any URL, e.g. `custom:https://my-proxy.internal` |
+
+Any registered provider plugin id is also accepted — see [providers.md](../plugins/providers.md) for the full built-in list.
 
 ### models patterns
 
@@ -107,6 +111,27 @@ auth:
 | `client_id` | string | OAuth2 client identifier |
 | `client_secret_env` | string | Environment variable holding the client secret |
 | `scopes` | list of strings | Requested OAuth2 scopes |
+
+### account
+
+A saved provider account created by `vkdg login <provider>` (device code, PKCE or token import). The provider plugin refreshes the token 5 minutes before it expires, and the refreshed tokens are written back to the account store.
+
+```yaml
+connections:
+  - id: kiro-main
+    provider: kiro
+    auth:
+      type: account
+      account: kiro-1a2b3c4d
+    models: ["claude-sonnet-4"]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `"account"` | Selects this variant |
+| `account` | string | Account id printed by `vkdg login` / `vkdg accounts list` |
+
+`provider` must be a plugin id that implements OAuth (not `custom:<url>`). A blank `account` is rejected at config load. Accounts live in `$VKDG_ACCOUNTS_DB`, falling back to `~/.config/vkdg/accounts.db`. The file is created with mode `0600` inside a `0700` directory. Tokens never appear in logs, `Debug` output, `DecisionRecord`, or admin responses.
 
 ---
 
@@ -285,6 +310,6 @@ What does **not** trigger a reload:
 | `"duplicate connection id: <id>"` | Two connections share the same `id` | Give each connection a unique `id` |
 | `"route '<id>' targets unknown connection '<cid>'"` | A route's `targets` entry has no matching connection `id` | Add the connection or fix the target name |
 | `"route '<id>' has unknown strategy '<s>'"` | `strategy` value is not one of the accepted strings | Use one of the values listed in `strategies` above |
-| `"provider parse error"` | `provider` is not `anthropic`/`openai`/`google` or `custom:<url>` | Check spelling; custom providers need the `custom:` prefix |
+| `"provider parse error"` | `provider` is not a registered provider id (e.g. `anthropic`, `openai`, `kiro`) nor `custom:<url>` | Check spelling; custom endpoints need the `custom:` prefix |
 
 Run `vkdg config check --file gateway.yaml` to validate without starting the server.

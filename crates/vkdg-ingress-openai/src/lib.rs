@@ -57,13 +57,17 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
         VkdgError::CapabilityUnsupported { .. } => {
             (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
-        VkdgError::NoEligibleConnection => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
+        VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
+            (StatusCode::SERVICE_UNAVAILABLE, "api_error")
+        }
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
             (s, "api_error")
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        // Stored login is dead; the client request is fine.
+        VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::BudgetExceeded { .. } => (StatusCode::PAYMENT_REQUIRED, "budget_exceeded"),
     };
@@ -109,10 +113,19 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
+    // bug, so refuse rather than serve an unidentified caller.
+    let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
+        tracing::error!("data-plane route mounted without require_api_key");
+        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+    };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_oai_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
-        client_id: ClientId("anonymous".into()),
-        tenant_id: TenantId("default".into()),
+        client_id: ClientId(identity.key_id.clone()),
+        tenant_id: TenantId(identity.tenant_id.clone()),
         session_key: None,
         api_type: ApiType::OpenAiChatCompletions,
         model_requested: model,
@@ -121,7 +134,7 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip,
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);
@@ -168,10 +181,19 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
+    // bug, so refuse rather than serve an unidentified caller.
+    let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
+        tracing::error!("data-plane route mounted without require_api_key");
+        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+    };
+    if let Err(e) = identity.check_model(&model) {
+        return vkdg_error_to_oai_response(e);
+    }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
-        client_id: ClientId("anonymous".into()),
-        tenant_id: TenantId("default".into()),
+        client_id: ClientId(identity.key_id.clone()),
+        tenant_id: TenantId(identity.tenant_id.clone()),
         session_key: None,
         api_type: ApiType::OpenAiImages,
         model_requested: model,
@@ -180,7 +202,7 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: None,
+        client_ip: identity.client_ip,
     };
     // Extract per-request override headers (all are optional).
     extract_vkdg_overrides(headers, &mut envelope);

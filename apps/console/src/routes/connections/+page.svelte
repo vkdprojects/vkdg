@@ -1,15 +1,27 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { ConnectionSummary } from '$lib/api.js';
-  import { Badge, StatusDot, EmptyState, Button, Input, Select, Spinner, CopyButton } from '$lib/components/index.js';
+  import type { ConnectionStatus, ConnectionSummary } from '$lib/api.js';
+  import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
-  import { PlusIcon, XIcon, CheckIcon } from 'lucide-svelte';
+  import { PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
+  let refreshing = $state(false);
+  let updatedAt = $state<Date | null>(null);
+
+  const statusLabels: Record<ConnectionStatus, () => string> = {
+    healthy: m.connection_status_healthy,
+    degraded: m.connection_status_degraded,
+    circuit_open: m.connection_status_circuit_open,
+    cooldown: m.connection_status_cooldown,
+    unknown: m.connection_status_unknown,
+  };
+
+  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
@@ -33,6 +45,7 @@
     { value: 'sambanova',  label: 'SambaNova (free tier)' },
     { value: 'cerebras',   label: 'Cerebras (free tier)' },
     { value: 'nvidia-nim', label: 'NVIDIA NIM' },
+    { value: 'kiro',       label: 'Kiro (Amazon Q)' },
   ];
 
   const showBaseUrl = $derived(provider === 'openai-compat' || provider === 'anthropic-compat');
@@ -50,6 +63,7 @@
     'sambanova':     'SAMBANOVA_API_KEY',
     'cerebras':      'CEREBRAS_API_KEY',
     'nvidia-nim':    'NVIDIA_API_KEY',
+    'kiro':          'KIRO_API_KEY',
     'openai-compat': 'API_KEY',
   };
 
@@ -65,6 +79,7 @@
     'sambanova':  'Meta-Llama-*',
     'cerebras':   'llama3.1-*',
     'nvidia-nim': 'meta/llama-*',
+    'kiro':       'claude-*, gpt-5.6-*, minimax-*, deepseek-*, glm-*, qwen3-*, auto',
   };
 
   $effect(() => {
@@ -73,27 +88,55 @@
     if (!connId) connId = `${provider}-default`;
   });
 
-  // Generate the YAML snippet the user needs to paste into vkdg.yaml
+  // Generate the YAML snippet the user needs to paste into vkdg.yaml. One entry
+  // per line with explicit indentation: `auth:` once rendered at 8 spaces and
+  // the gateway refused the pasted file.
   const yamlSnippet = $derived(() => {
-    const idLine     = `  - id: ${connId || provider + '-default'}`;
-    const provLine   = `    provider: ${provider}`;
-    const urlLine    = showBaseUrl && baseUrl ? `    base_url: ${baseUrl}\n` : '';
-    const envLine    = `    auth:\n      type: api_key\n      env_var: ${envVar || 'API_KEY'}`;
-    const modelList  = (models || '*').split(',').map(m => m.trim()).map(m => `"${m}"`).join(', ');
-    const modelsLine = `    models: [${modelList}]`;
-    const miscLines  = `    max_concurrent: 50\n    weight: 1`;
-    return `connections:\n${idLine}\n${provLine}\n${urlLine}    ${envLine}\n${modelsLine}\n${miscLines}`;
+    const modelList = (models || '*').split(',').map((m) => `"${m.trim()}"`).join(', ');
+    const lines = [
+      'connections:',
+      `  - id: ${connId || provider + '-default'}`,
+      `    provider: ${provider}`,
+      ...(showBaseUrl && baseUrl ? [`    base_url: ${baseUrl}`] : []),
+      '    auth:',
+      '      type: api_key',
+      `      env_var: ${envVar || 'API_KEY'}`,
+      `    models: [${modelList}]`,
+      '    max_concurrent: 50',
+      '    weight: 1',
+    ];
+    return lines.join('\n');
   });
 
-  onMount(async () => {
+  async function load() {
+    refreshing = true;
     try {
-      const res = await api.listConnections();
-      connections = res.items;
+      connections = (await api.listConnections()).items;
+      updatedAt = new Date();
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
       loading = false;
+      refreshing = false;
     }
+  }
+
+  // Poll every 5s only while the tab is visible; refresh at once when it comes back.
+  onMount(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const sync = () => {
+      clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState !== 'visible') return;
+      load();
+      timer = setInterval(load, 5000);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', sync);
+    };
   });
 
   function openDialog() {
@@ -117,19 +160,27 @@
 <div class="page">
   <div class="page-header">
     <h1 class="page-title">{m.nav_connections()}</h1>
-    <Button variant="primary" size="sm" onclick={openDialog}>
-      <PlusIcon size={14} />
-      {m.connection_add()}
-    </Button>
+    <div class="header-actions">
+      <Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}>
+        <RefreshCwIcon size={14} aria-hidden="true" />
+        {m.common_refresh()}
+      </Button>
+      <Button variant="primary" size="sm" onclick={openDialog}>
+        <PlusIcon size={14} />
+        {m.connection_add()}
+      </Button>
+    </div>
   </div>
 
+  <p class="refresh-note" aria-live="polite">
+    {m.connection_auto_refresh()}
+    {#if updatedAt}{m.common_updated_at({ time: timeFmt.format(updatedAt) })}{/if}
+  </p>
+
   {#if loading}
-    <div class="loading"><Spinner size="sm" /> Loading…</div>
+    <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
   {:else if connections.length === 0}
-    <EmptyState
-      title={m.connection_empty()}
-      description="Add a provider connection to start routing requests."
-    />
+    <EmptyState title={m.connection_empty()} description={m.connection_empty_desc()} />
   {:else}
     <table>
       <thead>
@@ -139,6 +190,7 @@
           <th scope="col">{m.connection_status()}</th>
           <th scope="col">{m.connection_models()}</th>
           <th scope="col">{m.connection_active_requests()}</th>
+          <th scope="col">{m.connection_cooldown()}</th>
         </tr>
       </thead>
       <tbody>
@@ -149,11 +201,19 @@
             <td>
               <div class="status-cell">
                 <StatusDot status={conn.status} />
-                <Badge status={conn.status} />
+                <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
               </div>
             </td>
             <td>{conn.model_count}</td>
-            <td>{conn.active_requests}</td>
+            <td class="mono">{conn.active_requests}/{conn.max_concurrent}</td>
+            <td class="cooldown-cell">
+              {#if conn.cooldown_until}
+                <div>{m.connection_cooldown_until({ time: timeFmt.format(new Date(conn.cooldown_until)) })}</div>
+                {#if conn.failure_count != null}<div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>{/if}
+              {:else}
+                {m.common_none()}
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -316,6 +376,26 @@
     justify-content: flex-end;
     gap: 8px;
     padding: 0 20px 20px;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .refresh-note {
+    font-size: 0.75rem;
+    color: var(--text-3);
+  }
+
+  .cooldown-cell {
+    font-size: 0.8125rem;
+    white-space: nowrap;
+  }
+
+  .hint {
+    font-size: 0.75rem;
+    color: var(--text-3);
   }
 
   .status-cell {

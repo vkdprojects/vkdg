@@ -10,13 +10,17 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError,
-    TokenPair,
+    Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
+    ProviderError, TokenPair,
 };
 
 pub struct ClaudeCodeAdapter;
 
 impl ProviderAdapter for ClaudeCodeAdapter {
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        Some(self)
+    }
+
     fn id(&self) -> &str {
         "claude-code"
     }
@@ -25,18 +29,29 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         "Claude Code"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'C',
+            icon_color: "#CC785C",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://claude.ai"),
+            description: Some("Anthropic Claude Code — OAuth coding agent."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_body(req, config);
+        let body = build_body(req);
         let url = format!("{}/v1/messages", base_url(config));
 
         let mut headers = HeaderMap::new();
@@ -141,12 +156,8 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "claude-opus-4-5".into());
+fn build_body(req: &ConversationRequest) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, "claude-opus-4-5").to_owned();
 
     let messages: Vec<Value> = req
         .messages

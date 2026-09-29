@@ -47,6 +47,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
         max_concurrent: max_concurrent as u32,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -83,6 +84,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -93,6 +95,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -114,6 +117,7 @@ fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -124,6 +128,7 @@ fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation
         stream: true,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -255,6 +260,7 @@ async fn concurrent_streams_same_connection() {
         max_concurrent: 2,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let conn = Arc::new(Connection::new(config));
@@ -310,6 +316,7 @@ async fn connection_guard_releases_on_drop() {
         max_concurrent: 1,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let conn = Connection::new(config);
@@ -354,6 +361,7 @@ async fn pipeline_cancellation_releases_on_drop() {
         max_concurrent: 1,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let conn = Connection::new(config);
@@ -395,6 +403,7 @@ fn make_pipeline_with<A: vkdg_http::provider::ProviderAdapter + 'static>(
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -438,6 +447,7 @@ fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'stat
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let cfg2 = ConnectionConfig {
@@ -452,6 +462,7 @@ fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'stat
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -592,6 +603,7 @@ async fn session_stickiness_stale_pin_falls_through_to_routing() {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -670,6 +682,7 @@ async fn auto_routing_zero_config_routes_without_explicit_route() {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     // EMPTY router — no explicit routes. Auto-routing must find the catalog connection.
@@ -708,6 +721,7 @@ fn context_relay_injects_history_on_account_rotation() {
     use vkdg_http::pipeline::phases::relay_on_rotation;
 
     let mut op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![
             Message {
                 role: Role::User,
@@ -724,6 +738,7 @@ fn context_relay_injects_history_on_account_rotation() {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
 
     relay_on_rotation(

@@ -1,51 +1,158 @@
 package vkdg:plugin@0.1.0;
 
 /// Provider adapter plugin.
-/// Translates VKDG internal Operation -> provider wire format and back.
-/// The gateway owns the HTTP client, TLS, DNS, auth injection, and retry.
-/// The plugin only transforms bytes.
+///
+/// The gateway owns the HTTP client, TLS, DNS, retries, credential storage and
+/// token refresh scheduling. A plugin is a pure transform: it says what bytes to
+/// send where, and turns bytes coming back into gateway events.
+///
+/// Everything below is required by at least one real provider, so a community
+/// plugin can reach parity with a first-party one. `vkdg-provider-kiro` is the
+/// reference: it exercises interactive login, per-account data, endpoint choice,
+/// a non-SSE binary protocol and runtime model discovery.
+///
+/// # Optional functions
+/// A plugin that does not need a capability returns `not-applicable`:
+/// - no interactive login: `login-methods` returns `[]`
+/// - SSE passthrough: `decode-chunk` returns `not-applicable` once
+/// - static model list: `list-models` returns `not-applicable`
 interface provider-plugin {
-    use types.{request, response, plugin-error};
+    use types.{
+        request, response, plugin-error, credential, token-pair, model-info,
+        login-method, login-params, login-state, device-authorization,
+        pkce-authorization, login-result, device-poll, stream-event,
+    };
 
-    /// Translate a VKDG request into the provider's wire format.
-    /// Returns: (url, body-bytes, is-streaming)
+    // ── Identity ──────────────────────────────────────────────────────────────
+
+    /// Stable registry id, e.g. "kiro". Used in config and as the adapter key.
+    name: func() -> string;
+
+    /// Human-readable name for the console and CLI.
+    display-name: func() -> string;
+
+    /// Model ids or glob patterns this provider handles, e.g. ["claude-*"].
+    /// Used for routing before any account exists; `list-models` refines it.
+    model-patterns: func() -> list<string>;
+
+    // ── Request building ──────────────────────────────────────────────────────
+
+    /// The upstream request to send for one operation.
     ///
-    /// connection-config-json: JSON-serialized ConnectionConfig without credentials.
-    /// Shape: { "id": string, "provider": string, "models": [string],
-    ///          "max_concurrent": u32, "weight": u32, "tags": [string] }
-    /// The auth token is passed separately as the `token` argument.
-    /// The gateway strips credentials before calling this function.
-    translate-request: func(
+    /// Returns (url, headers, body, is-streaming). The plugin picks the URL, so it
+    /// can route by account type, region or tenant; the gateway performs the call.
+    ///
+    /// `connection-config-json` carries the connection without credentials:
+    /// `{ "id": string, "provider": string, "models": [string],
+    ///    "max_concurrent": u32, "weight": u32, "tags": [string],
+    ///    "base_url": string|null }`.
+    ///
+    /// `cred.extra` holds this account's own data (region, profile id, which login
+    /// method issued the token). Never call upstream from here.
+    prepare: func(
         req: request,
         connection-config-json: string,
-        token: string,
-    ) -> result<tuple<string, list<u8>, bool>, plugin-error>;
+        cred: credential,
+    ) -> result<prepared-request, plugin-error>;
 
-    /// Translate a complete (non-streaming) provider response body.
-    translate-response: func(
+    record prepared-request {
+        url:          string,
+        headers:      list<tuple<string, string>>,
+        body:         list<u8>,
+        is-streaming: bool,
+    }
+
+    // ── Response decoding ─────────────────────────────────────────────────────
+
+    /// Decode a complete (non-streaming) response body.
+    decode-response: func(
         body: list<u8>,
         request-id: string,
     ) -> result<response, plugin-error>;
 
-    /// Translate one SSE chunk from the provider's wire format.
+    /// Decode a chunk of a streaming response into events.
     ///
-    /// Return values:
-    /// - Ok(Some(response)): chunk produced a complete event; include in stream.
-    /// - Ok(None):           skip this chunk (comment line, heartbeat, empty event).
-    /// - Err(not-applicable): this plugin does not support streaming at all;
-    ///   the gateway will call translate-response on the complete buffered body
-    ///   instead. Return this only once; not once per chunk.
-    /// - Err(internal):      chunk could not be parsed; gateway will terminate stream.
-    translate-chunk: func(
+    /// Called with raw upstream bytes, not parsed SSE, so a plugin can implement a
+    /// binary protocol. Chunk boundaries are arbitrary: buffer partial frames and
+    /// return only the events now complete (an empty list is fine).
+    ///
+    /// Return `not-applicable` once to opt out; the gateway then treats the stream
+    /// as SSE passthrough.
+    decode-chunk: func(
         chunk: list<u8>,
         request-id: string,
-    ) -> result<option<response>, plugin-error>;
+    ) -> result<list<stream-event>, plugin-error>;
 
-    /// List of model IDs or glob patterns this provider handles.
-    /// e.g. ["claude-*", "claude-3-5-haiku-20241022"]
-    model-patterns: func() -> list<string>;
+    /// Called once when the upstream stream ends.
+    ///
+    /// Required by providers that send no terminal event: emit the final `usage`
+    /// and `completed` here, or `failed` if the stream was cut short. The gateway
+    /// guarantees exactly one call per stream, after the last `decode-chunk`.
+    finish-stream: func(
+        request-id: string,
+    ) -> result<list<stream-event>, plugin-error>;
 
-    name: func() -> string;
+    // ── Model discovery ───────────────────────────────────────────────────────
+
+    /// Models this account can currently use.
+    ///
+    /// The gateway caches the result. Return `not-applicable` when the provider has
+    /// no catalogue API and `model-patterns` is the whole truth.
+    list-models: func(
+        cred: credential,
+    ) -> result<list<model-info>, plugin-error>;
+
+    // ── Authentication ────────────────────────────────────────────────────────
+
+    /// Login methods this plugin supports, in the order they should be offered.
+    /// Empty = credentials come from config only (an API key in an env var).
+    login-methods: func() -> list<login-method>;
+
+    /// Begin a device-code login. `method` is a `login-method.id`.
+    ///
+    /// Return the verification URI and user code to show, plus opaque state the
+    /// gateway hands back to `poll-device-login`.
+    start-device-login: func(
+        method: string,
+        params: login-params,
+    ) -> result<device-authorization, plugin-error>;
+
+    /// Poll a device-code login once. The gateway owns the polling loop, the
+    /// interval and the slow-down backoff.
+    poll-device-login: func(
+        method: string,
+        state: login-state,
+    ) -> result<device-poll, plugin-error>;
+
+    /// Begin a PKCE authorization-code login; the gateway opens `authorize-url`.
+    start-pkce-login: func(
+        method: string,
+        params: login-params,
+    ) -> result<pkce-authorization, plugin-error>;
+
+    /// Exchange an authorization code (or a pasted callback URL) for tokens.
+    finish-pkce-login: func(
+        method: string,
+        state: login-state,
+        code: string,
+    ) -> result<login-result, plugin-error>;
+
+    /// Validate a pasted credential (refresh token, API key, exported blob) and
+    /// turn it into an account. Should verify it works, so a bad paste fails at
+    /// login rather than on first request.
+    import-token: func(
+        method: string,
+        params: login-params,
+    ) -> result<login-result, plugin-error>;
+
+    /// Refresh an expired access token.
+    ///
+    /// `extra` is the stored account data. The gateway calls this ahead of expiry,
+    /// one refresh at a time per account, and persists the result.
+    refresh-token: func(
+        refresh-token: string,
+        extra: list<tuple<string, string>>,
+    ) -> result<token-pair, plugin-error>;
 }
 
 world provider {

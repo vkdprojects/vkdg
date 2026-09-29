@@ -13,7 +13,10 @@ pub mod types;
 pub use router::Router;
 pub use scored::ScoredStrategy;
 pub use scorer::{rank_candidates, CandidateSignals, ScoringWeights};
-pub use strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
+pub use strategy::{
+    FallbackChainStrategy, LowestLatencyStrategy, PowerOfTwoChoicesStrategy, RoundRobinStrategy,
+    Strategy,
+};
 pub use types::{
     ChainStep, ConnectionWeight, EligibilityFilter, InjectMode, PluginHooks, RouteConfig, RouteId,
     RouteResult, RoutingHints, StrategyKind,
@@ -291,5 +294,147 @@ mod tests {
             matches!(result, Err(vkdg_core::VkdgError::NoEligibleConnection)),
             "Fusion with all targets excluded must return NoEligibleConnection"
         );
+    }
+
+    fn rr_route(id: &str, model: &str, target: &str) -> RouteConfig {
+        RouteConfig {
+            id: RouteId(id.into()),
+            match_models: vec![model.into()],
+            strategy: StrategyKind::RoundRobin,
+            targets: vec![vkdg_core::ConnectionId(target.into())],
+            plugin_hooks: PluginHooks::default(),
+        }
+    }
+
+    // Found live: editing config.yaml bumped the admin revision but the data
+    // plane kept routing with the startup route table.
+    #[tokio::test]
+    async fn replaced_routes_take_effect_on_the_next_request() {
+        let router = Router::new(vec![rr_route("r1", "foo-*", "c1")]);
+        let (f, h) = (EligibilityFilter::default(), RoutingHints::default());
+        assert!(router.route(&test_envelope("foo-1"), &f, &h).await.is_ok());
+
+        router.replace_routes(vec![rr_route("r2", "bar-*", "c2")]);
+        assert!(matches!(
+            router.route(&test_envelope("foo-1"), &f, &h).await,
+            Err(vkdg_core::VkdgError::NoRouteMatched)
+        ));
+        let r = router.route(&test_envelope("bar-1"), &f, &h).await.unwrap();
+        assert_eq!(r.route_id, RouteId("r2".into()));
+    }
+
+    // Combos are edited at runtime and config routes come from the file: a
+    // reload must not drop combos, and a combo edit must not drop the file's routes.
+    #[tokio::test]
+    async fn combo_routes_match_first_and_survive_config_reloads() {
+        let router = Router::new(vec![rr_route("cfg", "shared", "c-cfg")]);
+        let (f, h) = (EligibilityFilter::default(), RoutingHints::default());
+        router.replace_combo_routes(vec![rr_route("combo", "shared", "c-combo")]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(r.route_id, RouteId("combo".into()), "combo wins");
+
+        router.replace_routes(vec![
+            rr_route("cfg", "shared", "c-cfg"),
+            rr_route("cfg2", "other", "c2"),
+        ]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(r.route_id, RouteId("combo".into()), "reload kept the combo");
+
+        router.replace_combo_routes(vec![]);
+        let r = router
+            .route(&test_envelope("shared"), &f, &h)
+            .await
+            .unwrap();
+        assert_eq!(
+            r.route_id,
+            RouteId("cfg".into()),
+            "combo edit kept config routes"
+        );
+        assert!(router.route(&test_envelope("other"), &f, &h).await.is_ok());
+    }
+
+    fn two_target_route(strategy: StrategyKind) -> RouteConfig {
+        RouteConfig {
+            id: RouteId("r".into()),
+            match_models: vec!["*".into()],
+            strategy,
+            targets: vec![
+                vkdg_core::ConnectionId("slow".into()),
+                vkdg_core::ConnectionId("fast".into()),
+            ],
+            plugin_hooks: PluginHooks::default(),
+        }
+    }
+
+    fn latency_hints() -> RoutingHints {
+        let mut h = RoutingHints::default();
+        h.latency_p50_ms
+            .insert(vkdg_core::ConnectionId("slow".into()), 900);
+        h.latency_p50_ms
+            .insert(vkdg_core::ConnectionId("fast".into()), 80);
+        h
+    }
+
+    // Found in review: lowest_latency and power_of_two_choices parsed from config
+    // but silently routed round-robin.
+    #[tokio::test]
+    async fn latency_strategies_prefer_the_faster_target() {
+        for kind in [StrategyKind::LowestLatency, StrategyKind::PowerOfTwoChoices] {
+            let router = Router::new(vec![two_target_route(kind.clone())]);
+            for _ in 0..6 {
+                let r = router
+                    .route(
+                        &test_envelope("m"),
+                        &EligibilityFilter::default(),
+                        &latency_hints(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(r.connection_id.0, "fast", "{kind:?}");
+            }
+        }
+    }
+
+    // No latency data yet (cold start): still pick an eligible target.
+    #[tokio::test]
+    async fn latency_strategy_without_data_still_routes() {
+        let router = Router::new(vec![two_target_route(StrategyKind::LowestLatency)]);
+        let r = router
+            .route(
+                &test_envelope("m"),
+                &EligibilityFilter::default(),
+                &RoutingHints::default(),
+            )
+            .await;
+        assert!(r.is_ok());
+    }
+
+    // A route that matched but has no usable target must not look like "no
+    // route": the pipeline falls back to any connection only on the latter, and
+    // treating both alike let requests escape the matched route's targets.
+    #[tokio::test]
+    async fn matched_route_with_no_usable_target_is_not_a_miss() {
+        let router = Router::new(vec![rr_route("r1", "foo-*", "c1")]);
+        let h = RoutingHints::default();
+        let all_out = EligibilityFilter {
+            excluded_connections: vec![vkdg_core::ConnectionId("c1".into())],
+            reason_map: Default::default(),
+        };
+        assert!(matches!(
+            router.route(&test_envelope("foo-1"), &all_out, &h).await,
+            Err(vkdg_core::VkdgError::NoEligibleConnection)
+        ));
+        assert!(matches!(
+            router
+                .route(&test_envelope("bar-1"), &EligibilityFilter::default(), &h)
+                .await,
+            Err(vkdg_core::VkdgError::NoRouteMatched)
+        ));
     }
 }

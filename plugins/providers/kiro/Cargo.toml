@@ -5,11 +5,23 @@ edition = "2021"
 
 [dependencies]
 vkdg-provider-sdk = { workspace = true }
+vkdg-core = { workspace = true }
 vkdg-connections  = { workspace = true }
 vkdg-operations   = { workspace = true }
+serde             = { workspace = true }
 serde_json        = { workspace = true }
-reqwest           = { workspace = true, features = ["json"] }
+uuid              = { workspace = true }
+crc32fast         = { workspace = true }
+bytes             = { workspace = true }
+http              = { workspace = true }
+thiserror         = { workspace = true }
+sha2              = { workspace = true }
 futures           = { workspace = true }
+reqwest           = { workspace = true }
+
+[dev-dependencies]
+aws-smithy-eventstream = "=0.61.4"
+aws-smithy-types       = "=1.8.1"
 
 [lib]
 doctest = false

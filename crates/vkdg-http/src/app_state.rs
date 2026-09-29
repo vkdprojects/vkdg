@@ -7,12 +7,13 @@ use vkdg_connections::{
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_routing::Router as VkdgRouter;
 
-use crate::admission::{AdmissionGuard, IpPolicy};
+use crate::admission::AdmissionGuard;
 use crate::dedup::DedupTable;
 use crate::frontdoor::{FrontDoor, ServerConfig};
 use crate::upstream::HttpClient;
 use vkdg_cache::CacheBackend;
 use vkdg_combos::ComboResolver;
+use vkdg_core::net::IpPolicy;
 use vkdg_memory::MemoryStore;
 use vkdg_policy_compress::Compressor;
 use vkdg_provider_sdk::ProviderRegistry;
@@ -53,9 +54,13 @@ pub struct PipelineState {
     /// Enable context-relay: when a session pin rotates to a different connection,
     /// inject the session's recent conversation history as a system context block.
     pub relay_enabled: bool,
+    /// Client IP rules from config; swapped in place on reload.
     pub ip_policy: Option<Arc<IpPolicy>>,
     /// Optional admin request log.  None = request logging disabled.
     pub request_log: Option<Arc<RequestLog>>,
+    /// Plugins named by route `hooks`. A route naming a hook absent here is
+    /// denied, never skipped.
+    pub hooks: Arc<crate::hooks::HookRegistry>,
 }
 
 impl PipelineState {
@@ -91,6 +96,7 @@ impl PipelineState {
             eval_enabled: false,
             relay_enabled: false,
             request_log: None,
+            hooks: Arc::default(),
         }
     }
 }

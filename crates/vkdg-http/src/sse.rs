@@ -172,16 +172,28 @@ pub fn strip_think_tags(data: &str) -> String {
 
 // ── Stream termination guard ──────────────────────────────────────────────────
 
-/// The SSE error event injected when upstream closes without [DONE].
-/// Format matches Anthropic's error event format so clients handle it correctly.
+/// The SSE error event injected when upstream closes without terminating.
+/// Carries both dialects' terminators so any client can see the stream ended.
 const STREAM_INTERRUPTED_EVENT: &str =
     "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream closed mid-stream\"}}\n\ndata: [DONE]\n\n";
 
-/// Wrap a byte stream and inject an error event if it ends without `[DONE]`.
+/// True when this chunk ends the stream in either client dialect.
 ///
-/// Detects upstream TCP closure mid-stream: if the inner stream terminates
-/// (or errors) before a `[DONE]` sentinel is seen, appends a well-formed SSE
-/// error event so clients can detect the incomplete response.
+/// OpenAI sends a `[DONE]` sentinel; Anthropic sends `message_stop` and no
+/// sentinel at all. Recognising only `[DONE]` made every successful Anthropic
+/// response end with a spurious error event.
+fn is_terminal_chunk(chunk: &[u8]) -> bool {
+    chunk.windows(6).any(|w| w == b"[DONE]")
+        || chunk
+            .windows(b"message_stop".len())
+            .any(|w| w == b"message_stop")
+}
+
+/// Wrap a byte stream and inject an error event if it ends without terminating.
+///
+/// Detects upstream TCP closure mid-stream: if the inner stream ends (or errors)
+/// before a terminal event, appends a well-formed SSE error event so clients can
+/// tell an incomplete response from a complete one.
 pub fn with_termination_guard(
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
@@ -193,7 +205,7 @@ pub fn with_termination_guard(
             }
             match stream.next().await {
                 Some(Ok(chunk)) => {
-                    if chunk.windows(6).any(|w| w == b"[DONE]") {
+                    if is_terminal_chunk(&chunk) {
                         saw_done = true;
                     }
                     Some((Ok(chunk), (stream, saw_done, finished)))
@@ -461,6 +473,44 @@ mod tests {
             guarded.len(),
             2,
             "complete stream must not have extra events injected"
+        );
+    }
+
+    /// Refutes: treating `[DONE]` as the only valid terminator.
+    ///
+    /// Anthropic streams end with `message_stop`; there is no `[DONE]` sentinel in
+    /// that dialect. Requiring one made every successful Anthropic response carry a
+    /// trailing `overloaded_error`, so a client that trusts its own protocol saw a
+    /// completed answer as a failure. Found against a live Kiro account.
+    #[tokio::test]
+    async fn anthropic_message_stop_is_a_valid_terminator() {
+        use futures::stream;
+
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(
+                b"event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+            )),
+        ];
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(chunks));
+        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+
+        let text: String = guarded
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect();
+        assert!(
+            !text.contains("overloaded_error"),
+            "a stream ending in message_stop is complete: {text}"
+        );
+        assert_eq!(
+            guarded.len(),
+            2,
+            "no extra frame may follow message_stop: {text}"
         );
     }
 

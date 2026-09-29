@@ -60,13 +60,18 @@ pub(super) fn error_response(err: VkdgError) -> Response {
         VkdgError::CapabilityUnsupported { .. } => {
             (StatusCode::BAD_REQUEST, "invalid_request_error")
         }
-        VkdgError::NoEligibleConnection => (StatusCode::BAD_GATEWAY, "api_error"),
+        VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
+            (StatusCode::BAD_GATEWAY, "api_error")
+        }
         VkdgError::UpstreamError { code, .. } => {
             let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
             (s, "api_error")
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        // The gateway's stored login for this connection is dead; the client's
+        // request is fine. Anthropic's `authentication_error` is the closest fit.
+        VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::BudgetExceeded { .. } => (StatusCode::PAYMENT_REQUIRED, "budget_exceeded_error"),
     };
@@ -135,4 +140,67 @@ pub(super) fn filter_think_tags_stream(
             }
         },
     ))
+}
+
+/// Decodes a provider-specific stream (e.g. AWS EventStream) and re-encodes it
+/// in the dialect the client spoke.
+///
+/// The encoder lives in `vkdg-operations` so a dialect is written in exactly one
+/// place. When upstream ends, `decoder.finish()` and the encoder's own close run
+/// before the stream terminates: providers that send no stop event (Kiro) still
+/// produce a well-formed terminal sequence.
+pub(super) fn decode_stream_to_sse(
+    body: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
+    api_type: &vkdg_core::ApiType,
+    ctx: &vkdg_operations::StreamContext<'_>,
+) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    struct State {
+        upstream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+        decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
+        encoder: Box<dyn vkdg_operations::StreamEncoder>,
+        pending: VecDeque<vkdg_operations::ConversationEvent>,
+        drained: bool,
+    }
+
+    let state = State {
+        upstream: body,
+        decoder,
+        encoder: vkdg_operations::stream_encoder_for(api_type, ctx),
+        pending: VecDeque::new(),
+        drained: false,
+    };
+
+    Box::pin(futures::stream::unfold(Some(state), |state| async move {
+        let mut state = state?;
+        loop {
+            // Emit events already decoded from an earlier chunk.
+            while let Some(event) = state.pending.pop_front() {
+                let encoded = state.encoder.encode(&event);
+                if !encoded.is_empty() {
+                    return Some((Ok(Bytes::from(encoded)), Some(state)));
+                }
+            }
+            if state.drained {
+                return None;
+            }
+            match state.upstream.next().await {
+                Some(Ok(chunk)) => state.pending.extend(state.decoder.feed(chunk)),
+                Some(Err(e)) => return Some((Err(e), Some(state))),
+                None => {
+                    // Upstream closed: flush the decoder, then close the dialect.
+                    state.drained = true;
+                    state.pending.extend(state.decoder.finish());
+                    while let Some(event) = state.pending.pop_front() {
+                        let encoded = state.encoder.encode(&event);
+                        if !encoded.is_empty() {
+                            return Some((Ok(Bytes::from(encoded)), Some(state)));
+                        }
+                    }
+                    let tail = state.encoder.finish();
+                    return (!tail.is_empty()).then(|| (Ok(Bytes::from(tail)), None));
+                }
+            }
+        }
+    }))
 }

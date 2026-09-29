@@ -1,13 +1,12 @@
 <script lang="ts">
   import '../app.css';
   import type { Snippet } from 'svelte';
-  import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { m } from '$lib/paraglide/messages.js';
   import { getLocale, setLocale } from '$lib/paraglide/runtime.js';
   import { Toaster } from 'svelte-sonner';
-  import { Home, Plug, Combine, Route, List, Gamepad2, Key, Settings } from 'lucide-svelte';
+  import { Home, Combine, Route, List, Gamepad2, Key, Settings, Puzzle, LayoutGrid } from 'lucide-svelte';
   import { Logo } from '$lib/components/index.js';
   import { api } from '$lib/api.js';
   import type { SessionUser, SystemInfo } from '$lib/api.js';
@@ -18,6 +17,9 @@
   let { children }: Props = $props();
 
   let user = $state<SessionUser | null>(null);
+  // Public pages render without the app shell: a signed-out visitor sees only
+  // the sign-in form, not navigation to pages that would bounce them back.
+  const isPublic = $derived(page.url.pathname === '/login' || page.url.pathname === '/logout');
   let system = $state<SystemInfo | null>(null);
 
   const navGroups = [
@@ -25,7 +27,6 @@
       label: 'GATEWAY',
       items: [
         { href: '/', icon: Home, label: () => m.nav_overview() },
-        { href: '/connections', icon: Plug, label: () => m.nav_connections() },
         { href: '/combos', icon: Combine, label: () => m.nav_combos() },
         { href: '/routes', icon: Route, label: () => m.nav_routes() },
       ],
@@ -41,6 +42,8 @@
       label: 'MANAGE',
       items: [
         { href: '/keys', icon: Key, label: () => m.nav_keys() },
+        { href: '/providers', icon: LayoutGrid, label: () => m.nav_providers() },
+        { href: '/plugins', icon: Puzzle, label: () => 'Plugins' },
         { href: '/settings', icon: Settings, label: () => m.nav_settings() },
       ],
     },
@@ -57,18 +60,31 @@
     goto('/login');
   }
 
-  onMount(async () => {
-    const isLoginPage = page.url.pathname === '/login' || page.url.pathname === '/logout';
-    try {
-      const [me, sys] = await Promise.all([api.me(), api.system()]);
-      user = me;
-      system = sys;
-    } catch {
-      if (!isLoginPage) goto('/login');
+  // Re-check the session on every navigation into the app: signing in lands on
+  // `/` without a reload, so a one-time check on mount would never see it.
+  $effect(() => {
+    const path = page.url.pathname;
+    if (isPublic) {
+      user = null;
+      return;
     }
+    if (user) return;
+    Promise.all([api.me(), api.system()])
+      .then(([me, sys]) => {
+        user = me;
+        system = sys;
+      })
+      .catch(() => {
+        if (page.url.pathname === path) goto('/login');
+      });
   });
 </script>
 
+{#if isPublic || !user}
+  <main class="main public">
+    {#if isPublic}{@render children()}{/if}
+  </main>
+{:else}
 <div class="shell">
   <aside class="sidebar">
     <a href="/" class="logo" aria-label="VKDG home">
@@ -85,6 +101,7 @@
               href={item.href}
               class="nav-item"
               class:active={isActive(item.href)}
+              aria-current={isActive(item.href) ? 'page' : undefined}
             >
               <item.icon size={15} strokeWidth={1.75} />
               {item.label()}
@@ -98,11 +115,13 @@
       <div class="locale-switcher">
         <button
           class:active={getLocale() === 'en'}
+          aria-pressed={getLocale() === 'en'}
           onclick={() => setLocale('en')}
         >EN</button>
         <span class="sep">/</span>
         <button
           class:active={getLocale() === 'pt-BR'}
+          aria-pressed={getLocale() === 'pt-BR'}
           onclick={() => setLocale('pt-BR')}
         >PT</button>
       </div>
@@ -122,6 +141,7 @@
     {@render children()}
   </main>
 </div>
+{/if}
 
 <Toaster richColors theme="dark" position="bottom-right" />
 

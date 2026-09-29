@@ -9,6 +9,7 @@ vkdg-core       = { workspace = true }
 serde           = { workspace = true }
 async-trait     = { workspace = true }
 tokio           = { workspace = true }
+parking_lot     = { workspace = true }
 
 [lib]
 doctest = false

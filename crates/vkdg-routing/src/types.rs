@@ -14,15 +14,14 @@ pub struct ConnectionWeight(pub u32);
 
 // ── Plugin hooks ──────────────────────────────────────────────────────────────
 
-/// All fields are plugin IDs; all default to empty.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Plugin ids run for requests on a route. Only phases the pipeline executes
+/// exist here: a config field nothing reads is worse than no field.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginHooks {
-    pub pre_auth: Vec<String>,
+    /// Auth plugins, in order. Each runs after the client's vkdg key has been
+    /// accepted and can only narrow access: anything but an explicit allow denies.
+    #[serde(default)]
     pub auth: Vec<String>,
-    pub rate_limit: Vec<String>,
-    pub pre_dispatch: Vec<String>,
-    pub on_event: Vec<String>,
-    pub on_finish: Vec<String>,
 }
 
 // ── Strategy kind ─────────────────────────────────────────────────────────────
@@ -57,11 +56,9 @@ pub struct ChainStep {
 #[serde(rename_all = "snake_case")]
 pub enum StrategyKind {
     RoundRobin,
-    Weighted,
     LowestLatency,
     PowerOfTwoChoices,
     FallbackChain,
-    LastKnownGood,
     /// Multi-factor scored strategy.
     /// mode_pack: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
     Scored {
@@ -133,4 +130,6 @@ pub struct RouteResult {
     pub fusion_targets: Vec<ConnectionId>,
     /// Non-empty when strategy is PromptChain; steps to execute sequentially.
     pub chain_steps: Vec<ChainStep>,
+    /// Hooks of the matched route. Empty for auto-routed requests.
+    pub hooks: PluginHooks,
 }

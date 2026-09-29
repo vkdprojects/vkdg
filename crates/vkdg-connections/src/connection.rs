@@ -13,7 +13,18 @@ pub enum ProviderKind {
     Anthropic,
     OpenAI,
     Google,
-    Custom { base_url: String },
+    /// A provider plugin addressed by its registry id, e.g. `kiro`, `groq`.
+    Plugin {
+        id: String,
+    },
+    /// An OpenAI Chat Completions endpoint (`openai-compat` in config).
+    Custom {
+        base_url: String,
+    },
+    /// An Anthropic Messages endpoint (`anthropic-compat` in config).
+    AnthropicCompat {
+        base_url: String,
+    },
 }
 
 impl ProviderKind {
@@ -22,18 +33,24 @@ impl ProviderKind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAI => "openai",
             ProviderKind::Google => "google",
-            ProviderKind::Custom { base_url } => base_url.as_str(),
+            ProviderKind::Plugin { id } => id.as_str(),
+            ProviderKind::Custom { base_url } | ProviderKind::AnthropicCompat { base_url } => {
+                base_url.as_str()
+            }
         }
     }
 
     /// Returns the registry key used to look up a [`ProviderAdapter`] for this kind.
-    /// `Custom` connections use the OpenAI-compatible adapter by default.
+    /// `Custom` connections are bare OpenAI-compatible endpoints, so they use the
+    /// OpenAI adapter; `Plugin` connections address their own adapter by id.
     pub fn adapter_id(&self) -> &str {
         match self {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAI => "openai",
             ProviderKind::Google => "google",
+            ProviderKind::Plugin { id } => id.as_str(),
             ProviderKind::Custom { .. } => "openai",
+            ProviderKind::AnthropicCompat { .. } => "anthropic",
         }
     }
 }
@@ -56,6 +73,11 @@ pub enum AuthKind {
         client_secret_env: String,
         scopes: Vec<String>,
     },
+    /// A persisted provider account (OAuth login or imported token) in the
+    /// [`AccountStore`](crate::AccountStore). Refresh is delegated to the plugin.
+    Account {
+        account_id: String,
+    },
 }
 
 // ── Connection config ─────────────────────────────────────────────────────────
@@ -70,6 +92,10 @@ pub struct ConnectionConfig {
     pub max_concurrent: u32,
     pub weight: u32,
     pub tags: Vec<String>,
+    /// Provider endpoint this connection uses, when the provider exposes more
+    /// than one (`kiro`: `runtime` | `codewhisperer`). `None` lets the plugin
+    /// choose from the credential type.
+    pub endpoint: Option<String>,
     /// Capabilities this connection supports (e.g. Vision, Tools, Streaming).
     /// Empty set means no capability filtering is applied (legacy / unconfigured).
     pub capabilities: CapabilitySet,
@@ -157,13 +183,7 @@ impl Connection {
     }
 
     pub(crate) fn serves_model(&self, model: &str) -> bool {
-        self.config.models.iter().any(|pattern| {
-            if let Some(prefix) = pattern.strip_suffix('*') {
-                model.starts_with(prefix)
-            } else {
-                model == pattern
-            }
-        })
+        vkdg_core::glob::matches_any(&self.config.models, model)
     }
 
     /// Record a 429/5xx and move to `Cooldown` with exponential backoff.
@@ -236,6 +256,7 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: vkdg_core::CapabilitySet::default(),
         })
     }
@@ -308,6 +329,7 @@ mod tests {
             max_concurrent: 10,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: vkdg_core::CapabilitySet::default(),
         };
         let catalog = ConnectionCatalog::new(vec![config]);

@@ -2,30 +2,56 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api.js';
+  import { m } from '$lib/paraglide/messages.js';
   import { Logo } from '$lib/components/index.js';
 
-  let token = $state('');
+  // `token`: first run, sign in with the bootstrap token.
+  // `password`: a console password exists; the token no longer works.
+  // `set`: signed in with the token; choose the password before continuing,
+  // so a sign-out never needs a gateway restart to get back in.
+  type Mode = 'loading' | 'token' | 'password' | 'set';
+  let mode = $state<Mode>('loading');
+  let secret = $state('');
+  let confirmation = $state('');
   let loading = $state(false);
   let error = $state('');
 
   onMount(async () => {
-    // Already logged in? Redirect to home.
     try {
       await api.me();
       goto('/');
+      return;
     } catch {
-      // not authenticated, stay on login
+      // not signed in
+    }
+    try {
+      mode = (await api.setupStatus()).password_set ? 'password' : 'token';
+    } catch {
+      mode = 'token';
     }
   });
 
-  async function handleSubmit(e: Event) {
+  async function submit(e: Event) {
     e.preventDefault();
-    if (!token.trim()) return;
+    if (!secret) return;
     loading = true;
     error = '';
     try {
-      await api.login(token.trim());
-      goto('/');
+      if (mode === 'set') {
+        if (secret !== confirmation) {
+          error = m.login_password_mismatch();
+          return;
+        }
+        await api.setPassword(secret);
+        goto('/');
+      } else if (mode === 'password') {
+        await api.login({ password: secret });
+        goto('/');
+      } else {
+        await api.login({ token: secret.trim() });
+        mode = 'set';
+        secret = '';
+      }
     } catch (err) {
       error = (err as Error).message;
     } finally {
@@ -40,30 +66,55 @@
       <Logo size={32} />
       <span class="brand-name">VKDG</span>
     </div>
-    <h1>Sign in</h1>
-    <form onsubmit={handleSubmit}>
-      <label for="token">Bootstrap token</label>
-      <input
-        id="token"
-        type="password"
-        name="token"
-        required
-        autocomplete="off"
-        bind:value={token}
-        disabled={loading}
-        aria-describedby={error ? 'login-error' : undefined}
-      />
-      {#if error}
-        <p id="login-error" class="error-msg" role="alert">{error}</p>
-      {/if}
-      <button type="submit" disabled={loading}>
-        {loading ? 'Signing in…' : 'Sign in'}
-      </button>
-    </form>
+    <h1>{mode === 'set' ? m.login_set_heading() : m.login_submit()}</h1>
+    {#if mode === 'set'}
+      <p class="hint">{m.login_set_hint()}</p>
+    {/if}
+    {#if mode !== 'loading'}
+      <form onsubmit={submit}>
+        <label for="secret">
+          {mode === 'token' ? m.login_token_label() : mode === 'set' ? m.login_new_password_label() : m.login_password_label()}
+        </label>
+        <input
+          id="secret"
+          type="password"
+          name={mode === 'token' ? 'token' : 'password'}
+          required
+          autocomplete={mode === 'password' ? 'current-password' : mode === 'set' ? 'new-password' : 'off'}
+          bind:value={secret}
+          disabled={loading}
+          aria-describedby={error ? 'login-error' : undefined}
+        />
+        {#if mode === 'set'}
+          <label for="confirm">{m.login_confirm_password_label()}</label>
+          <input
+            id="confirm"
+            type="password"
+            name="confirm"
+            required
+            autocomplete="new-password"
+            bind:value={confirmation}
+            disabled={loading}
+          />
+        {/if}
+        {#if error}
+          <p id="login-error" class="error-msg" role="alert">{error}</p>
+        {/if}
+        <button type="submit" disabled={loading}>
+          {loading ? m.login_busy() : mode === 'set' ? m.login_set_submit() : m.login_submit()}
+        </button>
+      </form>
+    {/if}
   </div>
 </div>
 
 <style>
+  .hint {
+    color: var(--text-2);
+    font-size: 0.8125rem;
+    margin: 0 0 12px;
+  }
+
   .login-shell {
     min-height: 100vh;
     display: flex;

@@ -113,6 +113,7 @@ mod tests {
 
     fn tool_result_req(content: &str) -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::Tool,
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
@@ -126,6 +127,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         }
     }
 

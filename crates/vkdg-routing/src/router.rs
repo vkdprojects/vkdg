@@ -1,17 +1,46 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use parking_lot::RwLock;
+
 use vkdg_core::{ConnectionId, ExcludedCandidate, RequestEnvelope, Result, VkdgError};
 
 use crate::scored::ScoredStrategy;
-use crate::strategy::{FallbackChainStrategy, RoundRobinStrategy, Strategy};
+use crate::strategy::{
+    FallbackChainStrategy, LowestLatencyStrategy, PowerOfTwoChoicesStrategy, RoundRobinStrategy,
+    Strategy,
+};
 use crate::types::{EligibilityFilter, RouteConfig, RouteResult, RoutingHints, StrategyKind};
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub struct Router {
-    routes: Vec<RouteConfig>,
+    /// Swapped whole on config reload or combo edit; a request routes against
+    /// the snapshot it read, never a half-applied one.
+    tables: RwLock<Tables>,
+    /// Kept across reloads so round-robin positions do not reset.
     strategies: HashMap<String, Arc<dyn Strategy>>,
+}
+
+/// Combo routes (edited at runtime) and config routes (from the file), kept
+/// apart so replacing one never drops the other. Combos match first.
+#[derive(Default)]
+struct Tables {
+    combos: Arc<Vec<RouteConfig>>,
+    config: Arc<Vec<RouteConfig>>,
+    merged: Arc<Vec<RouteConfig>>,
+}
+
+impl Tables {
+    fn merge(&mut self) {
+        self.merged = Arc::new(
+            self.combos
+                .iter()
+                .chain(self.config.iter())
+                .cloned()
+                .collect(),
+        );
+    }
 }
 
 impl Router {
@@ -19,7 +48,41 @@ impl Router {
         let mut strategies: HashMap<String, Arc<dyn Strategy>> = HashMap::new();
         strategies.insert("round_robin".into(), Arc::new(RoundRobinStrategy::new()));
         strategies.insert("fallback_chain".into(), Arc::new(FallbackChainStrategy));
-        Self { routes, strategies }
+        strategies.insert("lowest_latency".into(), Arc::new(LowestLatencyStrategy));
+        strategies.insert(
+            "power_of_two_choices".into(),
+            Arc::new(PowerOfTwoChoicesStrategy::new()),
+        );
+        let mut tables = Tables {
+            config: Arc::new(routes),
+            ..Tables::default()
+        };
+        tables.merge();
+        Self {
+            tables: RwLock::new(tables),
+            strategies,
+        }
+    }
+
+    /// Replace the config route table from a new, already validated snapshot.
+    /// Combo routes stay in force.
+    pub fn replace_routes(&self, routes: Vec<RouteConfig>) {
+        let mut t = self.tables.write();
+        t.config = Arc::new(routes);
+        t.merge();
+    }
+
+    /// Replace the combo routes. They match before config routes, so a combo
+    /// named like a model takes that model's traffic. Config routes stay.
+    pub fn replace_combo_routes(&self, routes: Vec<RouteConfig>) {
+        let mut t = self.tables.write();
+        t.combos = Arc::new(routes);
+        t.merge();
+    }
+
+    /// The route table currently in force: combos first, then config routes.
+    pub fn routes(&self) -> Arc<Vec<RouteConfig>> {
+        Arc::clone(&self.tables.read().merged)
     }
 
     pub async fn route(
@@ -28,9 +91,8 @@ impl Router {
         filter: &EligibilityFilter,
         hints: &RoutingHints,
     ) -> Result<RouteResult> {
-        let route = self
-            .match_route(envelope)
-            .ok_or(VkdgError::NoEligibleConnection)?;
+        let routes = self.routes();
+        let route = Self::match_route(&routes, envelope).ok_or(VkdgError::NoRouteMatched)?;
 
         // Fusion is handled separately — it builds fusion_targets directly.
         if let StrategyKind::Fusion { max_candidates } = &route.strategy {
@@ -63,6 +125,7 @@ impl Router {
                 excluded,
                 fusion_targets,
                 chain_steps: vec![],
+                hooks: route.plugin_hooks.clone(),
             });
         }
         // PromptChain is handled separately — it builds chain_steps directly.
@@ -108,29 +171,32 @@ impl Router {
                 excluded,
                 fusion_targets: vec![],
                 chain_steps: steps.clone(),
+                hooks: route.plugin_hooks.clone(),
             });
         }
 
+        let named = |name: &str| {
+            self.strategies
+                .get(name)
+                .cloned()
+                .ok_or_else(|| VkdgError::Internal(format!("{name} not registered")))
+        };
         let strategy: Arc<dyn Strategy> = match &route.strategy {
-            StrategyKind::RoundRobin => self
-                .strategies
-                .get("round_robin")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
-            StrategyKind::FallbackChain => self
-                .strategies
-                .get("fallback_chain")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("fallback_chain not registered".into()))?,
+            StrategyKind::RoundRobin => named("round_robin")?,
+            StrategyKind::FallbackChain => named("fallback_chain")?,
+            StrategyKind::LowestLatency => named("lowest_latency")?,
+            StrategyKind::PowerOfTwoChoices => named("power_of_two_choices")?,
             StrategyKind::Scored { mode_pack } => Arc::new(ScoredStrategy {
                 mode_pack: mode_pack.clone(),
             }),
-            // Other strategies fall back to round-robin until implemented.
-            _ => self
-                .strategies
-                .get("round_robin")
-                .cloned()
-                .ok_or_else(|| VkdgError::Internal("round_robin not registered".into()))?,
+            // Config validation refuses these, so reaching here is a wiring bug:
+            // fail loudly rather than quietly route round-robin.
+            other => {
+                return Err(VkdgError::ConfigInvalid {
+                    field: format!("routes[{}].strategy", route.id.0),
+                    message: format!("strategy {other:?} is not implemented"),
+                })
+            }
         };
 
         let excluded: Vec<ExcludedCandidate> = filter
@@ -156,19 +222,17 @@ impl Router {
             excluded,
             fusion_targets: vec![],
             chain_steps: vec![],
+            hooks: route.plugin_hooks.clone(),
         })
     }
 
-    fn match_route(&self, envelope: &RequestEnvelope) -> Option<&RouteConfig> {
+    fn match_route<'r>(
+        routes: &'r [RouteConfig],
+        envelope: &RequestEnvelope,
+    ) -> Option<&'r RouteConfig> {
         let model = &envelope.model_requested;
-        self.routes.iter().find(|r| {
-            r.match_models.iter().any(|pattern| {
-                if let Some(prefix) = pattern.strip_suffix('*') {
-                    model.starts_with(prefix)
-                } else {
-                    model == pattern
-                }
-            })
-        })
+        routes
+            .iter()
+            .find(|r| vkdg_core::glob::matches_any(&r.match_models, model))
     }
 }

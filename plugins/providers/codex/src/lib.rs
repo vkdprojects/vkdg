@@ -10,13 +10,17 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError,
-    TokenPair,
+    Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
+    ProviderError, TokenPair,
 };
 
 pub struct CodexAdapter;
 
 impl ProviderAdapter for CodexAdapter {
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        Some(self)
+    }
+
     fn id(&self) -> &str {
         "codex"
     }
@@ -25,18 +29,29 @@ impl ProviderAdapter for CodexAdapter {
         "OpenAI Codex"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'C',
+            icon_color: "#10a37f",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://chatgpt.com"),
+            description: Some("OpenAI Codex — coding agent via OAuth."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_chat_completions_body(req, config, "gpt-4o");
+        let body = build_responses_body(req);
         // Codex uses the OpenAI Responses API endpoint
         let url = format!("{}/v1/responses", base_url(config));
         let headers = build_auth_headers(token);
@@ -140,80 +155,105 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-fn build_chat_completions_body(
-    req: &ConversationRequest,
-    config: &ConnectionConfig,
-    default_model: &str,
-) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| default_model.to_string());
+/// Converts a ConversationRequest into the Codex Responses API body shape.
+/// Key differences from Chat Completions (which Codex /v1/responses rejects):
+/// - `input` not `messages`; system messages stay in `input` as `developer` role
+///   for prompt-cache eligibility (`instructions` is not cached on GPT-5 models)
+/// - `instructions` holds the system prompt passed from `req.system`
+/// - `store: false` (OAuth accounts: backend rejects `true`)
+/// - `max_tokens` / `max_output_tokens` stripped (Codex rejects both)
+/// - always `stream: true`; the Responses endpoint is SSE-first
+fn build_responses_body(req: &ConversationRequest) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, "gpt-4o").to_owned();
 
-    let mut messages: Vec<Value> = Vec::new();
-    if let Some(sys) = &req.system {
-        messages.push(json!({ "role": "system", "content": sys }));
-    }
-
+    let mut input: Vec<Value> = Vec::new();
     for m in &req.messages {
-        let msg = match m.role {
-            Role::System => {
-                let c = msg_content(&m.content);
-                json!({ "role": "system", "content": c })
-            }
-            Role::User => {
-                let c = msg_content(&m.content);
-                json!({ "role": "user", "content": c })
-            }
-            Role::Assistant => {
-                if let MessageContent::Blocks(blocks) = &m.content {
-                    let tool_calls: Vec<Value> = blocks
+        // system → developer keeps the message in `input` for prompt caching;
+        // `instructions` is not part of GPT-5's cache key.
+        let role = match m.role {
+            Role::System => "developer",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+        };
+        let item = match &m.content {
+            MessageContent::Text(text) => json!({
+                "type": "message", "role": role,
+                "content": [{ "type": "input_text", "text": text }]
+            }),
+            MessageContent::Blocks(blocks) => {
+                let tool_calls: Vec<Value> = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { id, name, input } => {
+                            let args = serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
+                            Some(json!({ "type": "function_call", "call_id": id,
+                                     "name": name, "arguments": args }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let tool_results: Vec<Value> = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                        } => Some(json!({
+                            "type": "function_call_output",
+                            "call_id": tool_use_id, "output": content
+                        })),
+                        _ => None,
+                    })
+                    .collect();
+                if !tool_calls.is_empty() {
+                    // Each function_call is a top-level item, not nested in a message.
+                    for tc in &tool_calls {
+                        input.push(tc.clone());
+                    }
+                    continue;
+                } else if !tool_results.is_empty() {
+                    for tr in &tool_results {
+                        input.push(tr.clone());
+                    }
+                    continue;
+                } else {
+                    let parts: Vec<Value> = blocks
                         .iter()
                         .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
-                                let args =
-                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
-                                Some(json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": { "name": name, "arguments": args }
-                                }))
+                            ContentBlock::Text { text } => {
+                                Some(json!({ "type": "input_text", "text": text }))
                             }
                             _ => None,
                         })
                         .collect();
-                    if !tool_calls.is_empty() {
-                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
-                    } else {
-                        let c = msg_content(&m.content);
-                        json!({ "role": "assistant", "content": c })
-                    }
-                } else {
-                    let c = msg_content(&m.content);
-                    json!({ "role": "assistant", "content": c })
+                    json!({ "type": "message", "role": role, "content": parts })
                 }
             }
-            Role::Tool => {
-                let (id, text) = extract_tool_result(&m.content);
-                json!({ "role": "tool", "tool_call_id": id, "content": text })
-            }
         };
-        messages.push(msg);
+        input.push(item);
     }
 
     let mut body = Map::new();
     body.insert("model".into(), Value::String(model));
-    body.insert("messages".into(), Value::Array(messages));
-    if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".into(), json!(max));
-    }
+    body.insert("input".into(), Value::Array(input));
+    // Always set instructions; Codex Responses rejects requests without it.
+    body.insert(
+        "instructions".into(),
+        Value::String(
+            req.system
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Follow the developer instructions in the conversation.")
+                .to_owned(),
+        ),
+    );
+    body.insert("store".into(), Value::Bool(false));
+    // Always stream; the /responses endpoint is SSE-first.
+    body.insert("stream".into(), Value::Bool(true));
+    // max_tokens and max_output_tokens are stripped: Codex rejects both.
     if let Some(temp) = req.temperature {
         body.insert("temperature".into(), json!(temp));
-    }
-    if req.stream {
-        body.insert("stream".into(), Value::Bool(true));
-        body.insert("stream_options".into(), json!({ "include_usage": true }));
     }
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req
@@ -231,45 +271,74 @@ fn build_chat_completions_body(
             .collect();
         body.insert("tools".into(), Value::Array(tools));
     }
-
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
-fn msg_content(content: &MessageContent) -> Value {
-    match content {
-        MessageContent::Text(t) => Value::String(t.clone()),
-        MessageContent::Blocks(blocks) => {
-            let parts: Vec<Value> = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                    _ => None,
-                })
-                .collect();
-            if parts.is_empty() {
-                Value::Null
-            } else {
-                Value::Array(parts)
-            }
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use vkdg_connections::AuthKind;
+    use vkdg_operations::{CapabilitySet, Message};
 
-fn extract_tool_result(content: &MessageContent) -> (String, String) {
-    if let MessageContent::Blocks(blocks) = content {
-        for b in blocks {
-            if let ContentBlock::ToolResult {
-                tool_use_id,
-                content: c,
-            } = b
-            {
-                return (tool_use_id.clone(), c.clone());
-            }
-        }
+    fn simple(requested: &str, patterns: &[&str]) -> Value {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-1".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::Account {
+                account_id: "a".into(),
+            },
+            models: patterns.iter().map(|p| (*p).to_owned()).collect(),
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: requested.into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+            thinking: None,
+        });
+        let cred = Credential {
+            token: "t".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        let req = CodexAdapter.prepare(&op, &config, &cred).unwrap();
+        serde_json::from_slice(&req.body).unwrap()
     }
-    let text = match content {
-        MessageContent::Text(t) => t.clone(),
-        _ => String::new(),
-    };
-    (String::new(), text)
+
+    #[test]
+    fn upstream_model_is_the_requested_one_not_the_route_pattern() {
+        assert_eq!(simple("gpt-5-codex", &["gpt-*"])["model"], "gpt-5-codex");
+        assert_eq!(simple("o3", &["gpt-5", "o3"])["model"], "o3");
+        assert_eq!(simple("", &["gpt-*"])["model"], "gpt-4o");
+    }
+
+    // Previously sent Chat Completions body; Responses API rejects messages/max_tokens.
+    #[test]
+    fn body_uses_responses_api_shape() {
+        let b = simple("gpt-5-codex", &["gpt-*"]);
+        assert!(b.get("input").is_some(), "must have input: {b}");
+        assert!(b.get("messages").is_none(), "messages must not appear: {b}");
+        assert!(
+            b.get("instructions").is_some(),
+            "instructions required: {b}"
+        );
+        assert_eq!(b["store"], false, "OAuth accounts must send store:false");
+        assert!(
+            b.get("max_tokens").is_none(),
+            "Codex rejects max_tokens: {b}"
+        );
+        assert_eq!(b["stream"], true, "/responses always streams");
+    }
 }

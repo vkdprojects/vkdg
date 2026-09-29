@@ -1,5 +1,8 @@
+pub mod combos;
 pub mod connections;
 pub mod keys;
+pub mod oauth;
+pub mod plugins;
 pub mod requests;
 pub mod routes;
 pub mod session;

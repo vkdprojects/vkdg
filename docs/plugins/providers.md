@@ -40,6 +40,7 @@ These ship with every VKDG binary. We maintain the adapters — when an API chan
 | Mistral | `mistral` | — | OpenAI-compat. Good European alternative. |
 | Together AI | `together` | — | Large model catalog. OpenAI-compat. |
 | Fireworks AI | `fireworks` | — | Fast inference. OpenAI-compat. |
+| Kiro / Amazon Q | `kiro` | — | Amazon Q / CodeWhisperer protocol. Claude, GPT, MiniMax, GLM, Qwen, DeepSeek families. Fixed endpoint. Also supports device code OAuth. |
 
 ```yaml
 # Example: API key connection
@@ -55,26 +56,28 @@ connections:
 
 ### OAuth / device code (code agents)
 
-These are AI coding tools that don't use API keys — they use OAuth. You authenticate once and VKDG stores and refreshes the token automatically.
+Most of these are AI coding tools that don't use API keys — they use OAuth. You authenticate once and VKDG stores and refreshes the token automatically.
 
 | Provider | ID | Flow | What it is |
 |----------|----|------|------------|
 | Claude Code | `claude-code` | OAuth PKCE | Anthropic's Claude as a CLI agent |
 | OpenAI Codex | `codex` | OAuth PKCE | OpenAI's Codex CLI |
-| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | AWS's AI coding assistant |
+| Kiro / Amazon Q | `kiro` | Device code (AWS SSO OIDC) | AWS's AI coding assistant — also accepts a plain `KIRO_API_KEY` |
 | Kimi Coding | `kimi-coding` | Device code | Moonshot AI's coding agent |
 | GitHub Copilot | `github-copilot` | Device code | GitHub's Copilot (short-lived tokens, auto-refreshed) |
 | Antigravity | `antigravity` | Google OAuth | Google Cloud Code (requires GCP project) |
 
 ```bash
-# Connect an OAuth provider
-vkdg setup
-# → picks the provider → walks through auth flow
-# → token stored in ~/.config/vkdg/vault/ (encrypted)
-# → auto-refreshed forever
+# Log in once; prints the connection snippet to paste into your config
+vkdg login kiro
+#   auth: { type: account, account: kiro-4ac0bf7e }
+vkdg accounts list
 ```
 
-After setup, the connection works with no `auth` block in your config — VKDG finds the stored token by provider ID.
+The account (tokens and the provider's own data, such as Kiro's region and profile ARN) is stored in
+`accounts.db`, a `0600` SQLite file next to `keys.db`. It is not encrypted at rest, so protect the
+data directory like any credential file. The gateway refreshes each token shortly before it expires,
+one refresh per account at a time. The console's Accounts page runs the same login.
 
 ---
 

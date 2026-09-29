@@ -1,17 +1,35 @@
-//! VKDG provider plugin: kiro
-//! Amazon Q / CodeWhisperer — Device Code OAuth.
+//! VKDG provider plugin: kiro — Amazon Q Developer / CodeWhisperer.
 //!
-//! prepare() is a stub; full CodeWhisperer protocol is Phase E.
+//! Request shape follows AWS's own Smithy-generated client
+//! (`aws/amazon-q-developer-cli`, crate `amzn-codewhisperer-streaming-client`).
+//! Which host a request goes to depends on how the account authenticates; see
+//! [`endpoint`].
 
-use std::collections::HashMap;
-
-use futures::future::BoxFuture;
+use http::{HeaderMap, HeaderValue};
+use serde::Serialize;
+use uuid::Uuid;
 use vkdg_connections::ConnectionConfig;
 use vkdg_operations::Operation;
 use vkdg_provider_sdk::{
-    OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError,
-    TokenPair,
+    ConversationStreamDecoder, Credential, OAuthProvider, PreparedRequest, ProviderAdapter,
+    ProviderError,
 };
+
+pub mod auth;
+pub mod decode;
+pub mod endpoint;
+pub mod eventstream;
+pub mod models;
+pub mod region;
+mod request;
+pub mod stream_decoder;
+mod thinking;
+
+use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
+use crate::endpoint::EndpointKind;
+
+/// Identifies this gateway upstream.
+const USER_AGENT: &str = "vkdg/0.1.0";
 
 pub struct KiroAdapter;
 
@@ -24,94 +42,161 @@ impl ProviderAdapter for KiroAdapter {
         "Kiro / Amazon Q"
     }
 
-    fn prepare(
-        &self,
-        _operation: &Operation,
-        _config: &ConnectionConfig,
-        _token: &str,
-    ) -> Result<PreparedRequest, ProviderError> {
-        // Phase E: full CodeWhisperer protocol implementation over
-        // https://codewhisperer.us-east-1.amazonaws.com
-        Err(ProviderError::UnsupportedOperation)
-    }
-}
-
-impl OAuthProvider for KiroAdapter {
-    fn oauth_config(&self) -> OAuthConfig {
-        OAuthConfig {
-            flow: OAuthFlow::DeviceCode,
-            authorize_url: None,
-            // Default region; individual connections may use a regional endpoint.
-            token_url: "https://oidc.us-east-1.amazonaws.com/token".into(),
-            // client_id is dynamically registered per-connection at flow init; empty here.
-            client_id: String::new(),
-            scopes: vec![
-                "codewhisperer:completions".into(),
-                "codewhisperer:analysis".into(),
-                "codewhisperer:conversations".into(),
-            ],
-            redirect_uri: None,
-            extra_auth_params: HashMap::new(),
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'K',
+            icon_color: "#FF9900",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://kiro.dev"),
+            description: Some("Amazon Q / Kiro — AI coding assistant powered by AWS."),
         }
     }
 
-    fn refresh_token<'a>(
-        &'a self,
-        refresh_token: &'a str,
-        extra: &'a HashMap<String, String>,
-    ) -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
-        Box::pin(async move {
-            let region = extra
-                .get("region")
+    fn prepare(
+        &self,
+        operation: &Operation,
+        config: &ConnectionConfig,
+        credential: &Credential,
+    ) -> Result<PreparedRequest, ProviderError> {
+        let Operation::Conversation(conv) = operation else {
+            return Err(ProviderError::UnsupportedOperation);
+        };
+
+        let extra = credential.extra.as_ref();
+        // A stored account records which login issued its token. A connection
+        // authenticated by `auth: { type: api_key }` (a long-lived Kiro key in an
+        // env var) has no account, so it is the API-key flow, not Builder ID.
+        let auth_method =
+            extra
+                .get("auth_method")
                 .map(String::as_str)
-                .unwrap_or("us-east-1");
-            let url = format!("https://oidc.{region}.amazonaws.com/token");
-            let client_id = extra.get("client_id").cloned().unwrap_or_default();
-            let client_secret = extra.get("client_secret").cloned().unwrap_or_default();
+                .unwrap_or(match config.auth {
+                    vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
+                    _ => AUTH_BUILDER_ID,
+                });
+        let profile_arn = extra.get("profile_arn").map(String::as_str);
 
-            let client = reqwest::Client::new();
-            let resp = client
-                .post(&url)
-                .json(&serde_json::json!({
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                }))
-                .send()
-                .await
-                .map_err(|e| ProviderError::Http(e.to_string()))?;
+        // The runtime region lives in the profile ARN; the OIDC region is only a
+        // fallback, and only when it can host a profile at all.
+        let region =
+            region::runtime_region(profile_arn, extra.get("oidc_region").map(String::as_str));
+        // The connection may pin a plane; the two hold separate rate-limit
+        // buckets, so an account can run one connection on each.
+        let kind = EndpointKind::from_config(config.endpoint.as_deref(), auth_method);
 
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::TokenRefresh(format!(
-                    "HTTP {status}: {body}"
-                )));
-            }
+        // The model the client asked for. The connection's `models` list holds
+        // route patterns, so falling back to it would send a glob upstream.
+        let model_id = models::resolve_model_id(Some(conv.model.as_str()));
 
-            let json: serde_json::Value = resp
-                .json()
-                .await
-                .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        // Thinking / reasoning, gated on the exact model allowlist from OmniRoute's
+        // adaptiveThinking.ts. Sending `output_config` to non-whitelisted models
+        // (e.g. claude-sonnet-4.5) causes a Bedrock 400 even though those models
+        // support thinking on Anthropic's direct API.
+        let additional_fields = conv
+            .thinking
+            .as_ref()
+            .and_then(|t| thinking::build_fields(&model_id, t));
 
-            // Preserve client_id, client_secret, region for next refresh.
-            let mut out_extra = HashMap::new();
-            for key in ["client_id", "client_secret", "region"] {
-                if let Some(v) = extra.get(key) {
-                    out_extra.insert(key.to_string(), v.clone());
-                }
-            }
+        let body = KiroRequestBody {
+            conversation_state: request::build_conversation_state(conv, &model_id, kind.origin()),
+            // profileArn follows the credential: an API key must not send it
+            // (AWS answers 403), an OAuth account sends it on either plane.
+            profile_arn: endpoint::sends_profile_arn(auth_method)
+                .then(|| profile_arn.map(str::to_owned))
+                .flatten(),
+            additional_fields,
+        };
 
-            Ok(TokenPair {
-                access_token: json["access_token"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                refresh_token: json["refresh_token"].as_str().map(str::to_string),
-                expires_in_secs: json["expires_in"].as_u64(),
-                extra: out_extra,
-            })
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static(kind.content_type()),
+        );
+        headers.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("application/json"),
+        );
+        headers.insert(
+            http::header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", credential.token))
+                .map_err(|_| ProviderError::Http("credential is not a valid header".into()))?,
+        );
+        // Operation routing is always the URL path; no plane takes x-amz-target.
+        if endpoint::sends_api_key_token_type(auth_method) {
+            headers.insert("tokentype", HeaderValue::from_static("API_KEY"));
+        }
+        if auth_method == AUTH_EXTERNAL_IDP {
+            headers.insert("TokenType", HeaderValue::from_static("EXTERNAL_IDP"));
+        }
+        // Opt out of service improvement: a gateway cannot consent for its users.
+        headers.insert(
+            "x-amzn-codewhisperer-optout",
+            HeaderValue::from_static("true"),
+        );
+        headers.insert("x-amzn-kiro-agent-mode", HeaderValue::from_static("vibe"));
+        headers.insert(
+            "amz-sdk-invocation-id",
+            HeaderValue::from_str(&Uuid::new_v4().to_string())
+                .map_err(|_| ProviderError::Http("invalid invocation id".into()))?,
+        );
+        // Retries belong to the gateway, so each upstream call is a single attempt.
+        headers.insert(
+            "amz-sdk-request",
+            HeaderValue::from_static("attempt=1; max=1"),
+        );
+        headers.insert("x-amz-user-agent", HeaderValue::from_static(USER_AGENT));
+        headers.insert(
+            http::header::USER_AGENT,
+            HeaderValue::from_static(USER_AGENT),
+        );
+        // Prompt caching, as OmniRoute's KiroExecutor sends it. Without these a
+        // repeated Claude Code prompt is billed and timed as fresh input.
+        headers.insert(
+            "x-amzn-bedrock-cache-control",
+            HeaderValue::from_static("enable"),
+        );
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("prompt-caching-2024-07-31"),
+        );
+
+        Ok(PreparedRequest {
+            // An explicit base_url overrides host selection (private deploys, tests).
+            url: match &config.provider {
+                vkdg_connections::ProviderKind::Custom { base_url } => base_url.clone(),
+                _ => kind.url(&region),
+            },
+            headers,
+            body: serde_json::to_vec(&body)
+                .map_err(|e| ProviderError::Serialization(e.to_string()))?
+                .into(),
+            is_streaming: true,
         })
     }
+
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        Some(self)
+    }
+
+    fn stream_decoder(&self) -> Option<Box<dyn ConversationStreamDecoder>> {
+        Some(Box::new(stream_decoder::KiroStreamDecoder::new()))
+    }
+}
+
+// ── Kiro request body types ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct KiroRequestBody {
+    #[serde(rename = "conversationState")]
+    conversation_state: request::ConversationState,
+    /// Names the Q Developer profile that owns the call. Required for OAuth
+    /// accounts; API-key accounts must omit it, or AWS answers 403.
+    #[serde(rename = "profileArn", skip_serializing_if = "Option::is_none")]
+    profile_arn: Option<String>,
+    /// Thinking / reasoning controls, gated on the model allowlist.
+    #[serde(
+        rename = "additionalModelRequestFields",
+        skip_serializing_if = "Option::is_none"
+    )]
+    additional_fields: Option<thinking::AdditionalFields>,
 }

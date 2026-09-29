@@ -4,14 +4,37 @@ use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
+use vkdg_core::pricing::ModelPrice;
 use vkdg_operations::{
     ContentBlock, ConversationRequest, ImageGenerateRequest, MessageContent, Operation, Role,
     VideoGenerateRequest,
 };
-use vkdg_provider_sdk::{PreparedRequest, ProviderAdapter, ProviderError};
+use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
 /// OpenAI provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
+
+/// OpenAI list prices (USD per million tokens, as microdollars), specific
+/// patterns first; `.` in names is read as `-` (`gpt-4.1` is `gpt-4-1`).
+/// Cached input is not reported separately by the meter, so cost for
+/// prompt-cached traffic is an upper bound.
+const PRICES: &[ModelPrice] = &[
+    ModelPrice::new("gpt-5-nano*", 50_000, 400_000),
+    ModelPrice::new("gpt-5-mini*", 250_000, 2_000_000),
+    ModelPrice::new("gpt-5*", 1_250_000, 10_000_000),
+    ModelPrice::new("gpt-4-1-nano*", 100_000, 400_000),
+    ModelPrice::new("gpt-4-1-mini*", 400_000, 1_600_000),
+    // Legacy GPT-4 Turbo previews (`gpt-4-1106-preview`) share the prefix.
+    ModelPrice::new("gpt-4-1106*", 10_000_000, 30_000_000),
+    ModelPrice::new("gpt-4-1", 2_000_000, 8_000_000),
+    ModelPrice::new("gpt-4-1-*", 2_000_000, 8_000_000),
+    ModelPrice::new("gpt-4o-mini*", 150_000, 600_000),
+    ModelPrice::new("gpt-4o*", 2_500_000, 10_000_000),
+    ModelPrice::new("o4-mini*", 1_100_000, 4_400_000),
+    ModelPrice::new("o3-mini*", 1_100_000, 4_400_000),
+    ModelPrice::new("o3-pro*", 20_000_000, 80_000_000),
+    ModelPrice::new("o3*", 2_000_000, 8_000_000),
+];
 
 impl ProviderAdapter for OpenAIAdapter {
     fn id(&self) -> &str {
@@ -22,12 +45,27 @@ impl ProviderAdapter for OpenAIAdapter {
         "OpenAI"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'O',
+            icon_color: "#10a37f",
+            category: vkdg_provider_sdk::ProviderCategory::LlmApi,
+            site_url: Some("https://platform.openai.com"),
+            description: Some("OpenAI — GPT-4o, o3 and the Responses API."),
+        }
+    }
+
+    fn prices(&self) -> &[ModelPrice] {
+        PRICES
+    }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         match operation {
             Operation::Conversation(req) => {
                 let body = build_body(req, config);
@@ -157,11 +195,17 @@ pub(crate) fn build_video_generate_body(req: &VideoGenerateRequest) -> Bytes {
 
 /// Serialise a [`ConversationRequest`] to an OpenAI Chat Completions JSON body.
 fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "gpt-4o".into());
+    // The model the client asked for. `config.models` holds route patterns, so a
+    // connection matching `gpt-*` would otherwise send that glob upstream.
+    let model = if req.model.is_empty() {
+        config
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "gpt-4o".into())
+    } else {
+        req.model.clone()
+    };
 
     // Prepend system prompt as a role:system message when present.
     let mut messages: Vec<Value> = Vec::new();
@@ -313,6 +357,23 @@ mod tests {
         Operation, Role, Tool,
     };
 
+    // Shared prefixes: `gpt-4-1*` caught the old `gpt-4-1106-preview`, `o3*` caught `o3-pro`.
+    #[test]
+    fn list_prices_do_not_bleed_across_shared_prefixes() {
+        let p = |m: &str| {
+            vkdg_core::pricing::price_for(PRICES, m)
+                .map(|p| (p.input_per_mtok / 1_000, p.output_per_mtok / 1_000))
+        };
+        assert_eq!(p("gpt-4.1"), Some((2_000, 8_000)));
+        assert_eq!(p("gpt-4.1-2025-04-14"), Some((2_000, 8_000)));
+        assert_eq!(p("gpt-4.1-mini"), Some((400, 1_600)));
+        assert_eq!(p("gpt-4-1106-preview"), Some((10_000, 30_000)));
+        assert_eq!(p("gpt-4o-mini"), Some((150, 600)));
+        assert_eq!(p("o3-pro"), Some((20_000, 80_000)));
+        assert_eq!(p("o3"), Some((2_000, 8_000)));
+        assert_eq!(p("llama-3.1-70b"), None);
+    }
+
     fn openai_config() -> ConnectionConfig {
         ConnectionConfig {
             id: ConnectionId("test".into()),
@@ -324,6 +385,7 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         }
     }
@@ -341,12 +403,14 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         }
     }
 
     fn simple_request() -> ConversationRequest {
         ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text("hello".into()),
@@ -357,18 +421,33 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         }
     }
 
-    /// A basic request should produce model and messages fields in the JSON body.
+    /// Refutes: sending `config.models.first()` as the model id. That list holds
+    /// route patterns, so a connection matching `gpt-*` would send the glob
+    /// upstream, and a multi-model connection would pin every call to its first
+    /// entry regardless of what the client asked for.
     #[test]
-    fn prepare_basic_body() {
+    fn body_uses_the_model_the_client_asked_for() {
         let req = simple_request();
         let body = build_body(&req, &openai_config());
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["model"], "gpt-4o");
+        assert_eq!(v["model"], "test-model", "the request's model must win");
         assert_eq!(v["messages"][0]["role"], "user");
         assert_eq!(v["messages"][0]["content"], "hello");
+    }
+
+    /// Refutes: sending an empty model when a caller omitted it; the connection's
+    /// first entry is the only sensible fallback there.
+    #[test]
+    fn empty_model_falls_back_to_the_connection() {
+        let mut req = simple_request();
+        req.model = String::new();
+        let body = build_body(&req, &openai_config());
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["model"], "gpt-4o");
     }
 
     /// system Some(s) must appear as first message with role:system.
@@ -463,7 +542,7 @@ mod tests {
         let req = Operation::Conversation(simple_request());
         let adapter = OpenAIAdapter;
         let prepared = adapter
-            .prepare(&req, &openai_config(), "sk-test123")
+            .prepare(&req, &openai_config(), &Credential::bearer("sk-test123"))
             .unwrap();
         let auth = prepared
             .headers
@@ -565,7 +644,9 @@ mod tests {
             user: None,
         });
         let adapter = OpenAIAdapter;
-        let prepared = adapter.prepare(&op, &openai_config(), "sk-test").unwrap();
+        let prepared = adapter
+            .prepare(&op, &openai_config(), &Credential::bearer("sk-test"))
+            .unwrap();
         assert!(
             prepared.url.contains("/v1/images/generations"),
             "url must contain /v1/images/generations, got: {}",
@@ -588,7 +669,9 @@ mod tests {
             webhook_url: None,
         });
         let adapter = OpenAIAdapter;
-        let prepared = adapter.prepare(&op, &openai_config(), "sk-test").unwrap();
+        let prepared = adapter
+            .prepare(&op, &openai_config(), &Credential::bearer("sk-test"))
+            .unwrap();
         assert!(
             prepared.url.contains("/v1/videos/generations"),
             "url must contain /v1/videos/generations, got: {}",

@@ -46,6 +46,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -81,6 +82,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         eval_enabled: false,
         relay_enabled: false,
         request_log: None,
+        hooks: Default::default(),
     })
 }
 
@@ -337,6 +339,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -347,6 +350,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         stream: true,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     let ctx = PipelineCtx::new(envelope);
 

@@ -1,12 +1,12 @@
 use crate::handlers::requests::RequestLog;
-use crate::session::{KeyStore, SessionStore};
+use crate::session::SessionStore;
 use axum::{
     routing::{delete, get, post},
     Router,
 };
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
-use vkdg_combos::ComboResolver;
 use vkdg_config::ConfigRx;
 use vkdg_connections::ConnectionCatalog;
 
@@ -15,11 +15,43 @@ pub struct AdminState {
     pub sessions: Arc<SessionStore>,
     pub config_rx: ConfigRx,
     pub started_at: Arc<Instant>,
-    pub key_store: Arc<KeyStore>,
+    /// Data-plane API keys. The same store instance `/v1/*` authenticates against.
+    pub key_store: Arc<vkdg_governance::VirtualKeyStore>,
     pub request_log: Arc<RequestLog>,
-    pub combo_resolver: Option<Arc<ComboResolver>>,
+    /// Combo edits; `None` when the gateway runs without a data plane.
+    pub combos: Option<Arc<vkdg_combos::ComboService>>,
     pub catalog: Option<Arc<ConnectionCatalog>>,
+    /// Provider login + account store; `None` disables `/oauth` and `/accounts`.
+    pub logins: Option<Arc<crate::handlers::oauth::LoginService>>,
+    /// Reload installed plugins into the running data plane after an install
+    /// or removal. `None` = plugin changes apply at the next restart.
+    pub reload_plugins: Option<PluginReload>,
+    /// Fires a smoke request through a specific connection and returns latency and status.
+    /// `None` = no data plane, the endpoint answers 503.
+    pub connection_tester: Option<ConnectionTester>,
 }
+
+/// Sends one smoke request (`"Hello"`, max_tokens=1) through the named connection
+/// and returns `(latency_ms, ok, error)`. Spawned as a blocking task if needed.
+pub type ConnectionTester = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ConnectionTestResult> + Send>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, serde::Serialize)]
+pub struct ConnectionTestResult {
+    /// Round-trip time in milliseconds.
+    pub latency_ms: u64,
+    /// `true` when the provider returned a response (any 2xx or a provider-level error
+    /// such as "context too long" still counts — the connection itself is alive).
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Rebuilds the live provider and hook registries from the plugin directory.
+pub type PluginReload = Arc<dyn Fn() + Send + Sync>;
 
 pub fn build_admin_router(state: AdminState) -> Router {
     Router::new()
@@ -31,6 +63,11 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route("/admin/v1/session/me", get(crate::handlers::session::me))
         .route(
+            "/admin/v1/setup",
+            get(crate::handlers::session::setup_status)
+                .post(crate::handlers::session::setup_password),
+        )
+        .route(
             "/admin/v1/connections",
             get(crate::handlers::connections::list_connections),
         )
@@ -39,12 +76,28 @@ pub fn build_admin_router(state: AdminState) -> Router {
             get(crate::handlers::connections::get_connection),
         )
         .route(
+            "/admin/v1/connections/{id}/test",
+            axum::routing::post(crate::handlers::connections::test_connection),
+        )
+        .route(
             "/admin/v1/keys",
             get(crate::handlers::keys::list_keys).post(crate::handlers::keys::create_key),
         )
         .route(
             "/admin/v1/keys/{id}",
-            delete(crate::handlers::keys::revoke_key),
+            delete(crate::handlers::keys::revoke_key).patch(crate::handlers::keys::update_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/regenerate",
+            post(crate::handlers::keys::regenerate_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/disable",
+            post(crate::handlers::keys::disable_key),
+        )
+        .route(
+            "/admin/v1/keys/{id}/enable",
+            post(crate::handlers::keys::enable_key),
         )
         .route(
             "/admin/v1/routes",
@@ -64,7 +117,49 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/combos",
-            get(crate::handlers::routes::list_combos),
+            get(crate::handlers::combos::list_combos).post(crate::handlers::combos::create_combo),
+        )
+        .route(
+            "/admin/v1/combos/{id}",
+            axum::routing::put(crate::handlers::combos::update_combo)
+                .delete(crate::handlers::combos::delete_combo),
+        )
+        .route(
+            "/admin/v1/providers/oauth",
+            get(crate::handlers::oauth::list_oauth_providers),
+        )
+        .route(
+            "/admin/v1/providers/{id}/login-methods",
+            get(crate::handlers::oauth::list_login_methods),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/start",
+            post(crate::handlers::oauth::start_login),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/poll",
+            post(crate::handlers::oauth::poll_login),
+        )
+        .route(
+            "/admin/v1/oauth/{provider}/import",
+            post(crate::handlers::oauth::import_token),
+        )
+        .route(
+            "/admin/v1/plugins",
+            get(crate::handlers::plugins::list_plugins)
+                .post(crate::handlers::plugins::install_plugin),
+        )
+        .route(
+            "/admin/v1/plugins/{name}",
+            delete(crate::handlers::plugins::remove_plugin),
+        )
+        .route(
+            "/admin/v1/accounts",
+            get(crate::handlers::oauth::list_accounts),
+        )
+        .route(
+            "/admin/v1/accounts/{id}",
+            delete(crate::handlers::oauth::delete_account),
         )
         .with_state(state)
 }

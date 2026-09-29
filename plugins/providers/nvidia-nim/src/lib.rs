@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://integrate.api.nvidia.com/v1",
         "meta/llama-3.1-70b-instruct",
     )
+    .with_meta(
+        'N',
+        "#76B900",
+        Some("https://build.nvidia.com"),
+        Some("NVIDIA NIM inference microservices."),
+    )
 }

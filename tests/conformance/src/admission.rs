@@ -10,12 +10,13 @@ use tower::ServiceExt;
 use vkdg_connections::{
     AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager, ProviderKind,
 };
+use vkdg_core::net::{IpPolicy, IpRules};
 use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::ConnectionId;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId};
 use vkdg_http::pipeline::run_conversation_pipeline;
 use vkdg_http::upstream::HttpClient;
-use vkdg_http::{AdmissionGuard, AppState, IpPolicy, PipelineState, ServerConfig};
+use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_observe::DecisionRecordExporter;
 use vkdg_operations::{
     CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
@@ -40,6 +41,7 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -74,6 +76,7 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
         eval_enabled: false,
         relay_enabled: false,
         request_log: None,
+        hooks: Default::default(),
     });
     let state = AppState::new(ServerConfig::default()).with_pipeline(pipeline);
     axum::Router::new()
@@ -81,6 +84,11 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
             "/v1/messages",
             post(vkdg_ingress_anthropic::handle_messages),
         )
+        // Admission is under test, not auth: mount the real layer, opted out.
+        .route_layer(axum::middleware::from_fn_with_state(
+            vkdg_http::DataAuth::disabled(),
+            vkdg_http::require_api_key,
+        ))
         .with_state(state)
 }
 
@@ -162,6 +170,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -185,10 +194,10 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         },
     );
     // Allowlist contains only "10.0.0.1"; any other IP is blocked.
-    pipeline.ip_policy = Some(Arc::new(IpPolicy {
-        allowlist: vec!["10.0.0.1".into()],
-        blocklist: vec![],
-    }));
+    pipeline.ip_policy = Some(Arc::new(IpPolicy::new(IpRules {
+        allow: vec!["10.0.0.1".parse().unwrap()],
+        block: vec![],
+    })));
     let pipeline = Arc::new(pipeline);
 
     let envelope = RequestEnvelope {
@@ -203,9 +212,10 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         compression_override: None,
         cache_bypass: false,
         include_think_tags: false,
-        client_ip: Some("1.2.3.4".into()), // NOT in allowlist
+        client_ip: Some("1.2.3.4".parse().unwrap()), // NOT in allowlist
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("hi".into()),
@@ -216,6 +226,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     let ctx = PipelineCtx::new(envelope);
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;

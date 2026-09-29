@@ -1,9 +1,9 @@
 use bytes::Bytes;
 use http::HeaderMap;
-use vkdg_connections::ConnectionConfig;
-use vkdg_operations::Operation;
+use vkdg_connections::{ConnectionConfig, Credential};
+use vkdg_operations::{ConversationEvent, Operation};
 
-use crate::ProviderError;
+use crate::{OAuthProvider, ProviderError};
 
 /// The assembled upstream HTTP request. Produced by [`ProviderAdapter::prepare`].
 /// The pipeline core knows nothing about wire formats, auth headers, or URLs.
@@ -12,6 +12,39 @@ pub struct PreparedRequest {
     pub headers: HeaderMap,
     pub body: Bytes,
     pub is_streaming: bool,
+}
+
+/// The model id to send upstream: the one the client asked for (after any
+/// combo rewrite), or `default` when the request names none.
+///
+/// Never read `ConnectionConfig::models` for this. That list holds route
+/// patterns (`claude-*`), so a glob would go upstream, and a multi-model
+/// connection would pin every call to its first entry.
+pub fn upstream_model<'a>(
+    req: &'a vkdg_operations::ConversationRequest,
+    default: &'a str,
+) -> &'a str {
+    let m = req.model.trim();
+    if m.is_empty() || m.contains(['*', '?']) {
+        default
+    } else {
+        m
+    }
+}
+
+/// Decoder for provider-specific streaming protocols.
+/// Used when the provider returns raw bytes that need to be decoded into
+/// [`ConversationEvent`]s before re-encoding to the client's SSE format.
+pub trait ConversationStreamDecoder: Send {
+    /// Feed raw bytes from the upstream stream.
+    /// Returns decoded events. Must handle partial frames (incremental parsing).
+    fn feed(&mut self, chunk: bytes::Bytes) -> Vec<ConversationEvent>;
+
+    /// Called once when the upstream byte stream ends. Returns trailing events
+    /// for protocols without an explicit terminal frame (e.g. Kiro).
+    fn finish(&mut self) -> Vec<ConversationEvent> {
+        Vec::new()
+    }
 }
 
 /// Every provider adapter must implement this trait.
@@ -28,10 +61,72 @@ pub trait ProviderAdapter: Send + Sync {
     fn display_name(&self) -> &str;
 
     /// Assemble the upstream request for this operation.
+    ///
+    /// `credential.token` is the API key or access token; `credential.extra` holds
+    /// per-account plugin data persisted at login/refresh (empty for API keys).
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError>;
+
+    /// OAuth capability (login + refresh). Return `Some(self)` when the plugin
+    /// implements [`OAuthProvider`]; `None` means API-key only.
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        None
+    }
+
+    /// Optional stream decoder for providers that need protocol translation.
+    /// Return `None` for passthrough (default behavior).
+    fn stream_decoder(&self) -> Option<Box<dyn ConversationStreamDecoder>> {
+        None
+    }
+
+    /// List prices per model, specific patterns first. Empty (the default)
+    /// means the provider bills some other way (subscription, free tier) and
+    /// its requests have no per-token cost, shown as unknown rather than $0.
+    fn prices(&self) -> &[vkdg_core::pricing::ModelPrice] {
+        &[]
+    }
+
+    /// Metadata for the admin console UI. Defaults work for any plugin that
+    /// only implements `id()` and `display_name()`.
+    fn meta(&self) -> ProviderMeta {
+        ProviderMeta {
+            icon_char: self.id().chars().next().unwrap_or('?').to_ascii_uppercase(),
+            icon_color: "#6b7280",
+            category: ProviderCategory::LlmApi,
+            site_url: None,
+            description: None,
+        }
+    }
+}
+
+/// Visual and discovery metadata for the admin console UI.
+/// Returned by `ProviderAdapter::meta()` and serialised into
+/// `GET /admin/v1/providers/oauth` and `GET /admin/v1/providers`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProviderMeta {
+    /// Single character used as an icon when no image is available.
+    pub icon_char: char,
+    /// CSS color string for the icon background (e.g. `"#f97316"`).
+    pub icon_color: &'static str,
+    pub category: ProviderCategory,
+    /// Public website or docs URL.
+    pub site_url: Option<&'static str>,
+    /// One-liner shown under the provider name in the grid.
+    pub description: Option<&'static str>,
+}
+
+/// Broad category used to group providers in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCategory {
+    /// Hosted LLM with an API key.
+    LlmApi,
+    /// OAuth / device-code account login (AI IDE assistants, etc.).
+    OauthIde,
+    /// Self-hosted or OpenAI-compatible endpoint.
+    Compatible,
 }

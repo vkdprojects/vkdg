@@ -8,4 +8,10 @@ pub fn provider() -> OpenAiCompatAdapter {
         "https://api.groq.com/openai",
         "llama-3.3-70b-versatile",
     )
+    .with_meta(
+        'G',
+        "#f97316",
+        Some("https://console.groq.com"),
+        Some("Fast inference via LPU hardware."),
+    )
 }

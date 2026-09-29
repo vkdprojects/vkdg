@@ -10,13 +10,17 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError,
-    TokenPair,
+    Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
+    ProviderError, TokenPair,
 };
 
 pub struct KimiCodingAdapter;
 
 impl ProviderAdapter for KimiCodingAdapter {
+    fn oauth(&self) -> Option<&dyn OAuthProvider> {
+        Some(self)
+    }
+
     fn id(&self) -> &str {
         "kimi-coding"
     }
@@ -25,18 +29,29 @@ impl ProviderAdapter for KimiCodingAdapter {
         "Kimi Coding"
     }
 
+    fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
+        vkdg_provider_sdk::ProviderMeta {
+            icon_char: 'K',
+            icon_color: "#1DB4C4",
+            category: vkdg_provider_sdk::ProviderCategory::OauthIde,
+            site_url: Some("https://kimi.ai"),
+            description: Some("Kimi Coding — Moonshot AI coding assistant."),
+        }
+    }
+
     fn prepare(
         &self,
         operation: &Operation,
         config: &ConnectionConfig,
-        token: &str,
+        credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
+        let token = credential.token.as_str();
         let req = match operation {
             Operation::Conversation(r) => r,
             _ => return Err(ProviderError::UnsupportedOperation),
         };
 
-        let body = build_chat_completions_body(req, config, "kimi-k1-5-turbo");
+        let body = build_chat_completions_body(req, "kimi-k1-5-turbo");
         let url = format!("{}/v1/chat/completions", base_url(config));
 
         let mut headers = HeaderMap::new();
@@ -138,16 +153,8 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-fn build_chat_completions_body(
-    req: &ConversationRequest,
-    config: &ConnectionConfig,
-    default_model: &str,
-) -> Bytes {
-    let model = config
-        .models
-        .first()
-        .cloned()
-        .unwrap_or_else(|| default_model.to_string());
+fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -> Bytes {
+    let model = vkdg_provider_sdk::upstream_model(req, default_model).to_owned();
 
     let mut messages: Vec<Value> = Vec::new();
     if let Some(sys) = &req.system {

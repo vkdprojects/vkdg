@@ -58,6 +58,7 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         .collect();
 
     let operation = Operation::Conversation(ConversationRequest {
+        model: req.model.clone(),
         messages,
         tools,
         max_tokens: req.max_tokens,
@@ -65,6 +66,12 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         stream: req.stream.unwrap_or(false),
         system: req.system,
         required_capabilities: CapabilitySet::default(),
+        thinking: req.thinking.filter(|t| t.kind != "disabled").map(|t| {
+            vkdg_operations::ThinkingRequest {
+                budget_tokens: t.budget_tokens,
+                effort: None,
+            }
+        }),
     });
 
     Ok((req.model, operation))
@@ -133,12 +140,19 @@ mod tests {
     }
 
     async fn call_handler(state: AppState, body: &'static str) -> Response {
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method(Method::POST)
             .uri("/v1/messages")
             .header("content-type", "application/json")
             .body(axum::body::Body::from(body))
             .unwrap();
+        // What `vkdg_http::require_api_key` attaches for an authenticated caller.
+        req.extensions_mut().insert(vkdg_http::ClientIdentity {
+            key_id: "key-test".into(),
+            tenant_id: "default".into(),
+            client_ip: None,
+            allowed_models: std::sync::Arc::from([]),
+        });
         handle_messages(State(state), req).await
     }
 

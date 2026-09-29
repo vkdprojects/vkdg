@@ -86,10 +86,10 @@ pub async fn preview_route(
     }
     let snapshot = state.config_rx.borrow().clone();
     let combo_id = state
-        .combo_resolver
+        .combos
         .as_ref()
-        .and_then(|r| r.resolve(&q.model))
-        .map(|c| c.id.clone());
+        .and_then(|s| s.resolver().resolve(&q.model))
+        .map(|c| c.id);
     let mut eligible = Vec::new();
     let mut excluded = Vec::new();
     if let Some(catalog) = &state.catalog {
@@ -141,55 +141,11 @@ pub async fn preview_route(
     .into_response()
 }
 
-#[derive(Serialize)]
-struct ComboSummary {
-    id: String,
-    match_patterns: Vec<String>,
-    strategy: String,
-    targets: Vec<String>,
-    has_compression: bool,
-    has_cache: bool,
-    has_budget: bool,
-}
-
-#[derive(Serialize)]
-struct ComboList {
-    items: Vec<ComboSummary>,
-    total: usize,
-}
-
-pub async fn list_combos(State(state): State<AdminState>, headers: HeaderMap) -> Response {
-    if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
-    }
-    let items: Vec<ComboSummary> = state
-        .combo_resolver
-        .as_ref()
-        .map(|r| {
-            r.all()
-                .iter()
-                .map(|c| ComboSummary {
-                    id: c.id.clone(),
-                    match_patterns: c.match_patterns.clone(),
-                    strategy: strategy_str(&c.strategy),
-                    targets: c.targets.iter().map(|t| t.0.clone()).collect(),
-                    has_compression: c.compression.is_some(),
-                    has_cache: c.cache.is_some(),
-                    has_budget: c.budget.is_some(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let total = items.len();
-    Json(ComboList { items, total }).into_response()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::handlers::requests::RequestLog;
-    use crate::session::{KeyStore, SessionStore};
+    use crate::session::SessionStore;
     use axum::extract::State;
     use http::HeaderMap;
     use std::sync::Arc;
@@ -207,10 +163,13 @@ mod tests {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
-            combo_resolver: None,
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
             catalog: None,
+            logins: None,
         }
     }
 
@@ -226,12 +185,16 @@ mod tests {
                 models: vec!["claude-*".into()],
                 max_concurrent: None,
                 weight: None,
+                base_url: None,
+                tags: vec![],
+                endpoint: None,
             }],
             routes: vec![RouteDef {
                 id: "r1".into(),
                 match_models: vec!["claude-*".into()],
                 strategy: "round_robin".into(),
                 targets: vec!["conn-a".into()],
+                hooks: Default::default(),
             }],
             limits: None,
             observe: None,
@@ -243,10 +206,13 @@ mod tests {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
-            combo_resolver: None,
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
             catalog: None,
+            logins: None,
         }
     }
 

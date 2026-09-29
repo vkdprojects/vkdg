@@ -80,7 +80,7 @@ pub struct RequestEnvelope {
     /// Extracted client IP address (from X-Forwarded-For, X-Real-IP, or peer).
     /// None when the ingress layer cannot determine the IP (e.g. unit tests).
     #[serde(default)]
-    pub client_ip: Option<String>,
+    pub client_ip: Option<std::net::IpAddr>,
 }
 // ── Decision record ───────────────────────────────────────────────────────────
 
@@ -138,6 +138,12 @@ pub enum VkdgError {
     #[error("no eligible connection")]
     NoEligibleConnection,
 
+    /// No route matched the requested model. Distinct from
+    /// `NoEligibleConnection` (a route matched but none of its targets can
+    /// serve): only this case may fall back to any connection serving the model.
+    #[error("no route matches the requested model")]
+    NoRouteMatched,
+
     #[error("upstream error {code}: {message}")]
     UpstreamError { code: u16, message: String },
 
@@ -146,6 +152,12 @@ pub enum VkdgError {
 
     #[error("config invalid: {field}: {message}")]
     ConfigInvalid { field: String, message: String },
+
+    /// The upstream rejected the stored refresh token outright (revoked, rotated
+    /// by another client, or expired). Retrying cannot help; the account needs a
+    /// fresh login. Carries the upstream status and message so logs say why.
+    #[error("credential revoked ({status}): {message}")]
+    CredentialRevoked { status: u16, message: String },
 
     #[error("internal: {0}")]
     Internal(String),
@@ -162,10 +174,13 @@ impl VkdgError {
             VkdgError::AdmissionRejected { .. } => 429,
             VkdgError::CapabilityUnsupported { .. } => 400,
             VkdgError::BudgetExceeded { .. } => 402,
-            VkdgError::NoEligibleConnection => 502,
+            VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => 502,
             VkdgError::UpstreamError { code, .. } => *code,
             VkdgError::PluginError { .. } => 500,
             VkdgError::ConfigInvalid { .. } => 400,
+            // The client's request is fine; the gateway's stored login is dead.
+            // 401 tells the operator to re-authenticate the account.
+            VkdgError::CredentialRevoked { .. } => 401,
             VkdgError::Internal(_) => 500,
         }
     }
@@ -213,4 +228,7 @@ impl CapabilitySet {
     }
 }
 
+pub mod glob;
+pub mod net;
 pub mod pipeline;
+pub mod pricing;

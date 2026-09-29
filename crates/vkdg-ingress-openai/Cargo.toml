@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tracing = { workspace = true }
 vkdg-core        = { workspace = true }
 vkdg-operations  = { workspace = true }
 vkdg-http        = { workspace = true }

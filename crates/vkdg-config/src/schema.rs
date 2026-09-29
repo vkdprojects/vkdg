@@ -15,19 +15,37 @@ pub struct GatewayConfig {
     pub global_system_prompt: Option<String>,
 }
 
+/// A typo'd field (`base_ur:`, `env_vr:`) is an error, never silently dropped:
+/// a dropped `base_url` sends traffic to a provider's default host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectionDef {
     pub id: String,
-    /// `"anthropic"` | `"openai"` | `"google"` | `"custom:<url>"`
+    /// `anthropic` | `openai` | `google` | a provider plugin id (`kiro`, `codex`)
+    /// | `openai-compat` / `anthropic-compat` (with `base_url`) | `custom:<url>`.
     pub provider: String,
+    /// Endpoint of an `openai-compat` or `anthropic-compat` connection, e.g.
+    /// `http://localhost:11434`. Refused for every other provider.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Which of a provider's endpoints this connection uses, when it has more
+    /// than one. Only `kiro` has them today: `runtime` (the Kiro IDE plane) and
+    /// `codewhisperer` (the CodeWhisperer plane). They keep separate rate-limit
+    /// buckets, so two connections on the same account — one per endpoint — add
+    /// capacity instead of sharing it. Omitted, the plugin picks by credential.
+    #[serde(default)]
+    pub endpoint: Option<String>,
     pub auth: AuthDef,
     pub models: Vec<String>,
     pub max_concurrent: Option<u32>,
     pub weight: Option<u32>,
+    /// Free-form labels, e.g. `[primary]`, `[fast, cheap]`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthDef {
     ApiKey {
         env_var: String,
@@ -38,17 +56,25 @@ pub enum AuthDef {
         client_secret_env: String,
         scopes: Vec<String>,
     },
+    /// A persisted provider account created by `vkdg login <provider>`
+    /// (OAuth device code, PKCE, or token import). Refresh is done by the plugin.
+    Account {
+        /// Account id as printed by `vkdg login` / `vkdg accounts list`.
+        account: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteDef {
     pub id: String,
     pub match_models: Vec<String>,
-    /// `"round_robin"` | `"weighted"` | `"fallback_chain"` | `"lowest_latency"`
-    /// | `"power_of_two_choices"` | `"last_known_good"`
+    /// `"round_robin"` | `"fallback_chain"` | `"lowest_latency"` | `"power_of_two_choices"`
     pub strategy: String,
     /// Connection ids.
     pub targets: Vec<String>,
+    /// Plugin hooks for this route, e.g. `hooks: { auth: [my-sso] }`.
+    #[serde(default)]
+    pub hooks: vkdg_routing::PluginHooks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,10 +82,10 @@ pub struct LimitsDef {
     pub max_concurrent_requests: Option<usize>,
     pub max_body_bytes: Option<u64>,
     pub request_timeout_secs: Option<u64>,
-    /// Allow only these IP CIDRs/prefixes. Empty = allow all.
+    /// Allow only these addresses or CIDR ranges (v4/v6). Empty = allow all.
     #[serde(default)]
     pub ip_allowlist: Vec<String>,
-    /// Block these IP CIDRs/prefixes. Checked after allowlist.
+    /// Block these addresses or CIDR ranges (v4/v6). Wins over the allowlist.
     #[serde(default)]
     pub ip_blocklist: Vec<String>,
 }

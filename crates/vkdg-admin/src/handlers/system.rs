@@ -40,10 +40,13 @@ mod tests {
             sessions: crate::session::SessionStore::new("test-token".into()),
             config_rx: rx,
             started_at: Arc::new(Instant::now()),
-            key_store: crate::session::KeyStore::new(),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: crate::handlers::requests::RequestLog::new(),
-            combo_resolver: None,
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
             catalog: None,
+            logins: None,
         }
     }
 

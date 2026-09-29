@@ -46,6 +46,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         client_ip: None,
     };
     let op = Operation::Conversation(ConversationRequest {
+        model: "test-model".into(),
         messages: vec![Message {
             role: Role::User,
             content: MessageContent::Text("ping".into()),
@@ -56,6 +57,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         stream: false,
         system: None,
         required_capabilities: CapabilitySet::default(),
+        thinking: None,
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -80,6 +82,7 @@ fn make_two_connection_pipeline(
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let cfg2 = ConnectionConfig {
@@ -94,6 +97,7 @@ fn make_two_connection_pipeline(
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {

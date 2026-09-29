@@ -56,6 +56,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             max_concurrent: 30,
             weight: 1,
             tags: vec!["free-tier".into(), "groq".into()],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         });
     }
@@ -74,6 +75,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             max_concurrent: 20,
             weight: 1,
             tags: vec!["free-tier".into(), "together".into()],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         });
     }
@@ -92,6 +94,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             max_concurrent: 25,
             weight: 1,
             tags: vec!["free-tier".into(), "fireworks".into()],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         });
     }

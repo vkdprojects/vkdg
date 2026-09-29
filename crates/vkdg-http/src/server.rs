@@ -46,9 +46,14 @@ pub async fn serve(config: ServerConfig, router: Router) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     info!(addr = %addr, "vkdg listening");
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Connect info gives handlers the real socket peer, which is what client
+    // IP checks must trust instead of a client-supplied header.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }

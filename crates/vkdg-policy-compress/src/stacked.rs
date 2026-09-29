@@ -106,6 +106,7 @@ mod tests {
         use vkdg_operations::{CapabilitySet, ConversationRequest, Message, MessageContent, Role};
         let c = StackedCompressor::rtk_caveman();
         let req = ConversationRequest {
+            model: "test-model".into(),
             messages: vec![Message {
                 role: Role::User,
                 content: MessageContent::Text(
@@ -118,6 +119,7 @@ mod tests {
             stream: false,
             system: None,
             required_capabilities: CapabilitySet::default(),
+            thinking: None,
         };
         // With a small message, savings may be 0 — just verify it doesn't panic
         let result = c.compress(req, 10000);

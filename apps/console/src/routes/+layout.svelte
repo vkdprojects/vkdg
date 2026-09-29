@@ -118,57 +118,59 @@
 {#if isPublic || !user}
   <main class="main public">{#if isPublic}{@render children()}{/if}</main>
 {:else}
-  <div class="shell" class:collapsed class:peeking>
-    <nav
-      class="sidebar"
-      aria-label={m.shell_primary_navigation()}
-      onmouseenter={() => (peeking = true)}
-      onmouseleave={() => (peeking = false)}
-      onfocusin={() => (peeking = true)}
-      onfocusout={(e) => {
-        // Only collapse back when focus actually leaves the sidebar, not
-        // when it moves between two links inside it.
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) peeking = false;
-      }}
-    >
-      <a href="/" class="brand" aria-label="VKDG home">
-        <Logo size={25} /><span class="brand-name">VKDG</span>
-      </a>
-
-      <button
-        type="button"
-        class="collapse-toggle"
-        onclick={toggleCollapsed}
-        aria-label={collapsed ? m.shell_expand_nav() : m.shell_collapse_nav()}
-        aria-pressed={collapsed}
+  <div class="shell" class:collapsed>
+    <div class="sidebar-slot" class:peeking>
+      <nav
+        class="sidebar"
+        aria-label={m.shell_primary_navigation()}
+        onmouseenter={() => (peeking = true)}
+        onmouseleave={() => (peeking = false)}
+        onfocusin={() => (peeking = true)}
+        onfocusout={(e) => {
+          // Only collapse back when focus actually leaves the sidebar, not
+          // when it moves between two links inside it.
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) peeking = false;
+        }}
       >
-        <PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" />
-      </button>
+        <a href="/" class="brand" aria-label="VKDG home">
+          <Logo size={25} /><span class="brand-name">VKDG</span>
+        </a>
 
-      <div class="nav-groups">
-        {#each navGroups as group}
-          <div class="nav-group">
-            <span class="nav-group-label">{group.label()}</span>
-            <div class="nav-items">
-              {#each group.items as item}
-                <a href={item.href} class="nav-item" class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
-                  <item.icon size={16} strokeWidth={1.8} aria-hidden="true" /><span class="nav-item-label">{item.label()}</span>
-                </a>
-              {/each}
+        <button
+          type="button"
+          class="collapse-toggle"
+          onclick={toggleCollapsed}
+          aria-label={collapsed ? m.shell_expand_nav() : m.shell_collapse_nav()}
+          aria-pressed={collapsed}
+        >
+          <PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+
+        <div class="nav-groups">
+          {#each navGroups as group}
+            <div class="nav-group">
+              <span class="nav-group-label">{group.label()}</span>
+              <div class="nav-items">
+                {#each group.items as item}
+                  <a href={item.href} class="nav-item" class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
+                    <item.icon size={16} strokeWidth={1.8} aria-hidden="true" /><span class="nav-item-label">{item.label()}</span>
+                  </a>
+                {/each}
+              </div>
             </div>
-          </div>
-        {/each}
-      </div>
-
-      <div class="sidebar-foot">
-        <div class="locale-switcher" aria-label={m.shell_language()}>
-          <button class:active={getLocale() === 'en'} aria-pressed={getLocale() === 'en'} onclick={() => setLocale('en')}>EN</button>
-          <button class:active={getLocale() === 'pt-BR'} aria-pressed={getLocale() === 'pt-BR'} onclick={() => setLocale('pt-BR')}>PT</button>
+          {/each}
         </div>
-        <span class="role mono">{user.role}</span>
-        <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
-      </div>
-    </nav>
+
+        <div class="sidebar-foot">
+          <div class="locale-switcher" aria-label={m.shell_language()}>
+            <button class:active={getLocale() === 'en'} aria-pressed={getLocale() === 'en'} onclick={() => setLocale('en')}>EN</button>
+            <button class:active={getLocale() === 'pt-BR'} aria-pressed={getLocale() === 'pt-BR'} onclick={() => setLocale('pt-BR')}>PT</button>
+          </div>
+          <span class="role mono">{user.role}</span>
+          <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
+        </div>
+      </nav>
+    </div>
 
     <div class="content">
       {#if system}
@@ -188,11 +190,14 @@
 
 <style>
   /*
-   * Sidebar shell. Two widths (expanded/collapsed) drive the grid column;
-   * collapsing is a CSS variable flip, not a remount, so focus/scroll state
-   * in the nav survives toggling. Collapsed width fits an icon + padding at
-   * the current root font-size (see app.css clamp) without being cropped on
-   * a 2K root size, since it's in rem, not a fixed px value.
+   * Sidebar shell. Two widths (expanded/collapsed) drive the grid column.
+   * `.sidebar-slot` is the actual grid item and is ALWAYS sized to the
+   * current `collapsed` state (never changes during peek) — it's what
+   * keeps the grid column, and therefore `.content`, from ever reflowing.
+   * `.sidebar` (the <nav>) lives inside the slot and is what visually
+   * grows: normally it just fills the slot, but while peeking it becomes
+   * `position: absolute` *inside* the still-fixed-width slot, so it draws
+   * over the content without the slot (the grid item) changing size.
    */
   .shell {
     --sidebar-w: 15.5rem;
@@ -203,29 +208,35 @@
   }
   .shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 
-  .sidebar {
+  .sidebar-slot {
     position: relative;
     z-index: 20;
+    width: var(--sidebar-w);
+  }
+  .shell.collapsed .sidebar-slot { width: var(--sidebar-w-collapsed); }
+
+  .sidebar {
     display: flex;
     flex-direction: column;
     background: var(--bg-surface);
     border-right: 1px solid var(--border);
-    width: var(--sidebar-w);
-    transition: width 0.15s ease;
+    width: 100%;
+    height: 100%;
   }
-  .shell.collapsed .sidebar { width: var(--sidebar-w-collapsed); }
-  /* Collapsed + hovered/focused: overlay back to full width without
-     reflowing the grid column (content doesn't shift under it). */
-  .shell.collapsed.peeking .sidebar {
+  /* Peeking: the nav overlays at full width from within the still
+     collapsed-width slot, so the grid column never changes size and
+     `.content`/`.main` never move. */
+  .sidebar-slot.peeking .sidebar {
     position: absolute;
     inset: 0 auto 0 0;
     width: var(--sidebar-w);
     box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
   }
 
+
   .brand { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 14px 16px; color: var(--text-1); text-decoration: none; font-size: var(--text-base); font-weight: 700; letter-spacing: .06em; border-bottom: 1px solid var(--border); }
   .brand-name { overflow: hidden; white-space: nowrap; }
-  .shell.collapsed:not(.peeking) .brand-name { display: none; }
+  .shell.collapsed .sidebar-slot:not(.peeking) .brand-name { display: none; }
 
   .collapse-toggle {
     position: absolute;
@@ -249,21 +260,21 @@
   .nav-groups { flex: 1; overflow-y: auto; padding: 10px 0; }
   .nav-group { padding: 6px 12px; }
   .nav-group-label { display: block; color: var(--text-3); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px; white-space: nowrap; }
-  .shell.collapsed:not(.peeking) .nav-group-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); }
+  .shell.collapsed .sidebar-slot:not(.peeking) .nav-group-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); }
   .nav-items { display: flex; flex-direction: column; gap: 1px; }
   .nav-item { display: flex; align-items: center; gap: 10px; color: var(--text-2); text-decoration: none; font-size: var(--text-sm); padding: 7px 10px; border-radius: var(--radius-sm); white-space: nowrap; overflow: hidden; }
   .nav-item :global(svg) { flex-shrink: 0; }
   .nav-item:hover { color: var(--text-1); background: var(--bg-hover); }
   .nav-item.active { color: var(--text-1); background: var(--accent-subtle); box-shadow: inset 2px 0 var(--accent); }
-  .shell.collapsed:not(.peeking) .nav-item-label { display: none; }
+  .shell.collapsed .sidebar-slot:not(.peeking) .nav-item-label { display: none; }
 
   .sidebar-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
-  .shell.collapsed:not(.peeking) .sidebar-foot { flex-direction: column; }
+  .shell.collapsed .sidebar-slot:not(.peeking) .sidebar-foot { flex-direction: column; }
   .locale-switcher { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); }
   .locale-switcher button, .signout { border: 0; background: none; color: var(--text-3); cursor: pointer; font-size: var(--text-2xs); padding: 4px 6px; }
   .locale-switcher button.active { background: var(--accent-subtle); color: var(--accent); }
   .role { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; }
-  .shell.collapsed:not(.peeking) .role { display: none; }
+  .shell.collapsed .sidebar-slot:not(.peeking) .role { display: none; }
   .signout:hover { color: var(--danger); }
 
   .content { min-width: 0; display: flex; flex-direction: column; background: var(--bg-base); container-type: inline-size; container-name: content; }
@@ -283,12 +294,12 @@
     /* Icon rail by default on narrow screens; hover/focus peek still works,
        and the explicit toggle still expands it in place if preferred. */
     .shell:not(.collapsed) { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
-    .shell:not(.collapsed) .sidebar { width: var(--sidebar-w-collapsed); }
-    .shell:not(.collapsed):not(.peeking) .brand-name,
-    .shell:not(.collapsed):not(.peeking) .nav-group-label,
-    .shell:not(.collapsed):not(.peeking) .nav-item-label,
-    .shell:not(.collapsed):not(.peeking) .role { display: none; }
-    .shell:not(.collapsed).peeking .sidebar {
+    .shell:not(.collapsed) .sidebar-slot { width: var(--sidebar-w-collapsed); }
+    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .brand-name,
+    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .nav-group-label,
+    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .nav-item-label,
+    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .role { display: none; }
+    .shell:not(.collapsed) .sidebar-slot.peeking .sidebar {
       position: absolute;
       inset: 0 auto 0 0;
       width: var(--sidebar-w);

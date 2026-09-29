@@ -48,7 +48,7 @@ const STEP_DONE: &str = "◇";
 const STEP_ERR: &str = "▲";
 // ── Embedded console assets ───────────────────────────────────────────────────
 
-/// SvelteKit console — embedded at compile time in release builds,
+/// `SvelteKit` console — embedded at compile time in release builds,
 /// served from the filesystem in debug builds for fast iteration.
 #[derive(rust_embed::RustEmbed, Clone)]
 #[folder = "../../apps/console/build/"]
@@ -70,10 +70,10 @@ enum Command {
         config: Option<String>,
         #[arg(long, default_value = "0.0.0.0:8080")]
         listen: String,
-        /// Bootstrap token (overrides VKDG_BOOTSTRAP_TOKEN env var).
+        /// Bootstrap token (overrides `VKDG_BOOTSTRAP_TOKEN` env var).
         #[arg(long)]
         token: Option<String>,
-        /// Suppress INFO logs (RUST_LOG=warn). Errors and warnings still show.
+        /// Suppress INFO logs (`RUST_LOG=warn`). Errors and warnings still show.
         #[arg(long)]
         quiet: bool,
     },
@@ -91,7 +91,7 @@ enum Command {
     Replay {
         /// Path to the YAML fixture file.
         fixture: String,
-        /// Override the gateway base URL (default: VKDG_BASE_URL or http://127.0.0.1:8080).
+        /// Override the gateway base URL (default: `VKDG_BASE_URL` or <http://127.0.0.1:8080>).
         #[arg(long)]
         base_url: Option<String>,
         /// Start an in-process mock gateway instead of connecting to a running instance.
@@ -294,7 +294,7 @@ async fn main() -> Result<()> {
         Command::Config {
             sub: ConfigSub::Check { path },
         } => {
-            vkdg_cli::commands::config_check::run(&path).await?;
+            vkdg_cli::commands::config_check::run(&path)?;
             // `config check` must refuse what `serve` would refuse: a provider
             // with no adapter (e.g. a typo, or a plugin that is not installed).
             let snap = load_and_validate(&path, 0)?;
@@ -330,7 +330,7 @@ async fn main() -> Result<()> {
         } => cmd_login(&provider, method.as_deref(), &opts, code, list_methods).await?,
         Command::Accounts { sub } => cmd_accounts(sub)?,
         Command::Keys { sub } => cmd_keys(sub)?,
-        Command::Admin { sub } => cmd_admin(sub)?,
+        Command::Admin { sub } => cmd_admin(&sub)?,
     }
     Ok(())
 }
@@ -525,14 +525,11 @@ async fn serve(
     let admin_addr = std::env::var("VKDG_ADMIN_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".into());
     let (bootstrap_token, auto_token): (String, Option<String>) = if let Some(t) = token_override {
         (t, None) // explicit --token: don't show it (user already knows it)
+    } else if let Ok(t) = std::env::var("VKDG_BOOTSTRAP_TOKEN") {
+        (t, None)
     } else {
-        match std::env::var("VKDG_BOOTSTRAP_TOKEN") {
-            Ok(t) => (t, None),
-            Err(_) => {
-                let t = uuid::Uuid::new_v4().to_string();
-                (t.clone(), Some(t))
-            }
-        }
+        let t = uuid::Uuid::new_v4().to_string();
+        (t.clone(), Some(t))
     };
     let config_rx = admin_config_rx.unwrap_or_else(|| {
         let (_tx, rx) = vkdg_config::config_channel(vkdg_config::ConfigSnapshot::default_empty());
@@ -619,8 +616,8 @@ fn print_startup_banner(gateway_addr: &str, admin_addr: &str, auto_token: Option
     let pad = |s: &str| " ".repeat(W.saturating_sub(s.chars().count()));
 
     let title = "   ▶  VKDG  v0.1.0";
-    let gw_vis = format!("   Gateway   {}", gw);
-    let con_vis = format!("   Console   {}", con);
+    let gw_vis = format!("   Gateway   {gw}");
+    let con_vis = format!("   Console   {con}");
 
     println!();
     println!("  {teal}{top}{reset}");
@@ -638,7 +635,7 @@ fn print_startup_banner(gateway_addr: &str, admin_addr: &str, auto_token: Option
 
     if let Some(token) = auto_token {
         let tok_label = "   Bootstrap token (use once to sign in):";
-        let tok_val = format!("   {}", token);
+        let tok_val = format!("   {token}");
         println!("  {teal}{mid}{reset}");
         println!("  {teal}{empty}{reset}");
         println!(
@@ -729,7 +726,7 @@ fn build_pipeline_from_env(
             env_var: api_key_var.into(),
         },
         models: vec!["claude-*".into()],
-        max_concurrent: max_concurrent as u32,
+        max_concurrent: u32::try_from(max_concurrent).unwrap_or(u32::MAX),
         weight: 1,
         tags: vec![],
         endpoint: None,
@@ -894,14 +891,13 @@ async fn cmd_login(
         OAuthFlow::AuthorizationCodePkce => {
             let auth = oauth.start_pkce_login(&method.id, &params).await?;
             println!("Open: {}", auth.authorize_url);
-            let code = match code {
-                Some(c) => c,
-                None => {
-                    println!("Paste the authorization code or callback URL:");
-                    let mut line = String::new();
-                    std::io::stdin().read_line(&mut line)?;
-                    line.trim().to_owned()
-                }
+            let code = if let Some(c) = code {
+                c
+            } else {
+                println!("Paste the authorization code or callback URL:");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_owned()
             };
             oauth
                 .finish_pkce_login(&method.id, &auth.state, &code)
@@ -1024,7 +1020,7 @@ fn build_hook_registry(store: &PluginStore) -> vkdg_http::hooks::HookRegistry {
                 reg.register_auth(name, Arc::new(WasmAuthHook(auth)));
             }
             Err(e) => {
-                tracing::error!(plugin = %name, error = %e, "WASM auth plugin failed to load; skipped")
+                tracing::error!(plugin = %name, error = %e, "WASM auth plugin failed to load; skipped");
             }
         }
     }
@@ -1091,7 +1087,7 @@ fn admin_password_path() -> std::path::PathBuf {
     )
 }
 
-fn cmd_admin(sub: AdminSub) -> Result<()> {
+fn cmd_admin(sub: &AdminSub) -> Result<()> {
     match sub {
         AdminSub::SetPassword => {
             use std::io::{BufRead, IsTerminal};
@@ -1146,27 +1142,23 @@ fn open_key_store() -> Result<vkdg_governance::VirtualKeyStore> {
 /// reverse proxy is still public, which is exactly how an open relay happens.
 /// `VKDG_DATA_AUTH=off` is the only way out, and it is loud.
 fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> Result<vkdg_http::DataAuth> {
-    let auth = match std::env::var("VKDG_DATA_AUTH").as_deref() {
-        Ok("off") => {
+    let auth = if std::env::var("VKDG_DATA_AUTH").as_deref() == Ok("off") {
+        tracing::warn!(
+            "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
+             Anyone who can reach this port spends your provider accounts."
+        );
+        vkdg_http::DataAuth::disabled()
+    } else {
+        let active = store
+            .list()
+            .map_or(0, |keys| keys.iter().filter(|k| !k.is_revoked()).count());
+        if active == 0 {
             tracing::warn!(
-                "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
-                 Anyone who can reach this port spends your provider accounts."
+                path = %key_store_path().display(),
+                "no API keys yet: /v1/* rejects every request until you run `vkdg keys create <name>`"
             );
-            vkdg_http::DataAuth::disabled()
         }
-        _ => {
-            let active = store
-                .list()
-                .map(|keys| keys.iter().filter(|k| !k.is_revoked()).count())
-                .unwrap_or(0);
-            if active == 0 {
-                tracing::warn!(
-                    path = %key_store_path().display(),
-                    "no API keys yet: /v1/* rejects every request until you run `vkdg keys create <name>`"
-                );
-            }
-            vkdg_http::DataAuth::required(store)
-        }
+        vkdg_http::DataAuth::required(store)
     }
     .with_trusted_proxies(trusted_proxies_from_env()?);
     Ok(auth)
@@ -1268,6 +1260,7 @@ fn cmd_setup() -> Result<()> {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
+    #[allow(clippy::literal_string_with_formatting_args)] // indicatif template, not a format! arg
     fn spinner(msg: &str) -> ProgressBar {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -1478,16 +1471,15 @@ fn cmd_setup() -> Result<()> {
 
     // ── Step 6: verify API key ────────────────────────────────────────────────
     if let Ok(key_val) = std::env::var(&env_var) {
-        let sp = spinner(&format!("Verifying {} key...", display_name));
+        let sp = spinner(&format!("Verifying {display_name} key..."));
         std::thread::sleep(Duration::from_millis(800));
         let looks_ok = !key_val.is_empty() && key_val.len() > 8;
         sp.finish_and_clear();
         if looks_ok {
-            ok(&format!("{} key looks valid", display_name));
+            ok(&format!("{display_name} key looks valid"));
         } else {
             warn(&format!(
-                "{} key may be invalid — proceeding anyway",
-                display_name
+                "{display_name} key may be invalid — proceeding anyway"
             ));
         }
         bar();
@@ -1700,7 +1692,7 @@ use anyhow::Context as _;
 use vkdg_plugin_host::{PluginStore, RegistryIndex, RegistryManifest, DEFAULT_REGISTRY};
 
 fn handle_plugin(sub: PluginSub) {
-    use PluginSub::*;
+    use PluginSub::{Install, List, Remove, Search, Tap, Update, ValidateManifest};
     match sub {
         Search { query, kind } => {
             if let Err(e) = plugin_search(query.as_deref().unwrap_or(""), kind.as_ref()) {
@@ -1825,9 +1817,10 @@ fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
     let (manifest, local_wasm) = load_manifest(source, registry_ref)?;
 
     let wasm = match manifest.source_kind() {
-        Ok(vkdg_plugin_host::SourceKind::Wasm) => match local_wasm {
-            Some(bytes) => Some(bytes),
-            None => {
+        Ok(vkdg_plugin_host::SourceKind::Wasm) => {
+            if let Some(bytes) = local_wasm {
+                Some(bytes)
+            } else {
                 let url = manifest
                     .install
                     .wasm
@@ -1836,7 +1829,7 @@ fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
                 println!("Fetching {url}");
                 Some(fetch_bytes(url)?)
             }
-        },
+        }
         _ => None,
     };
 
@@ -2107,7 +2100,7 @@ async fn test_connection_smoke(
 
     let t = Instant::now();
     let resp = run_conversation_pipeline(Arc::clone(pipeline), ctx, op).await;
-    let latency_ms = t.elapsed().as_millis() as u64;
+    let latency_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let status = resp.status();
     if status.is_success() || status.as_u16() == 400 || status.as_u16() == 422 {

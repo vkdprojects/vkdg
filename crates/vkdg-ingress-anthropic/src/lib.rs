@@ -28,20 +28,17 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
     let (parts, body) = req.into_parts();
 
     // 1. Read body (4 MB hard limit — same as ServerConfig::default).
-    let bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => {
-            return vkdg_error_to_anthropic_response(VkdgError::ConfigInvalid {
-                field: "body".into(),
-                message: "body too large or unreadable".into(),
-            });
-        }
+    let Ok(bytes) = axum::body::to_bytes(body, 4 * 1024 * 1024).await else {
+        return vkdg_error_to_anthropic_response(&VkdgError::ConfigInvalid {
+            field: "body".into(),
+            message: "body too large or unreadable".into(),
+        });
     };
 
     // 2. Decode Anthropic JSON → (model, Operation).
-    let (model, operation) = match decode_request(bytes) {
+    let (model, operation) = match decode_request(&bytes) {
         Ok(v) => v,
-        Err(e) => return vkdg_error_to_anthropic_response(e),
+        Err(e) => return vkdg_error_to_anthropic_response(&e),
     };
 
     // 3. Build request envelope with per-request override headers.
@@ -50,10 +47,10 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
     // bug, so refuse rather than serve an unidentified caller.
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
         tracing::error!("data-plane route mounted without require_api_key");
-        return vkdg_error_to_anthropic_response(VkdgError::Unauthenticated);
+        return vkdg_error_to_anthropic_response(&VkdgError::Unauthenticated);
     };
     if let Err(e) = identity.check_model(&model) {
-        return vkdg_error_to_anthropic_response(e);
+        return vkdg_error_to_anthropic_response(&e);
     }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),

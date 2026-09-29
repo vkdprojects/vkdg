@@ -14,7 +14,7 @@ use crate::FilterPack;
 pub struct StackTracePack;
 
 impl FilterPack for StackTracePack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:stack-trace"
     }
 
@@ -22,7 +22,7 @@ impl FilterPack for StackTracePack {
         ContentClass::StackTrace
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses stack traces; keeps error header + first 5 frames"
     }
 

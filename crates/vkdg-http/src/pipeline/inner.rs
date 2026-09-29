@@ -24,12 +24,12 @@ use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
 
 // ── Auto-route counter ────────────────────────────────────────────────────────
-/// Round-robin index for auto-route fallback (no explicit RouteConfig matched).
+/// Round-robin index for auto-route fallback (no explicit `RouteConfig` matched).
 static AUTO_ROUTE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ── RAII dedup guard ──────────────────────────────────────────────────────────
 /// Calls `DedupTable::complete` on drop so in-flight tracking is always cleaned
-/// up regardless of how run_pipeline_inner exits (normal return, early return,
+/// up regardless of how `run_pipeline_inner` exits (normal return, early return,
 /// or `?`-propagated error).
 struct DedupGuard {
     dedup: Arc<crate::DedupTable>,
@@ -81,7 +81,7 @@ pub(super) async fn run_pipeline_inner(
                     .iter()
                     .map(|m| match &m.content {
                         vkdg_operations::MessageContent::Text(s) => (s.len() as u64) / 4,
-                        _ => 50,
+                        vkdg_operations::MessageContent::Blocks(_) => 50,
                     })
                     .sum()
             } else {
@@ -97,11 +97,15 @@ pub(super) async fn run_pipeline_inner(
                 .provider_registry
                 .max_price(model)
                 .map_or(3_000_000, |p| p.input_per_mtok);
-            let estimated_cost_microdollars =
-                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000) as u64;
+            let estimated_cost_microdollars = u64::try_from(
+                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000),
+            )
+            .unwrap_or(u64::MAX);
             if estimated_cost_microdollars > max_cost {
                 return Err(VkdgError::BudgetExceeded {
+                    #[allow(clippy::cast_precision_loss)] // microdollar amounts; f64 precision sufficient
                     estimated_usd: estimated_cost_microdollars as f64 / 1_000_000.0,
+                    #[allow(clippy::cast_precision_loss)] // microdollar amounts; f64 precision sufficient
                     limit_usd: max_cost as f64 / 1_000_000.0,
                 });
             }
@@ -173,7 +177,7 @@ pub(super) async fn run_pipeline_inner(
         Err(VkdgError::NoRouteMatched) => {
             // Auto-route: find any healthy catalog connection that serves the model.
             let model = &ctx.envelope.model_requested;
-            let excluded_ids = filter.excluded_connections.to_vec();
+            let excluded_ids = filter.excluded_connections.clone();
             let candidates = pipeline.catalog.eligible(model, &excluded_ids);
             if candidates.is_empty() {
                 return Err(VkdgError::NoEligibleConnection);
@@ -193,7 +197,7 @@ pub(super) async fn run_pipeline_inner(
         Err(e) => return Err(e),
     };
     ctx.route_id = Some(route_result.route_id.0.clone());
-    ctx.excluded = route_result.excluded.clone();
+    ctx.excluded.clone_from(&route_result.excluded);
     // A combo id (`coding-fast`) is not a model any provider knows. A request
     // naming the combo itself is sent upstream as the combo's model, before any
     // dispatch branch, so fusion and chain targets get the same name. A request
@@ -201,7 +205,7 @@ pub(super) async fn run_pipeline_inner(
     if let (Some(id), Some(model)) = (&csr.combo_id, &csr.combo_model) {
         if *id == ctx.envelope.model_requested {
             if let Operation::Conversation(conv) = &mut operation {
-                conv.model = model.clone();
+                conv.model.clone_from(model);
             }
         }
     }
@@ -231,7 +235,7 @@ pub(super) async fn run_pipeline_inner(
             operation,
             route_result.fusion_targets,
             csr.compression_threshold,
-            &csr.effective_compressor_id,
+            csr.effective_compressor_id.as_deref(),
         )
         .await;
     }
@@ -243,7 +247,7 @@ pub(super) async fn run_pipeline_inner(
             operation,
             route_result.chain_steps,
             csr.compression_threshold,
-            &csr.effective_compressor_id,
+            csr.effective_compressor_id.as_deref(),
         )
         .await;
     }
@@ -310,7 +314,7 @@ pub(super) async fn run_pipeline_inner(
             .status(http::StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
-            .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
+            .unwrap_or_else(|_| error_response(&VkdgError::Internal("response build".into()))));
     }
     // 5. Prepare operation (compression + system prompt + memory injection) ────
     let (op, compress_metrics) = prepare_operation(
@@ -318,7 +322,7 @@ pub(super) async fn run_pipeline_inner(
         operation,
         &ctx.envelope,
         csr.compression_threshold,
-        &csr.effective_compressor_id,
+        csr.effective_compressor_id.as_deref(),
     )
     .await;
     operation = op;
@@ -350,10 +354,10 @@ pub(super) async fn run_pipeline_inner(
     };
     let bypass_cache = ctx.envelope.cache_bypass
         || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
-    let cache_key_val: Option<String> = if !bypass_cache {
-        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
-    } else {
+    let cache_key_val: Option<String> = if bypass_cache {
         None
+    } else {
+        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
     };
     if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
         match cache.lookup(key).await {
@@ -366,7 +370,7 @@ pub(super) async fn run_pipeline_inner(
                     .header("x-vkdg-cache", "hit")
                     .body(axum::body::Body::from(body))
                     .unwrap_or_else(|_| {
-                        error_response(VkdgError::Internal("cache response build".into()))
+                        error_response(&VkdgError::Internal("cache response build".into()))
                     }));
             }
             Ok(CacheResult::Miss) => {}
@@ -475,7 +479,7 @@ pub(super) async fn run_pipeline_inner(
             builder
                 .body(axum::body::Body::from(body))
                 .unwrap_or_else(|_| {
-                    error_response(VkdgError::Internal("response builder failed".into()))
+                    error_response(&VkdgError::Internal("response builder failed".into()))
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
@@ -497,10 +501,10 @@ pub(super) async fn run_pipeline_inner(
 
             // Streaming responses are never cached — the body is a stream.
             // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
-            let filtered_body = if !ctx.envelope.include_think_tags {
-                filter_think_tags_stream(body)
-            } else {
+            let filtered_body = if ctx.envelope.include_think_tags {
                 body
+            } else {
+                filter_think_tags_stream(body)
             };
             // Guard: if upstream closes before [DONE], inject error event so
             // clients can detect the incomplete response (instead of silent 200).
@@ -522,7 +526,7 @@ pub(super) async fn run_pipeline_inner(
             builder
                 .body(axum::body::Body::from_stream(guarded_body))
                 .unwrap_or_else(|_| {
-                    error_response(VkdgError::Internal(
+                    error_response(&VkdgError::Internal(
                         "streaming response builder failed".into(),
                     ))
                 })
@@ -550,7 +554,7 @@ async fn run_fusion_dispatch(
     mut operation: Operation,
     fusion_targets: Vec<ConnectionId>,
     compression_threshold: u32,
-    effective_compressor_id: &Option<String>,
+    effective_compressor_id: Option<&str>,
 ) -> Result<Response, VkdgError> {
     // Tag ctx with the primary target for tracing/decision-record.
     ctx.connection_id = Some(fusion_targets[0].clone());
@@ -678,7 +682,7 @@ async fn run_prompt_chain(
     mut operation: Operation,
     steps: Vec<vkdg_routing::ChainStep>,
     compression_threshold: u32,
-    effective_compressor_id: &Option<String>,
+    effective_compressor_id: Option<&str>,
 ) -> Result<Response, VkdgError> {
     use vkdg_operations::{Message, MessageContent, Role};
     use vkdg_routing::InjectMode;
@@ -751,18 +755,17 @@ async fn run_prompt_chain(
         }
 
         // Resolve connection for this step.
-        let conn_id = match step.connection_id {
-            Some(id) => id,
-            None => {
-                // Auto-route: find any eligible catalog connection for the requested model.
-                let excluded_ids: Vec<ConnectionId> = vec![];
-                pipeline
-                    .catalog
-                    .eligible(&ctx.envelope.model_requested, &excluded_ids)
-                    .into_iter()
-                    .next()
-                    .ok_or(VkdgError::NoEligibleConnection)?
-            }
+        let conn_id = if let Some(id) = step.connection_id {
+            id
+        } else {
+            // Auto-route: find any eligible catalog connection for the requested model.
+            let excluded_ids: Vec<ConnectionId> = vec![];
+            pipeline
+                .catalog
+                .eligible(&ctx.envelope.model_requested, &excluded_ids)
+                .into_iter()
+                .next()
+                .ok_or(VkdgError::NoEligibleConnection)?
         };
 
         ctx.connection_id = Some(conn_id.clone());
@@ -840,11 +843,11 @@ mod tests {
 
     struct StubAdapter;
     impl ProviderAdapter for StubAdapter {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             // Registered under "openai" so Custom connections (adapter_id() = "openai") resolve it.
             "openai"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Stub"
         }
         fn prepare(
@@ -1362,10 +1365,10 @@ mod tests {
     /// fails, so no network is needed.
     struct Recording(Arc<std::sync::Mutex<Vec<(String, String)>>>);
     impl ProviderAdapter for Recording {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "openai"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Recording"
         }
         fn prepare(
@@ -1428,7 +1431,7 @@ mod tests {
             Some(Arc::clone(&p.router)),
         )
         .unwrap();
-        svc.create(vkdg_combos::Combo {
+        svc.create(&vkdg_combos::Combo {
             id: "coding-fast".into(),
             match_patterns: vec![],
             strategy: StrategyKind::RoundRobin,

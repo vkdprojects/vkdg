@@ -251,6 +251,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
         bits += 6;
         if bits >= 8 {
             bits -= 8;
+            #[allow(clippy::cast_possible_truncation)] // base64: acc>>bits is always 0..=255
             out.push((acc >> bits) as u8);
         }
     }

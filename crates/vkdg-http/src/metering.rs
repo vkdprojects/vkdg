@@ -6,7 +6,7 @@
 //! provider was reached.
 //!
 //! Anthropic reports `usage.input_tokens` in `message_start` and a growing
-//! `usage.output_tokens` in `message_delta`; OpenAI reports
+//! `usage.output_tokens` in `message_delta`; `OpenAI` reports
 //! `usage.prompt_tokens` / `completion_tokens` in the body or the final stream
 //! chunk. Counts only grow, so the meter keeps the largest value seen per field.
 

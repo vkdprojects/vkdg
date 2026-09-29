@@ -1,7 +1,7 @@
-//! Thinking / reasoning controls for Kiro (AWS CodeWhisperer).
+//! Thinking / reasoning controls for Kiro (AWS `CodeWhisperer`).
 //!
 //! Two coordinated signals steer reasoning on the Kiro surface, ported from
-//! OmniRoute's `adaptiveThinking.ts` and `kiroThinking.ts`:
+//! `OmniRoute`'s `adaptiveThinking.ts` and `kiroThinking.ts`:
 //!
 //! 1. **`additionalModelRequestFields`** with `output_config.effort` +
 //!    `thinking:{type:"adaptive"}` (or `reasoning.effort` for GPT-5.6 models).
@@ -45,7 +45,7 @@ fn thinking_length_for_effort(effort: &str) -> u32 {
     }
 }
 
-pub(crate) fn resolve_effort(t: &ThinkingRequest) -> &'static str {
+pub fn resolve_effort(t: &ThinkingRequest) -> &'static str {
     match t.effort.as_deref() {
         Some("minimal") => "low",
         Some(e) if !e.is_empty() => KIRO_EFFORT_LEVELS
@@ -58,7 +58,7 @@ pub(crate) fn resolve_effort(t: &ThinkingRequest) -> &'static str {
 }
 
 /// `additionalModelRequestFields` for the Kiro body. `None` = model not on allowlist.
-pub(crate) fn build_fields(model: &str, t: &ThinkingRequest) -> Option<AdditionalFields> {
+pub fn build_fields(model: &str, t: &ThinkingRequest) -> Option<AdditionalFields> {
     let effort = resolve_effort(t);
     if effort.is_empty() {
         return None;
@@ -85,7 +85,7 @@ pub(crate) fn build_fields(model: &str, t: &ThinkingRequest) -> Option<Additiona
 }
 
 /// `<thinking_mode>` directive to prepend to the user message. `None` = not applicable.
-pub(crate) fn directive(model: &str, t: &ThinkingRequest) -> Option<String> {
+pub fn directive(model: &str, t: &ThinkingRequest) -> Option<String> {
     if !supports_adaptive(model) {
         return None;
     }
@@ -101,7 +101,7 @@ pub(crate) fn directive(model: &str, t: &ThinkingRequest) -> Option<String> {
 
 #[derive(serde::Serialize)]
 #[serde(untagged)]
-pub(crate) enum AdditionalFields {
+pub enum AdditionalFields {
     NativeReasoning {
         reasoning: EffortField,
     },
@@ -112,12 +112,12 @@ pub(crate) enum AdditionalFields {
 }
 
 #[derive(serde::Serialize)]
-pub(crate) struct EffortField {
+pub struct EffortField {
     pub(crate) effort: String,
 }
 
 #[derive(serde::Serialize)]
-pub(crate) struct AdaptiveThinking {
+pub struct AdaptiveThinking {
     #[serde(rename = "type")]
     pub(crate) kind: &'static str,
     pub(crate) display: &'static str,

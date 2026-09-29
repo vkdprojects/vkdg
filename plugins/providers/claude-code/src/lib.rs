@@ -21,11 +21,11 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         Some(self)
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "claude-code"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Claude Code"
     }
 
@@ -46,9 +46,8 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
         let token = credential.token.as_str();
-        let req = match operation {
-            Operation::Conversation(r) => r,
-            _ => return Err(ProviderError::UnsupportedOperation),
+        let Operation::Conversation(req) = operation else {
+            return Err(ProviderError::UnsupportedOperation);
         };
 
         let body = build_body(req);

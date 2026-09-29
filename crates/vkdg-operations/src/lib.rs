@@ -106,14 +106,14 @@ pub struct ConversationRequest {
     pub stream: bool,
     pub system: Option<String>,
     pub required_capabilities: CapabilitySet,
-    /// Extended reasoning the client asked for (Anthropic `thinking`, OpenAI
+    /// Extended reasoning the client asked for (Anthropic `thinking`, `OpenAI`
     /// `reasoning_effort`). `None` = the client did not ask.
     #[serde(default)]
     pub thinking: Option<ThinkingRequest>,
 }
 
 /// A client's reasoning request, kept in the client's own terms: a token
-/// budget (Anthropic) or an effort level (OpenAI). Adapters map it to their
+/// budget (Anthropic) or an effort level (`OpenAI`). Adapters map it to their
 /// provider's knob.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThinkingRequest {
@@ -123,7 +123,7 @@ pub struct ThinkingRequest {
 }
 
 impl ThinkingRequest {
-    /// Effort level, from the explicit effort or a budget (OmniRoute's mapping:
+    /// Effort level, from the explicit effort or a budget (`OmniRoute`'s mapping:
     /// ≥32k high, ≥16k medium, >0 low). `minimal` counts as `low`.
     pub fn effort_level(&self) -> &str {
         match self.effort.as_deref() {
@@ -323,7 +323,7 @@ pub struct StreamContext<'a> {
 }
 
 /// Encodes [`ConversationEvent`]s into one client wire dialect (Anthropic SSE,
-/// OpenAI chunks). Stateful: one instance per response stream. Implemented by
+/// `OpenAI` chunks). Stateful: one instance per response stream. Implemented by
 /// the ingress crates; the pipeline only drives it.
 pub trait StreamEncoder: Send {
     /// Wire bytes for one event (may be empty; may open/close blocks first).

@@ -1,4 +1,4 @@
-//! Build [`PreparedRequest`] for the OpenAI Chat Completions and Images APIs.
+//! Build [`PreparedRequest`] for the `OpenAI` Chat Completions and Images APIs.
 
 use bytes::Bytes;
 use http::HeaderMap;
@@ -11,10 +11,10 @@ use vkdg_operations::{
 };
 use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
-/// OpenAI provider adapter; converts internal operations to Chat Completions requests.
+/// `OpenAI` provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
 
-/// OpenAI list prices (USD per million tokens, as microdollars), specific
+/// `OpenAI` list prices (USD per million tokens, as microdollars), specific
 /// patterns first; `.` in names is read as `-` (`gpt-4.1` is `gpt-4-1`).
 /// Cached input is not reported separately by the meter, so cost for
 /// prompt-cached traffic is an upper bound.
@@ -37,11 +37,11 @@ const PRICES: &[ModelPrice] = &[
 ];
 
 impl ProviderAdapter for OpenAIAdapter {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "openai"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "OpenAI"
     }
 
@@ -115,7 +115,7 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-/// Build common Authorization + Content-Type headers for OpenAI API requests.
+/// Build common Authorization + Content-Type headers for `OpenAI` API requests.
 fn build_auth_headers(token: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -131,7 +131,7 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-/// Serialise an [`ImageGenerateRequest`] to an OpenAI Images generations JSON body.
+/// Serialise an [`ImageGenerateRequest`] to an `OpenAI` Images generations JSON body.
 /// Only non-`None` optional fields are included.
 pub(crate) fn build_image_generate_body(
     req: &ImageGenerateRequest,
@@ -193,7 +193,7 @@ pub(crate) fn build_video_generate_body(req: &VideoGenerateRequest) -> Bytes {
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
-/// Serialise a [`ConversationRequest`] to an OpenAI Chat Completions JSON body.
+/// Serialise a [`ConversationRequest`] to an `OpenAI` Chat Completions JSON body.
 fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     // The model the client asked for. `config.models` holds route patterns, so a
     // connection matching `gpt-*` would otherwise send that glob upstream.
@@ -244,11 +244,11 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
                         })
                         .collect();
 
-                    if !tool_calls.is_empty() {
-                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
-                    } else {
+                    if tool_calls.is_empty() {
                         let content = message_content_to_value(&m.content);
                         json!({ "role": "assistant", "content": content })
+                    } else {
+                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
                     }
                 } else {
                     let content = message_content_to_value(&m.content);
@@ -301,7 +301,7 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
-/// Convert [`MessageContent`] to a JSON value suitable for OpenAI's `content` field.
+/// Convert [`MessageContent`] to a JSON value suitable for `OpenAI`'s `content` field.
 fn message_content_to_value(content: &MessageContent) -> Value {
     match content {
         MessageContent::Text(t) => Value::String(t.clone()),
@@ -340,7 +340,7 @@ fn extract_tool_result(content: &MessageContent) -> (String, String) {
     // Plain text in a Tool message — use empty id, propagate text as-is.
     let text = match content {
         MessageContent::Text(t) => t.clone(),
-        _ => String::new(),
+        MessageContent::Blocks(_) => String::new(),
     };
     (String::new(), text)
 }
@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(v["messages"][1]["role"], "user");
     }
 
-    /// Non-empty tools array must produce an OpenAI tools array with type:function entries.
+    /// Non-empty tools array must produce an `OpenAI` tools array with type:function entries.
     #[test]
     fn prepare_tools() {
         let mut req = simple_request();
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(tool["function"]["description"], "Return weather");
     }
 
-    /// stream:true must include both stream:true and stream_options:{include_usage:true}.
+    /// stream:true must include both stream:true and `stream_options:{include_usage:true`}.
     #[test]
     fn prepare_stream_options() {
         let mut req = simple_request();
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(v["stream_options"]["include_usage"], true);
     }
 
-    /// An assistant message with ToolUse blocks must produce role:assistant with tool_calls.
+    /// An assistant message with `ToolUse` blocks must produce role:assistant with `tool_calls`.
     #[test]
     fn prepare_tool_use_in_assistant() {
         let mut req = simple_request();
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(args["location"], "NYC");
     }
 
-    /// A Tool role message must produce role:tool with tool_call_id and content string.
+    /// A Tool role message must produce role:tool with `tool_call_id` and content string.
     #[test]
     fn prepare_tool_result_message() {
         let mut req = simple_request();
@@ -553,14 +553,14 @@ mod tests {
         assert_eq!(auth, "Bearer sk-test123");
     }
 
-    /// ProviderKind::OpenAI must produce a URL pointing to api.openai.com.
+    /// `ProviderKind::OpenAI` must produce a URL pointing to api.openai.com.
     #[test]
     fn prepare_url_openai() {
         let url = base_url(&openai_config());
         assert!(url.contains("api.openai.com"), "url={url}");
     }
 
-    /// ProviderKind::Custom must use the supplied base_url verbatim.
+    /// `ProviderKind::Custom` must use the supplied `base_url` verbatim.
     #[test]
     fn prepare_url_custom() {
         let cfg = custom_config("http://localhost:8080");

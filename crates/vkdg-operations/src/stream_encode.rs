@@ -155,7 +155,7 @@ impl AnthropicStreamEncoder {
         &mut self,
         kind: BlockKind,
         source_index: u32,
-        content_block: Value,
+        content_block: &Value,
         out: &mut Vec<u8>,
     ) -> u32 {
         if let Some(block) = self.open {
@@ -196,7 +196,7 @@ impl StreamEncoder for AnthropicStreamEncoder {
                 let wire_index = self.open_block(
                     BlockKind::Text,
                     *index,
-                    json!({ "type": "text", "text": "" }),
+                    &json!({ "type": "text", "text": "" }),
                     &mut out,
                 );
                 out.extend(sse(
@@ -213,7 +213,7 @@ impl StreamEncoder for AnthropicStreamEncoder {
                 let wire_index = self.open_block(
                     BlockKind::Thinking,
                     *index,
-                    json!({ "type": "thinking", "thinking": "" }),
+                    &json!({ "type": "thinking", "thinking": "" }),
                     &mut out,
                 );
                 out.extend(sse(
@@ -235,7 +235,7 @@ impl StreamEncoder for AnthropicStreamEncoder {
                 let wire_index = self.open_block(
                     BlockKind::ToolUse,
                     *index,
-                    json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": {} }),
+                    &json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": {} }),
                     &mut out,
                 );
                 // The opening fragment carries the name and no input yet.
@@ -319,7 +319,7 @@ impl StreamEncoder for AnthropicStreamEncoder {
 
 // ── OpenAI Chat Completions ───────────────────────────────────────────────────
 
-/// Encodes an OpenAI Chat Completions chunk stream, terminated by `[DONE]`.
+/// Encodes an `OpenAI` Chat Completions chunk stream, terminated by `[DONE]`.
 #[derive(Debug)]
 pub struct OpenAiStreamEncoder {
     id: String,
@@ -338,15 +338,14 @@ impl OpenAiStreamEncoder {
             model: ctx.model.to_owned(),
             created: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_secs()),
             tool_indices: Vec::new(),
             usage: Usage::default(),
             terminated: false,
         }
     }
 
-    fn chunk(&self, choices: Value) -> Vec<u8> {
+    fn chunk(&self, choices: &Value) -> Vec<u8> {
         let body = json!({
             "id": self.id,
             "object": "chat.completion.chunk",
@@ -357,18 +356,17 @@ impl OpenAiStreamEncoder {
         format!("data: {body}\n\n").into_bytes()
     }
 
-    fn delta(&self, delta: Value) -> Vec<u8> {
-        self.chunk(json!([{ "index": 0, "delta": delta, "finish_reason": Value::Null }]))
+    fn delta(&self, delta: &Value) -> Vec<u8> {
+        self.chunk(&json!([{ "index": 0, "delta": delta, "finish_reason": Value::Null }]))
     }
 
     /// Stable wire index for a source tool-call index, assigned on first use.
     fn tool_index(&mut self, source_index: u32) -> usize {
-        match self.tool_indices.iter().position(|i| *i == source_index) {
-            Some(pos) => pos,
-            None => {
-                self.tool_indices.push(source_index);
-                self.tool_indices.len() - 1
-            }
+        if let Some(pos) = self.tool_indices.iter().position(|i| *i == source_index) {
+            pos
+        } else {
+            self.tool_indices.push(source_index);
+            self.tool_indices.len() - 1
         }
     }
 }
@@ -380,12 +378,14 @@ impl StreamEncoder for OpenAiStreamEncoder {
         }
         match event {
             ConversationEvent::Started { .. } => {
-                self.delta(json!({ "role": "assistant", "content": "" }))
+                self.delta(&json!({ "role": "assistant", "content": "" }))
             }
-            ConversationEvent::OutputDelta { delta, .. } => self.delta(json!({ "content": delta })),
+            ConversationEvent::OutputDelta { delta, .. } => {
+                self.delta(&json!({ "content": delta }))
+            }
             // OpenAI carries reasoning in its own field, never in `content`.
             ConversationEvent::ReasoningDelta { delta, .. } => {
-                self.delta(json!({ "reasoning_content": delta }))
+                self.delta(&json!({ "reasoning_content": delta }))
             }
             ConversationEvent::ToolCallDelta {
                 tool_use_id,
@@ -396,14 +396,14 @@ impl StreamEncoder for OpenAiStreamEncoder {
                 let wire_index = self.tool_index(*index);
                 let mut call = json!({ "index": wire_index });
                 // Identify the call once; later fragments carry arguments only.
-                if !name.is_empty() {
+                if name.is_empty() {
+                    call["function"] = json!({ "arguments": input_delta });
+                } else {
                     call["id"] = json!(tool_use_id);
                     call["type"] = json!("function");
                     call["function"] = json!({ "name": name, "arguments": input_delta });
-                } else {
-                    call["function"] = json!({ "arguments": input_delta });
                 }
-                self.delta(json!({ "tool_calls": [call] }))
+                self.delta(&json!({ "tool_calls": [call] }))
             }
             // OpenAI has no per-call terminator: arguments simply stop arriving.
             ConversationEvent::ToolCallEnd { .. } => Vec::new(),
@@ -422,7 +422,7 @@ impl StreamEncoder for OpenAiStreamEncoder {
                 Vec::new()
             }
             ConversationEvent::Completed { stop_reason } => {
-                let mut out = self.chunk(json!([{
+                let mut out = self.chunk(&json!([{
                     "index": 0,
                     "delta": {},
                     "finish_reason": stop_reason_openai(stop_reason),
@@ -450,7 +450,7 @@ impl StreamEncoder for OpenAiStreamEncoder {
         }
         self.terminated = true;
         // No upstream stop event: close with `stop` so the client is not left hanging.
-        let mut out = self.chunk(json!([{
+        let mut out = self.chunk(&json!([{
             "index": 0,
             "delta": {},
             "finish_reason": "stop",

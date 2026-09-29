@@ -236,15 +236,15 @@ impl SessionStore {
         let now = Instant::now();
         let over = |(start, count): (Instant, u32), limit: u32| {
             let elapsed = now.duration_since(start);
-            (elapsed < FAILURE_WINDOW && count >= limit).then(|| FAILURE_WINDOW - elapsed)
+            (elapsed < FAILURE_WINDOW && count >= limit)
+                .then(|| FAILURE_WINDOW.checked_sub(elapsed).unwrap())
         };
-        if let Some(wait) = over(*self.global.lock(), MAX_GLOBAL_FAILURES) {
+        let global_val = *self.global.lock();
+        if let Some(wait) = over(global_val, MAX_GLOBAL_FAILURES) {
             return Some(wait);
         }
-        self.failures
-            .lock()
-            .get(&ip)
-            .and_then(|w| over(*w, MAX_FAILURES))
+        let val = self.failures.lock().get(&ip).copied();
+        val.and_then(|w| over(w, MAX_FAILURES))
     }
 
     pub fn record_failure(&self, ip: Option<IpAddr>) {
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn throttle_map_is_bounded() {
         let (s, _d) = store();
-        for i in 0..(MAX_TRACKED as u32 + 500) {
+        for i in 0..(u32::try_from(MAX_TRACKED).unwrap_or(u32::MAX) + 500) {
             s.record_failure(Some(IpAddr::from(i.to_be_bytes())));
         }
         assert!(s.tracked() <= MAX_TRACKED);

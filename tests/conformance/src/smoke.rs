@@ -44,7 +44,7 @@ fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> 
             env_var: "VKDG_SMOKE_KEY".into(),
         },
         models: vec!["claude-*".into()],
-        max_concurrent: max_concurrent as u32,
+        max_concurrent: u32::try_from(max_concurrent).unwrap_or(u32::MAX),
         weight: 1,
         tags: vec![],
         endpoint: None,
@@ -100,7 +100,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
     (PipelineCtx::new(envelope), op)
 }
 
-/// Same as make_ctx but with stream: true for testing SSE passthrough.
+/// Same as `make_ctx` but with stream: true for testing SSE passthrough.
 fn make_ctx_streaming(model: &str, api_type: ApiType) -> (PipelineCtx, Operation) {
     let envelope = RequestEnvelope {
         request_id: RequestId::new(),
@@ -426,7 +426,7 @@ fn make_pipeline_with<A: vkdg_http::provider::ProviderAdapter + 'static>(
 
 /// Helper: build a pipeline with two connections using the same adapter.
 /// First connection is at `first_url`, second at `second_url`.
-/// The router uses RoundRobin; exclusion makes it fall through to the second on retry.
+/// The router uses `RoundRobin`; exclusion makes it fall through to the second on retry.
 fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'static>(
     first_url: String,
     second_url: String,
@@ -483,8 +483,8 @@ fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'stat
     ))
 }
 
-/// Smoke: pipeline with OpenAI provider returns SSE stream from fake OpenAI upstream.
-/// Defeito derrubado: OpenAIAdapter não serializa body corretamente, ou o pipeline
+/// Smoke: pipeline with `OpenAI` provider returns SSE stream from fake `OpenAI` upstream.
+/// Defeito derrubado: `OpenAIAdapter` não serializa body corretamente, ou o pipeline
 /// bloqueia/descarta bytes SSE em vez de fazer passthrough do upstream.
 #[tokio::test]
 async fn smoke_pipeline_openai_streaming_ok() {
@@ -569,7 +569,7 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
     );
 }
 
-/// Plausible wrong impl: stale session pin causes NoEligibleConnection (502)
+/// Plausible wrong impl: stale session pin causes `NoEligibleConnection` (502)
 /// instead of falling through to route-based selection when the pinned
 /// connection no longer exists in the catalog.
 #[tokio::test]
@@ -659,7 +659,7 @@ async fn session_stickiness_stale_pin_falls_through_to_routing() {
 }
 
 /// Plausible wrong impl: request with no explicit route fails immediately with
-/// NoEligibleConnection instead of falling through to auto-route via catalog.eligible().
+/// `NoEligibleConnection` instead of falling through to auto-route via `catalog.eligible()`.
 /// Auto-routing must find the catalog connection even when the router has no routes.
 #[tokio::test]
 async fn auto_routing_zero_config_routes_without_explicit_route() {
@@ -712,9 +712,9 @@ async fn auto_routing_zero_config_routes_without_explicit_route() {
     );
 }
 
-/// Plausible wrong impl: context-relay is called but relay_on_rotation is
+/// Plausible wrong impl: context-relay is called but `relay_on_rotation` is
 /// never wired in inner.rs, so the new connection receives no conversation
-/// history.  This test calls relay_on_rotation directly to verify it
+/// history.  This test calls `relay_on_rotation` directly to verify it
 /// injects the [Account rotation] block into the system prompt.
 #[test]
 fn context_relay_injects_history_on_account_rotation() {
@@ -765,9 +765,9 @@ fn context_relay_injects_history_on_account_rotation() {
     );
 }
 
-/// Plausible wrong impl: relay fires even when relay_enabled=false, leaking
+/// Plausible wrong impl: relay fires even when `relay_enabled=false`, leaking
 /// internal routing details into every system prompt.
-/// Verifies relay_on_rotation is a no-op when there is no system_preferred pin
+/// Verifies `relay_on_rotation` is a no-op when there is no `system_preferred` pin
 /// (i.e. no session pin means no rotation possible).
 #[test]
 fn context_relay_noop_on_non_conversation_operation() {

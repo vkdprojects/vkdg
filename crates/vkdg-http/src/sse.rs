@@ -37,6 +37,7 @@ impl SseParser {
     }
 
     /// Keep think-tag blocks in the output (opt-in by client via X-VKDG-Think-Tags: include).
+    #[must_use]
     pub fn with_think_tags(mut self) -> Self {
         self.strip_think_tags = false;
         self
@@ -110,7 +111,7 @@ fn find_event_end(buf: &[u8]) -> Option<EventEnd> {
     None
 }
 
-/// Parse raw event bytes (everything before the \n\n delimiter) into an SseEvent.
+/// Parse raw event bytes (everything before the \n\n delimiter) into an `SseEvent`.
 ///
 /// Lines that fail UTF-8 decoding are skipped — the buffer only retains
 /// partial multi-byte sequences until more bytes arrive via `push`.
@@ -179,7 +180,7 @@ const STREAM_INTERRUPTED_EVENT: &str =
 
 /// True when this chunk ends the stream in either client dialect.
 ///
-/// OpenAI sends a `[DONE]` sentinel; Anthropic sends `message_stop` and no
+/// `OpenAI` sends a `[DONE]` sentinel; Anthropic sends `message_stop` and no
 /// sentinel at all. Recognising only `[DONE]` made every successful Anthropic
 /// response end with a spurious error event.
 fn is_terminal_chunk(chunk: &[u8]) -> bool {
@@ -212,7 +213,9 @@ pub fn with_termination_guard(
                 }
                 None => {
                     finished = true;
-                    if !saw_done {
+                    if saw_done {
+                        None
+                    } else {
                         // Upstream closed without [DONE] — inject error event.
                         tracing::warn!(
                             "upstream closed SSE stream before [DONE]; injecting error event"
@@ -221,8 +224,6 @@ pub fn with_termination_guard(
                             Ok(Bytes::from_static(STREAM_INTERRUPTED_EVENT.as_bytes())),
                             (stream, true, finished),
                         ))
-                    } else {
-                        None
                     }
                 }
                 Some(Err(e)) => {

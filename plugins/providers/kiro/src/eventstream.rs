@@ -1,5 +1,5 @@
-//! AWS EventStream binary framing (`application/vnd.amazon.eventstream`), as used
-//! by Kiro / CodeWhisperer `generateAssistantResponse`.
+//! AWS `EventStream` binary framing (`application/vnd.amazon.eventstream`), as used
+//! by Kiro / `CodeWhisperer` `generateAssistantResponse`.
 //!
 //! Message layout (all integers big-endian):
 //! - prelude: `total_len: u32` (whole message, including prelude and trailing CRC),
@@ -19,7 +19,7 @@ const MIN_MESSAGE_LEN: usize = PRELUDE_LEN + CRC_LEN;
 /// Upper bound on a single message; matches the AWS SDK limit (16 MiB).
 const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub headers: Vec<FrameHeader>,
     pub payload: Bytes,
@@ -35,14 +35,14 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameHeader {
     pub name: String,
     pub value: HeaderValue,
 }
 
-/// AWS EventStream header value; discriminants follow the wire type byte.
-#[derive(Debug, Clone, PartialEq)]
+/// AWS `EventStream` header value; discriminants follow the wire type byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderValue {
     Bool(bool),
     Byte(i8),
@@ -184,7 +184,7 @@ fn take_array<const N: usize>(buf: &mut Bytes, what: &'static str) -> Result<[u8
     Ok(out)
 }
 
-fn utf8(bytes: Bytes, what: &'static str) -> Result<String, FrameError> {
+fn utf8(bytes: &Bytes, what: &'static str) -> Result<String, FrameError> {
     String::from_utf8(bytes.to_vec()).map_err(|_| FrameError::MalformedHeader(what))
 }
 
@@ -192,7 +192,7 @@ fn parse_headers(mut buf: Bytes) -> Result<Vec<FrameHeader>, FrameError> {
     let mut headers = Vec::new();
     while !buf.is_empty() {
         let name_len = take_array::<1>(&mut buf, "name length")?[0] as usize;
-        let name = utf8(take(&mut buf, name_len, "name")?, "name is not UTF-8")?;
+        let name = utf8(&take(&mut buf, name_len, "name")?, "name is not UTF-8")?;
         let value = match take_array::<1>(&mut buf, "value type")?[0] {
             0 => HeaderValue::Bool(true),
             1 => HeaderValue::Bool(false),
@@ -207,7 +207,7 @@ fn parse_headers(mut buf: Bytes) -> Result<Vec<FrameHeader>, FrameError> {
             7 => {
                 let len = u16::from_be_bytes(take_array(&mut buf, "string length")?) as usize;
                 HeaderValue::String(utf8(
-                    take(&mut buf, len, "string value")?,
+                    &take(&mut buf, len, "string value")?,
                     "string is not UTF-8",
                 )?)
             }

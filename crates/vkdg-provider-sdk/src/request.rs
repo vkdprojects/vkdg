@@ -51,8 +51,8 @@ pub trait ConversationStreamDecoder: Send {
 ///
 /// # Implementation
 /// - `id()` must be globally unique and stable (used as registry key and in configs)
-/// - `prepare()` is called once per request on the hot path — no allocations beyond HeaderMap + body serialization
-/// - Never call upstream from prepare(); that is the pipeline's job
+/// - `prepare()` is called once per request on the hot path — no allocations beyond `HeaderMap` + body serialization
+/// - Never call upstream from `prepare()`; that is the pipeline's job
 pub trait ProviderAdapter: Send + Sync {
     /// Stable identifier: "anthropic", "openai", "gemini", "groq", etc.
     fn id(&self) -> &str;

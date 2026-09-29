@@ -1,7 +1,7 @@
 //! Data-plane client authentication.
 //!
 //! Every `/v1/*` route is wrapped once by [`require_api_key`]. It accepts the
-//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (OpenAI
+//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (`OpenAI`
 //! clients), checks the endpoint's scope, and puts the caller's identity in the
 //! request extensions as [`ClientIdentity`] for the ingress handlers.
 //!
@@ -292,7 +292,7 @@ fn metered(
         .filter(|_| log_history)
         .map(|p| {
             let id = p.record.request_id.clone();
-            p.log.push(p.record);
+            p.log.push(&p.record);
             (p.log, id, p.price)
         });
     if charge.is_none() && history.is_none() {
@@ -413,7 +413,7 @@ fn reject(path: &str, status: StatusCode, message: &str) -> Response {
     reject_as(path, status, kind, code, message)
 }
 
-/// `kind` is the Anthropic `error.type`; `code` the OpenAI `error.code`.
+/// `kind` is the Anthropic `error.type`; `code` the `OpenAI` `error.code`.
 fn reject_as(path: &str, status: StatusCode, kind: &str, code: &str, message: &str) -> Response {
     let body = if path.starts_with("/v1/messages") {
         json!({ "type": "error", "error": { "type": kind, "message": message } })

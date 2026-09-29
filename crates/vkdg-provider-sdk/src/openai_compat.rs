@@ -1,6 +1,6 @@
-//! Shared helpers for OpenAI Chat Completions wire format.
+//! Shared helpers for `OpenAI` Chat Completions wire format.
 //!
-//! All OpenAI-compatible providers (Groq, Together, Fireworks, DeepSeek,
+//! All OpenAI-compatible providers (Groq, Together, Fireworks, `DeepSeek`,
 //! Mistral, Gemini) delegate here instead of duplicating conversion logic.
 
 use bytes::Bytes;
@@ -29,7 +29,7 @@ pub fn bearer_headers(token: &str) -> HeaderMap {
     h
 }
 
-/// Serialize a `ConversationRequest` to OpenAI Chat Completions JSON.
+/// Serialize a `ConversationRequest` to `OpenAI` Chat Completions JSON.
 pub fn chat_completions_body(req: &ConversationRequest, model: &str) -> Bytes {
     let mut messages: Vec<Value> = Vec::new();
 
@@ -127,6 +127,7 @@ impl OpenAiCompatAdapter {
     }
 
     /// Builder method: set visual metadata for the admin console.
+    #[must_use]
     pub const fn with_meta(
         mut self,
         icon_char: char,
@@ -157,9 +158,8 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
         let token = credential.token.as_str();
-        let req = match operation {
-            Operation::Conversation(r) => r,
-            _ => return Err(ProviderError::UnsupportedOperation),
+        let Operation::Conversation(req) = operation else {
+            return Err(ProviderError::UnsupportedOperation);
         };
         let base = match &config.provider {
             ProviderKind::Custom { base_url } => base_url.as_str(),
@@ -243,7 +243,7 @@ fn tool_result(content: &MessageContent) -> (String, String) {
         String::new(),
         match content {
             MessageContent::Text(t) => t.clone(),
-            _ => String::new(),
+            MessageContent::Blocks(_) => String::new(),
         },
     )
 }

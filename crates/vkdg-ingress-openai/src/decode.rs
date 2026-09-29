@@ -1,6 +1,5 @@
-//! Decode OpenAI Chat Completions and Images API wire requests into internal `Operation` types.
+//! Decode `OpenAI` Chat Completions and Images API wire requests into internal `Operation` types.
 
-use bytes::Bytes;
 use serde::Deserialize;
 
 use vkdg_core::{Capability, CapabilitySet, VkdgError};
@@ -94,9 +93,9 @@ struct OaiResponseFormat {
 
 // ── Decode ────────────────────────────────────────────────────────────────────
 
-/// Parse raw bytes from an OpenAI Chat Completions request into `(model_name, Operation)`.
-pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
-    let req: OaiRequest = serde_json::from_slice(&body).map_err(|e| VkdgError::ConfigInvalid {
+/// Parse raw bytes from an `OpenAI` Chat Completions request into `(model_name, Operation)`.
+pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
+    let req: OaiRequest = serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
         field: "body".to_string(),
         message: e.to_string(),
     })?;
@@ -207,7 +206,6 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
 
     Ok((req.model, operation))
 }
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn oai_content_to_string(content: OaiContent) -> String {
@@ -245,9 +243,9 @@ struct OaiImageGenerateRequest {
 /// Decode POST /v1/images/generations body into `(model_name, Operation::ImageGenerate)`.
 ///
 /// Returns `Err(ConfigInvalid)` when `prompt` is missing.
-pub fn decode_image_generate(body: Bytes) -> Result<(String, Operation), VkdgError> {
+pub fn decode_image_generate(body: &[u8]) -> Result<(String, Operation), VkdgError> {
     let req: OaiImageGenerateRequest =
-        serde_json::from_slice(&body).map_err(|e| VkdgError::ConfigInvalid {
+        serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
             field: "body".to_string(),
             message: e.to_string(),
         })?;
@@ -278,8 +276,8 @@ pub fn decode_image_generate(body: Bytes) -> Result<(String, Operation), VkdgErr
 mod tests {
     use super::*;
 
-    fn as_bytes(s: &str) -> Bytes {
-        Bytes::from(s.to_string())
+    fn as_bytes(s: &str) -> &[u8] {
+        s.as_bytes()
     }
 
     // Defeat: mapping role:user content to wrong type or losing the text.

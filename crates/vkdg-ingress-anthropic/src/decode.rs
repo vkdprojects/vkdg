@@ -1,7 +1,5 @@
 //! Decode Anthropic Messages API wire requests into internal `Operation` types.
 
-use bytes::Bytes;
-
 use vkdg_core::VkdgError;
 use vkdg_operations::{
     CapabilitySet, ContentBlock, ConversationRequest, ImageData, Message, MessageContent,
@@ -11,9 +9,9 @@ use vkdg_operations::{
 use crate::wire::{AnthropicBlock, AnthropicContent, AnthropicToolResultContent};
 
 /// Parse raw bytes from an Anthropic Messages request into `(model_name, Operation)`.
-pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
+pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
     let req: crate::wire::AnthropicRequest =
-        serde_json::from_slice(&body).map_err(|e| VkdgError::ConfigInvalid {
+        serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
             field: "body".to_string(),
             message: e.to_string(),
         })?;
@@ -76,7 +74,6 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
 
     Ok((req.model, operation))
 }
-
 /// Convert an Anthropic wire block into a [`ContentBlock`].
 /// Returns `None` for unrecognised block types.
 fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
@@ -127,7 +124,6 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
-    use bytes::Bytes;
     use http::{Method, Request, StatusCode};
     use vkdg_http::{AppState, ServerConfig};
 
@@ -192,7 +188,7 @@ mod tests {
     // losing required fields and producing a bad Operation.
     #[tokio::test]
     async fn decode_round_trips_model_name() {
-        let body = Bytes::from(valid_body());
+        let body = valid_body().as_bytes();
         let (model, _op) = decode_request(body).unwrap();
         assert_eq!(model, "claude-3-5-sonnet-20241022");
     }

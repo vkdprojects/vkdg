@@ -1,4 +1,4 @@
-//! VKDG provider plugin: kiro — Amazon Q Developer / CodeWhisperer.
+//! VKDG provider plugin: kiro — Amazon Q Developer / `CodeWhisperer`.
 //!
 //! Request shape follows AWS's own Smithy-generated client
 //! (`aws/amazon-q-developer-cli`, crate `amzn-codewhisperer-streaming-client`).
@@ -35,11 +35,11 @@ const USER_AGENT: &str = "vkdg/0.1.0";
 pub struct KiroAdapter;
 
 impl ProviderAdapter for KiroAdapter {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "kiro"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Kiro / Amazon Q"
     }
 
@@ -67,14 +67,13 @@ impl ProviderAdapter for KiroAdapter {
         // A stored account records which login issued its token. A connection
         // authenticated by `auth: { type: api_key }` (a long-lived Kiro key in an
         // env var) has no account, so it is the API-key flow, not Builder ID.
-        let auth_method =
-            extra
-                .get("auth_method")
-                .map(String::as_str)
-                .unwrap_or(match config.auth {
-                    vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
-                    _ => AUTH_BUILDER_ID,
-                });
+        let auth_method = extra.get("auth_method").map_or(
+            match config.auth {
+                vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
+                _ => AUTH_BUILDER_ID,
+            },
+            String::as_str,
+        );
         let profile_arn = extra.get("profile_arn").map(String::as_str);
 
         // The runtime region lives in the profile ARN; the OIDC region is only a

@@ -25,7 +25,7 @@ pub(super) fn is_multiturn(op: &vkdg_operations::ConversationRequest) -> bool {
         > 1
 }
 
-/// True when any message in the conversation contains tool_use or tool_result
+/// True when any message in the conversation contains `tool_use` or `tool_result`
 /// content blocks.  Tool-call conversations are non-deterministic.
 pub(super) fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool {
     op.messages.iter().any(|m| {
@@ -41,17 +41,16 @@ pub(super) fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool 
 pub(super) fn unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(super) fn error_response(err: VkdgError) -> Response {
+pub(super) fn error_response(err: &VkdgError) -> Response {
     use axum::response::IntoResponse;
     use http::{HeaderMap, HeaderValue, StatusCode};
 
-    let (status, error_type) = match &err {
+    let (status, error_type) = match err {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
         VkdgError::AdmissionRejected { .. } => {
@@ -91,7 +90,7 @@ pub(super) fn error_response(err: VkdgError) -> Response {
 
 // ── SSE think-tag filter ──────────────────────────────────────────────────────
 
-/// Re-encode a parsed SseEvent back into raw SSE bytes.
+/// Re-encode a parsed `SseEvent` back into raw SSE bytes.
 pub(super) fn sse_event_to_bytes(event: &SseEvent) -> Bytes {
     let mut s = String::new();
     if let Some(ref et) = event.event_type {
@@ -110,7 +109,7 @@ pub(super) fn sse_event_to_bytes(event: &SseEvent) -> Bytes {
 }
 
 /// Wrap an upstream SSE byte stream with a think-tag filter.
-/// Parses each chunk through `SseParser` (strip_think_tags=true), re-encodes
+/// Parses each chunk through `SseParser` (`strip_think_tags=true`), re-encodes
 /// clean events back to SSE bytes.  Events spanning chunk boundaries are
 /// correctly handled by the parser's internal buffer.
 pub(super) fn filter_think_tags_stream(
@@ -142,7 +141,7 @@ pub(super) fn filter_think_tags_stream(
     ))
 }
 
-/// Decodes a provider-specific stream (e.g. AWS EventStream) and re-encodes it
+/// Decodes a provider-specific stream (e.g. AWS `EventStream`) and re-encodes it
 /// in the dialect the client spoke.
 ///
 /// The encoder lives in `vkdg-operations` so a dialect is written in exactly one

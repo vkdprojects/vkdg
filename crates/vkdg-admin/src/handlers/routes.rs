@@ -68,7 +68,7 @@ pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) ->
         .map(|r| RouteSummary {
             id: r.id.0.clone(),
             match_models: r.match_models.clone(),
-            strategy: strategy_str(&r.strategy).to_string(),
+            strategy: strategy_str(&r.strategy),
             targets: r.targets.iter().map(|t| t.0.clone()).collect(),
         })
         .collect();

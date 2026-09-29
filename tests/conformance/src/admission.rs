@@ -106,13 +106,14 @@ fn load_scenario(name: &str) -> serde_yaml::Value {
         .unwrap_or(serde_yaml::Value::Null)
 }
 
-/// Contract: admission_limit=0 → HTTP 503.
+/// Contract: `admission_limit=0` → HTTP 503.
 /// The pipeline admission guard fires before any upstream call and returns
-/// SERVICE_UNAVAILABLE when the semaphore is exhausted.
+/// `SERVICE_UNAVAILABLE` when the semaphore is exhausted.
 #[tokio::test]
 async fn admission_rejected_returns_503() {
     let scenario = load_scenario("admission_rejected");
-    let expected_status = scenario["assert"]["http_status"].as_u64().unwrap_or(503) as u16;
+    let expected_status =
+        u16::try_from(scenario["assert"]["http_status"].as_u64().unwrap_or(503)).unwrap_or(503);
 
     let app = app_with_admission_limit(0);
 
@@ -136,8 +137,8 @@ async fn admission_rejected_returns_503() {
     );
 }
 
-/// AdmissionGuard unit-level contract: acquire on a fully-exhausted semaphore
-/// returns Err(VkdgError::AdmissionRejected).
+/// `AdmissionGuard` unit-level contract: acquire on a fully-exhausted semaphore
+/// returns `Err(VkdgError::AdmissionRejected)`.
 #[test]
 fn admission_guard_unit_returns_error_when_limit_zero() {
     use vkdg_core::VkdgError;
@@ -146,8 +147,7 @@ fn admission_guard_unit_returns_error_when_limit_zero() {
     let result = guard.acquire();
     assert!(
         matches!(result, Err(VkdgError::AdmissionRejected { .. })),
-        "AdmissionGuard::acquire must return AdmissionRejected when limit=0; got {:?}",
-        result
+        "AdmissionGuard::acquire must return AdmissionRejected when limit=0; got {result:?}"
     );
 }
 

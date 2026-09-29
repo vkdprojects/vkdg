@@ -44,8 +44,8 @@ pub fn events_to_sse_stream(
 }
 
 /// Map a `VkdgError` to the appropriate HTTP status code + Anthropic error JSON body.
-pub fn vkdg_error_to_anthropic_response(err: VkdgError) -> Response {
-    let (status, error_type) = match &err {
+pub fn vkdg_error_to_anthropic_response(err: &VkdgError) -> Response {
+    let (status, error_type) = match err {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
         VkdgError::AdmissionRejected { .. } => (StatusCode::TOO_MANY_REQUESTS, "overloaded_error"),

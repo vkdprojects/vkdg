@@ -1,5 +1,5 @@
 //! VKDG provider plugin: kimi-coding
-//! Kimi Coding — Device Code OAuth with OpenAI Chat Completions wire format.
+//! Kimi Coding — Device Code OAuth with `OpenAI` Chat Completions wire format.
 
 use std::collections::HashMap;
 
@@ -21,11 +21,11 @@ impl ProviderAdapter for KimiCodingAdapter {
         Some(self)
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "kimi-coding"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Kimi Coding"
     }
 
@@ -46,9 +46,8 @@ impl ProviderAdapter for KimiCodingAdapter {
         credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
         let token = credential.token.as_str();
-        let req = match operation {
-            Operation::Conversation(r) => r,
-            _ => return Err(ProviderError::UnsupportedOperation),
+        let Operation::Conversation(req) = operation else {
+            return Err(ProviderError::UnsupportedOperation);
         };
 
         let body = build_chat_completions_body(req, "kimi-k1-5-turbo");
@@ -188,11 +187,11 @@ fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -
                             _ => None,
                         })
                         .collect();
-                    if !tool_calls.is_empty() {
-                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
-                    } else {
+                    if tool_calls.is_empty() {
                         let c = msg_content(&m.content);
                         json!({ "role": "assistant", "content": c })
+                    } else {
+                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
                     }
                 } else {
                     let c = msg_content(&m.content);
@@ -274,7 +273,7 @@ fn extract_tool_result(content: &MessageContent) -> (String, String) {
     }
     let text = match content {
         MessageContent::Text(t) => t.clone(),
-        _ => String::new(),
+        MessageContent::Blocks(_) => String::new(),
     };
     (String::new(), text)
 }

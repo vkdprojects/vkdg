@@ -4,7 +4,7 @@
 //! tools live in `userInputMessage.userInputMessageContext.tools` as
 //! `{ toolSpecification: { name, description, inputSchema: { json } } }`, results in
 //! `userInputMessageContext.toolResults`, and an assistant turn's calls in
-//! `assistantResponseMessage.toolUses` with an object `input`. OmniRoute, Kiro-Go
+//! `assistantResponseMessage.toolUses` with an object `input`. `OmniRoute`, Kiro-Go
 //! and jwadow/kiro-gateway agree.
 //!
 //! The rejection rules below each correspond to an upstream 400 those gateways
@@ -12,6 +12,7 @@
 //! Kiro does not understand, and results that answer no call in the transcript.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -50,7 +51,7 @@ const STRIPPED_SCHEMA_KEYS: &[&str] = &[
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-pub(crate) struct ConversationState {
+pub struct ConversationState {
     #[serde(rename = "chatTriggerType")]
     chat_trigger_type: &'static str,
     #[serde(rename = "agentTaskType")]
@@ -155,7 +156,7 @@ impl Turn {
     }
 }
 
-pub(crate) fn build_conversation_state(
+pub fn build_conversation_state(
     conv: &ConversationRequest,
     model_id: &str,
     origin: &str,
@@ -169,13 +170,12 @@ pub(crate) fn build_conversation_state(
     let mut turns = collect_turns(conv);
 
     if let Some(system) = conv.system.as_deref().filter(|s| !s.is_empty()) {
-        match turns.iter_mut().find(|t| !t.assistant) {
-            Some(first_user) => first_user.text.insert(0, system.to_owned()),
-            None => {
-                let mut t = Turn::new(false);
-                t.text.push(system.to_owned());
-                turns.insert(0, t);
-            }
+        if let Some(first_user) = turns.iter_mut().find(|t| !t.assistant) {
+            first_user.text.insert(0, system.to_owned());
+        } else {
+            let mut t = Turn::new(false);
+            t.text.push(system.to_owned());
+            turns.insert(0, t);
         }
     }
 
@@ -383,12 +383,18 @@ fn tool_specs(tools: &[Tool]) -> (Vec<Value>, String) {
 /// Names over the limit are cut and suffixed with a hash of the full name, so two
 /// long names sharing a prefix stay distinct and the same tool always maps to the
 /// same wire name across turns.
-pub(crate) fn wire_tool_name(name: &str) -> String {
+pub fn wire_tool_name(name: &str) -> String {
     if name.len() <= TOOL_NAME_MAX {
         return name.to_owned();
     }
     let digest = Sha256::digest(name.as_bytes());
-    let hash: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    let hash: String = digest
+        .iter()
+        .take(4)
+        .fold(String::with_capacity(8), |mut s, b| {
+            write!(s, "{b:02x}").expect("infallible");
+            s
+        });
     let hash = &hash[..7];
     let keep = TOOL_NAME_MAX - hash.len() - 1;
     let mut cut = keep;
@@ -403,14 +409,13 @@ pub(crate) fn wire_tool_name(name: &str) -> String {
 /// Keys are emitted in sorted order so the serialized schema is byte-stable across
 /// requests; a reordered schema would defeat the upstream prompt cache.
 fn sanitize_schema(schema: &Value) -> Value {
-    let mut out = match sanitize_node(schema) {
-        Value::Object(m) => m,
-        _ => {
-            let mut m = Map::new();
-            m.insert("type".into(), json!("object"));
-            m.insert("properties".into(), json!({}));
-            m
-        }
+    let mut out = if let Value::Object(m) = sanitize_node(schema) {
+        m
+    } else {
+        let mut m = Map::new();
+        m.insert("type".into(), json!("object"));
+        m.insert("properties".into(), json!({}));
+        m
     };
     // Kiro expects the key at the top level, even when nothing is required.
     out.entry("required").or_insert_with(|| json!([]));

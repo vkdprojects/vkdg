@@ -43,7 +43,7 @@ pub async fn run_conversation_pipeline(
     let pending = pending_log(&pipeline, &ctx, outcome.is_ok(), final_attempt);
     let mut response = match outcome {
         Ok(resp) => resp,
-        Err(e) => error_response(e),
+        Err(e) => error_response(&e),
     };
     if let Some(pending) = pending {
         response.extensions_mut().insert(pending);
@@ -51,7 +51,7 @@ pub async fn run_conversation_pipeline(
     response
 }
 
-/// Emit a DecisionRecord to the pipeline exporter.
+/// Emit a `DecisionRecord` to the pipeline exporter.
 pub(super) fn emit_decision_record(
     pipeline: &PipelineState,
     ctx: &PipelineCtx,
@@ -110,11 +110,10 @@ fn pending_log(
     // A successful response is only headers so far; the body decides the rest.
     let status = if ok { STATUS_PENDING } else { "failed" }.to_string();
     // Derive started_at_ms from the first state transition (Received timestamp).
-    let started_at_ms = ctx
-        .transitions
-        .first()
-        .map(|(_, t)| t.timestamp_millis())
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let started_at_ms = ctx.transitions.first().map_or_else(
+        || chrono::Utc::now().timestamp_millis(),
+        |(_, t)| t.timestamp_millis(),
+    );
     let duration_ms = chrono::Utc::now().timestamp_millis() - started_at_ms;
     let api_type = match &ctx.envelope.api_type {
         ApiType::AnthropicMessages => "anthropic",

@@ -21,11 +21,10 @@ async fn decode_valid_messages_request() {
         }"#,
     );
 
-    let result = decode_request(body);
+    let result = decode_request(&body);
     assert!(
         result.is_ok(),
-        "decode_request must succeed on valid body; got {:?}",
-        result
+        "decode_request must succeed on valid body; got {result:?}"
     );
 
     let (model, op) = result.unwrap();
@@ -36,7 +35,7 @@ async fn decode_valid_messages_request() {
             assert_eq!(req.messages.len(), 1);
             assert!(!req.stream, "stream defaults to false when absent");
         }
-        other => panic!("Expected Operation::Conversation, got {:?}", other),
+        other => panic!("Expected Operation::Conversation, got {other:?}"),
     }
 }
 
@@ -53,37 +52,35 @@ async fn decode_valid_stream_flag_preserved() {
         }"#,
     );
 
-    let (_, op) = decode_request(body).unwrap();
+    let (_, op) = decode_request(&body).unwrap();
     match op {
         Operation::Conversation(req) => {
             assert!(req.stream, "stream=true must be preserved through decode");
         }
-        other => panic!("Expected Conversation, got {:?}", other),
+        other => panic!("Expected Conversation, got {other:?}"),
     }
 }
 
-/// Contract: invalid JSON body returns Err(VkdgError::ConfigInvalid { field: "body" }).
+/// Contract: invalid JSON body returns `Err(VkdgError::ConfigInvalid` { field: "body" }).
 /// PASSES.
 #[tokio::test]
 async fn decode_invalid_json_returns_config_invalid() {
     let body = Bytes::from("not json at all }{");
-    let result = decode_request(body);
+    let result = decode_request(&body);
 
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { ref field, .. }) if field == "body"),
-        "invalid JSON must produce ConfigInvalid{{field:\"body\"}}; got {:?}",
-        result
+        "invalid JSON must produce ConfigInvalid{{field:\"body\"}}; got {result:?}"
     );
 }
 
-/// Contract: empty body returns Err(VkdgError::ConfigInvalid { field: "body" }).
+/// Contract: empty body returns `Err(VkdgError::ConfigInvalid` { field: "body" }).
 /// PASSES.
 #[tokio::test]
 async fn decode_empty_body_returns_config_invalid() {
-    let result = decode_request(Bytes::new());
+    let result = decode_request(&Bytes::new());
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { ref field, .. }) if field == "body"),
-        "empty body must produce ConfigInvalid{{field:\"body\"}}; got {:?}",
-        result
+        "empty body must produce ConfigInvalid{{field:\"body\"}}; got {result:?}"
     );
 }

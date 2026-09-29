@@ -14,7 +14,7 @@ use crate::FilterPack;
 pub struct HexDumpPack;
 
 impl FilterPack for HexDumpPack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:hex-dump"
     }
 
@@ -22,7 +22,7 @@ impl FilterPack for HexDumpPack {
         ContentClass::HexDump
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses hex dumps; keeps first 8 rows only"
     }
 
@@ -33,7 +33,7 @@ impl FilterPack for HexDumpPack {
     fn apply(&self, text: &str) -> String {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() > 8 {
-            let mut out: Vec<String> = lines[..8].iter().map(|s| s.to_string()).collect();
+            let mut out: Vec<String> = lines[..8].iter().map(|s| (*s).to_string()).collect();
             out.push("... [hex dump truncated]".to_string());
             out.join("\n")
         } else {

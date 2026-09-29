@@ -76,13 +76,11 @@ pub fn extract_vkdg_overrides(headers: &http::HeaderMap, envelope: &mut RequestE
     envelope.cache_bypass = headers
         .get("x-vkdg-cache")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("none"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.eq_ignore_ascii_case("none"));
     envelope.include_think_tags = headers
         .get("x-vkdg-think-tags")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.eq_ignore_ascii_case("include"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.eq_ignore_ascii_case("include"));
 }
 
 /// The client's address as the gateway should trust it. See
@@ -112,6 +110,7 @@ mod client_ip_tests {
         h.insert("x-forwarded-for", v.parse().unwrap());
         h
     }
+    #[allow(clippy::unnecessary_wraps)] // returns Option<IpAddr> to match resolve_client_ip() signature
     fn ip(s: &str) -> Option<IpAddr> {
         Some(s.parse().unwrap())
     }

@@ -257,8 +257,8 @@ impl AccountSummary {
                 self.credits_used = Some(u.credits_used);
                 self.credits_limit = u.credits_limit;
                 self.credits_period_end = u.credits_period_end;
-                self.credits_plan = u.plan.clone();
-                self.credits_user_ref = u.upstream_user_ref.clone();
+                self.credits_plan.clone_from(&u.plan);
+                self.credits_user_ref.clone_from(&u.upstream_user_ref);
             }
             None => {
                 self.credits_source = Some("unavailable");
@@ -359,7 +359,7 @@ pub async fn list_oauth_providers(State(state): State<AdminState>, headers: Head
         return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
             .into_response();
     }
-    let Some(svc) = state.logins.clone() else {
+    let Some(svc) = state.logins else {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "accounts_disabled",
@@ -614,8 +614,9 @@ pub async fn list_accounts(State(state): State<AdminState>, headers: HeaderMap) 
                     let summary = AccountSummary::from(a);
                     match svc.usage_for(a).await {
                         UsageOutcome::NotCapable => summary,
-                        UsageOutcome::Read(checked_at, snapshot) => summary
-                            .with_usage(&checked_at.to_rfc3339(), snapshot.as_ref()),
+                        UsageOutcome::Read(checked_at, snapshot) => {
+                            summary.with_usage(&checked_at.to_rfc3339(), snapshot.as_ref())
+                        }
                     }
                 }))
                 .await;
@@ -678,10 +679,10 @@ mod tests {
     }
 
     impl ProviderAdapter for FakeDevice {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "fake"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Fake"
         }
         fn prepare(
@@ -1023,10 +1024,10 @@ mod tests {
     }
 
     impl ProviderAdapter for FakeCredits {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "credits"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Credits"
         }
         fn prepare(
@@ -1067,7 +1068,11 @@ mod tests {
             reload_plugins: None,
             connection_tester: None,
             catalog: None,
-            logins: Some(LoginService::new(Arc::new(registry), Arc::clone(&store), None)),
+            logins: Some(LoginService::new(
+                Arc::new(registry),
+                Arc::clone(&store),
+                None,
+            )),
         };
         (state, store)
     }

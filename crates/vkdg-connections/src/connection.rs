@@ -17,7 +17,7 @@ pub enum ProviderKind {
     Plugin {
         id: String,
     },
-    /// An OpenAI Chat Completions endpoint (`openai-compat` in config).
+    /// An `OpenAI` Chat Completions endpoint (`openai-compat` in config).
     Custom {
         base_url: String,
     },
@@ -42,7 +42,7 @@ impl ProviderKind {
 
     /// Returns the registry key used to look up a [`ProviderAdapter`] for this kind.
     /// `Custom` connections are bare OpenAI-compatible endpoints, so they use the
-    /// OpenAI adapter; `Plugin` connections address their own adapter by id.
+    /// `OpenAI` adapter; `Plugin` connections address their own adapter by id.
     pub fn adapter_id(&self) -> &str {
         match self {
             ProviderKind::Anthropic => "anthropic",
@@ -115,7 +115,7 @@ impl std::fmt::Debug for TokenState {
         f.debug_struct("TokenState")
             .field("expires_at", &self.expires_at)
             .field("generation", &self.generation)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -216,8 +216,8 @@ impl Connection {
             _ => 1,
         };
         // 2^(n-1) seconds, capped at 300 s.
-        let base_secs = (2u32.pow(failure_count.saturating_sub(1).min(8))).min(300) as i64;
-        let jitter = (failure_count % 5) as i64;
+        let base_secs = i64::from((2u32.pow(failure_count.saturating_sub(1).min(8))).min(300));
+        let jitter = i64::from(failure_count % 5);
         let cooldown_secs = base_secs + jitter;
         let until = chrono::Utc::now() + chrono::Duration::seconds(cooldown_secs);
         self.state = ConnectionState::Cooldown {
@@ -245,7 +245,7 @@ impl Connection {
     }
 }
 
-/// RAII guard — decrements active_requests on drop.
+/// RAII guard — decrements `active_requests` on drop.
 pub struct ConnectionGuard {
     pub(crate) counter: Arc<AtomicU32>,
 }

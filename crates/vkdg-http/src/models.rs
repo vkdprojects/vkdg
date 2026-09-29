@@ -4,7 +4,7 @@
 //! `match_models`), skipping glob patterns, which name families rather than
 //! models. Filtered by the key's `allowed_models`, so a client never sees a
 //! model it would be refused. The body follows the caller's dialect: Anthropic
-//! when the request carries `anthropic-version`, OpenAI otherwise.
+//! when the request carries `anthropic-version`, `OpenAI` otherwise.
 
 use std::collections::BTreeSet;
 

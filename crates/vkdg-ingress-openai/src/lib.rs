@@ -1,4 +1,4 @@
-//! OpenAI Chat Completions and Images API ingress: decode wire requests, encode events back.
+//! `OpenAI` Chat Completions and Images API ingress: decode wire requests, encode events back.
 
 pub mod decode;
 pub mod encode;
@@ -48,9 +48,9 @@ impl OaiErrorBody {
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
-/// Map a `VkdgError` to the appropriate HTTP status + OpenAI error JSON body.
-pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
-    let (status, error_type) = match &err {
+/// Map a `VkdgError` to the appropriate HTTP status + `OpenAI` error JSON body.
+pub fn vkdg_error_to_oai_response(err: &VkdgError) -> Response {
+    let (status, error_type) = match err {
         VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
         VkdgError::AdmissionRejected { .. } => (StatusCode::TOO_MANY_REQUESTS, "overloaded_error"),
@@ -88,7 +88,7 @@ pub fn vkdg_error_to_oai_response(err: VkdgError) -> Response {
 
 /// Axum handler for `POST /v1/chat/completions`.
 ///
-/// Decodes the OpenAI Chat Completions request, builds a pipeline context, and
+/// Decodes the `OpenAI` Chat Completions request, builds a pipeline context, and
 /// dispatches to `run_conversation_pipeline`. Returns 501 when the pipeline is
 /// not configured on `AppState`. The pipeline performs passthrough of upstream
 /// bytes, so no re-encoding is needed for the OpenAI-compatible path.
@@ -98,7 +98,7 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
     let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
-            return vkdg_error_to_oai_response(VkdgError::ConfigInvalid {
+            return vkdg_error_to_oai_response(&VkdgError::ConfigInvalid {
                 field: "body".into(),
                 message: "body too large or unreadable".into(),
             });
@@ -106,9 +106,9 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
     };
 
     // 2. Decode OpenAI JSON → (model, Operation).
-    let (model, operation) = match decode_request(bytes) {
+    let (model, operation) = match decode_request(&bytes) {
         Ok(v) => v,
-        Err(e) => return vkdg_error_to_oai_response(e),
+        Err(e) => return vkdg_error_to_oai_response(&e),
     };
 
     // 3. Build request envelope with per-request override headers.
@@ -117,10 +117,10 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
     // bug, so refuse rather than serve an unidentified caller.
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
         tracing::error!("data-plane route mounted without require_api_key");
-        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+        return vkdg_error_to_oai_response(&VkdgError::Unauthenticated);
     };
     if let Err(e) = identity.check_model(&model) {
-        return vkdg_error_to_oai_response(e);
+        return vkdg_error_to_oai_response(&e);
     }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),
@@ -156,7 +156,7 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
 
 /// Axum handler for `POST /v1/images/generations`.
 ///
-/// Decodes the OpenAI Images API request, builds a pipeline context, and
+/// Decodes the `OpenAI` Images API request, builds a pipeline context, and
 /// dispatches to `run_conversation_pipeline`. Returns 501 when the pipeline is
 /// not configured on `AppState`. The pipeline performs passthrough of the
 /// upstream JSON response verbatim.
@@ -166,7 +166,7 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
     let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => {
-            return vkdg_error_to_oai_response(VkdgError::ConfigInvalid {
+            return vkdg_error_to_oai_response(&VkdgError::ConfigInvalid {
                 field: "body".into(),
                 message: "body too large or unreadable".into(),
             });
@@ -174,9 +174,9 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
     };
 
     // 2. Decode OpenAI Images JSON → (model, Operation::ImageGenerate).
-    let (model, operation) = match decode_image_generate(bytes) {
+    let (model, operation) = match decode_image_generate(&bytes) {
         Ok(v) => v,
-        Err(e) => return vkdg_error_to_oai_response(e),
+        Err(e) => return vkdg_error_to_oai_response(&e),
     };
 
     // 3. Build request envelope with per-request override headers.
@@ -185,10 +185,10 @@ pub async fn handle_image_generations(State(state): State<AppState>, req: Reques
     // bug, so refuse rather than serve an unidentified caller.
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
         tracing::error!("data-plane route mounted without require_api_key");
-        return vkdg_error_to_oai_response(VkdgError::Unauthenticated);
+        return vkdg_error_to_oai_response(&VkdgError::Unauthenticated);
     };
     if let Err(e) = identity.check_model(&model) {
-        return vkdg_error_to_oai_response(e);
+        return vkdg_error_to_oai_response(&e);
     }
     let mut envelope = RequestEnvelope {
         request_id: RequestId::new(),

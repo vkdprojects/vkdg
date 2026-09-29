@@ -198,7 +198,10 @@ mod tests {
                      instead — this would be an implementation with no connect timeout \
                      at all, which is the bug this test exists to catch"
                 );
-                assert_eq!(code, 0, "a connect failure never reaches an upstream status");
+                assert_eq!(
+                    code, 0,
+                    "a connect failure never reaches an upstream status"
+                );
                 assert!(
                     message.contains("connect timeout") || message.contains("dns/connect"),
                     "message should classify the failure instead of a bare \
@@ -236,11 +239,16 @@ mod tests {
             let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
                 let chunk_delay = chunk_delay;
                 async move {
-                    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(4);
+                    let (tx, rx) =
+                        tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(4);
                     tokio::spawn(async move {
                         for chunk in [&b"chunk-one"[..], &b"chunk-two"[..], &b"chunk-three"[..]] {
                             tokio::time::sleep(chunk_delay).await;
-                            if tx.send(Ok(Frame::data(Bytes::from_static(chunk)))).await.is_err() {
+                            if tx
+                                .send(Ok(Frame::data(Bytes::from_static(chunk))))
+                                .await
+                                .is_err()
+                            {
                                 return;
                             }
                         }
@@ -281,12 +289,14 @@ mod tests {
 
         let full: Vec<u8> = collected.into_iter().flatten().collect();
         assert_eq!(
-            full,
-            b"chunk-onechunk-twochunk-three",
+            full, b"chunk-onechunk-twochunk-three",
             "the full slow stream must arrive intact"
         );
         assert!(
-            elapsed >= chunk_delay * 3 - Duration::from_millis(50),
+            elapsed
+                >= (chunk_delay * 3)
+                    .checked_sub(Duration::from_millis(50))
+                    .unwrap(),
             "the stream must not be cut short by the connect timeout; only \
              {elapsed:?} elapsed for a body that takes {:?} to fully arrive",
             chunk_delay * 3

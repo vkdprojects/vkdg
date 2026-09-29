@@ -1,6 +1,6 @@
 //! Request pipeline orchestration.
 //!
-//! Entry point: run_conversation_pipeline. The pipeline runs each
+//! Entry point: `run_conversation_pipeline`. The pipeline runs each
 //! request through admission, routing, credential fetch, upstream
 //! dispatch, and response handling as a sequence of named steps.
 

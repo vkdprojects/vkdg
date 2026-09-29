@@ -14,7 +14,7 @@ pub struct MemoryRecord {
     pub source: String, // "conversation" | "explicit"
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
-    /// Tags for keyword retrieval: e.g. ["language:python", "topic:debugging"]
+    /// Tags for keyword retrieval: e.g. `["language:python", "topic:debugging"]`
     pub tags: Vec<String>,
 }
 
@@ -41,7 +41,7 @@ impl MemoryStore {
     }
 
     /// Store a memory record for a tenant.
-    /// If the tenant already has max_per_tenant records, remove the oldest.
+    /// If the tenant already has `max_per_tenant` records, remove the oldest.
     pub async fn store(&self, record: MemoryRecord) {
         let mut records = self.records.write().await;
         // Purge expired entries first

@@ -1,14 +1,14 @@
 //! Cache key derivation.
 //!
 //! The key is SHA-256 of: model + sorted(messages as JSON).
-//! Temperature and max_tokens are intentionally excluded -- same semantic
+//! Temperature and `max_tokens` are intentionally excluded -- same semantic
 //! query with different params still hits the cache (the caller controls bypass).
 
 use sha2::{Digest, Sha256};
 use vkdg_operations::ConversationRequest;
 
 /// Compute a deterministic hex cache key for a conversation request.
-/// Plausible wrong impl: including temperature/max_tokens causes false misses
+/// Plausible wrong impl: including `temperature/max_tokens` causes false misses
 /// on retry with slightly different params.
 pub fn cache_key(model: &str, req: &ConversationRequest) -> String {
     let mut hasher = Sha256::new();

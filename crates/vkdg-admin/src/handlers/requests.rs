@@ -102,8 +102,8 @@ impl RequestLog {
         })
     }
 
-    pub fn push(&self, r: RequestRecord) {
-        let Ok(json) = serde_json::to_string(&r) else {
+    pub fn push(&self, r: &RequestRecord) {
+        let Ok(json) = serde_json::to_string(r) else {
             return;
         };
         let conn = self.conn.lock();
@@ -313,7 +313,7 @@ mod tests {
     #[tokio::test]
     async fn list_requests_returns_records() {
         let state = make_state();
-        state.request_log.push(RequestRecord {
+        state.request_log.push(&RequestRecord {
             request_id: "req-1".into(),
             model: "claude-3-opus".into(),
             api_type: "messages".into(),
@@ -327,7 +327,7 @@ mod tests {
             output_tokens: None,
             cost_microdollars: None,
         });
-        state.request_log.push(RequestRecord {
+        state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
             model: "claude-3-sonnet".into(),
             api_type: "messages".into(),
@@ -387,7 +387,7 @@ mod tests {
                 .iter()
                 .enumerate()
             {
-                log.push(record(&format!("r{i}"), st));
+                log.push(&record(&format!("r{i}"), st));
             }
         }
         let log = RequestLog::open(&path, 3).unwrap();
@@ -409,9 +409,9 @@ mod tests {
     #[test]
     fn finish_settles_pending_rows_only() {
         let log = RequestLog::new();
-        log.push(record("streamed", STATUS_PENDING));
-        log.push(record("dropped", STATUS_PENDING));
-        log.push(record("failed", "failed"));
+        log.push(&record("streamed", STATUS_PENDING));
+        log.push(&record("dropped", STATUS_PENDING));
+        log.push(&record("failed", "failed"));
         use vkdg_core::pricing::{BilledTokens, ModelPrice};
         let t = |input, output| BilledTokens {
             input,

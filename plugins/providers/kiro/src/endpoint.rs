@@ -49,7 +49,7 @@ pub const ENDPOINT_CODEWHISPERER: &str = "codewhisperer";
 pub enum EndpointKind {
     /// Kiro IDE data plane. OAuth accounts only.
     Ide,
-    /// CodeWhisperer plane. Serves both credential types.
+    /// `CodeWhisperer` plane. Serves both credential types.
     CodeWhisperer,
 }
 
@@ -111,7 +111,7 @@ impl EndpointKind {
 
     /// `content-type` for the request body.
     ///
-    /// Every plane speaks awsJson1_0, including `runtime.*`: third-party gateways
+    /// Every plane speaks `awsJson1_0`, including `runtime.*`: third-party gateways
     /// running on the IDE plane send this header verbatim.
     pub fn content_type(self) -> &'static str {
         "application/x-amz-json-1.0"

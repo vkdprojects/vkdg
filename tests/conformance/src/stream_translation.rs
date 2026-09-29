@@ -1,7 +1,7 @@
 //! Pipeline-level conformance for providers whose wire protocol is not SSE.
 //!
 //! A provider adapter may return a stream in its own binary protocol (Kiro sends
-//! AWS EventStream). The pipeline must decode it to `ConversationEvent`s and
+//! AWS `EventStream`). The pipeline must decode it to `ConversationEvent`s and
 //! re-encode them in the dialect the client spoke. Kiro sends no explicit stop
 //! event, so termination depends on `ConversationStreamDecoder::finish()` running
 //! when upstream closes.
@@ -37,7 +37,7 @@ use crate::fake_upstream::{FakeUpstream, FakeUpstreamBehavior};
 
 // ── Kiro EventStream fixture ──────────────────────────────────────────────────
 
-fn frame(event_type: &'static str, payload: Value) -> Vec<u8> {
+fn frame(event_type: &'static str, payload: &Value) -> Vec<u8> {
     let mut buf = Vec::new();
     write_message_to(
         &AwsMessage::new(payload.to_string())
@@ -62,14 +62,14 @@ fn frame(event_type: &'static str, payload: Value) -> Vec<u8> {
 /// Text, then one tool call — and no stop event, exactly as Kiro behaves.
 fn kiro_stream_with_tool_call() -> Vec<u8> {
     [
-        frame("assistantResponseEvent", json!({ "content": "Checking" })),
+        frame("assistantResponseEvent", &json!({ "content": "Checking" })),
         frame(
             "toolUseEvent",
-            json!({ "toolUseId": "tu_1", "name": "get_weather", "input": "" }),
+            &json!({ "toolUseId": "tu_1", "name": "get_weather", "input": "" }),
         ),
         frame(
             "toolUseEvent",
-            json!({ "toolUseId": "tu_1", "name": "get_weather", "input": "{\"city\":\"Paris\"}", "stop": true }),
+            &json!({ "toolUseId": "tu_1", "name": "get_weather", "input": "{\"city\":\"Paris\"}", "stop": true }),
         ),
     ]
     .concat()
@@ -82,11 +82,11 @@ struct KiroLikeAdapter {
 }
 
 impl ProviderAdapter for KiroLikeAdapter {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "kiro-like"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Kiro-like test provider"
     }
 
@@ -276,7 +276,7 @@ async fn kiro_stream_is_translated_to_valid_anthropic_messages() {
 
 // ── OpenAI dialect ────────────────────────────────────────────────────────────
 
-/// Refutes: the same events encoded as Anthropic frames for an OpenAI client, or
+/// Refutes: the same events encoded as Anthropic frames for an `OpenAI` client, or
 /// a stream that never sends `[DONE]`.
 #[tokio::test]
 async fn kiro_stream_is_translated_to_valid_openai_chunks() {

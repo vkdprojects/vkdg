@@ -1,7 +1,7 @@
 //! Per-connection quota tracker.
 //!
 //! Tracks estimated tokens consumed per connection in the current quota window.
-//! Used by the routing scorer to compute quota_headroom signals.
+//! Used by the routing scorer to compute `quota_headroom` signals.
 //!
 //! Phase D: in-memory, resets on restart.
 //! Phase E: persist with the OAuth vault; reconcile after restart.
@@ -21,17 +21,20 @@ pub struct QuotaWindow {
     /// Maximum tokens in the window (None = unknown/unlimited)
     pub limit: Option<u64>,
     pub window_start: DateTime<Utc>,
-    /// Window duration in seconds (e.g., 60 for per-minute, 2_592_000 for per-month)
+    /// Window duration in seconds (e.g., 60 for per-minute, `2_592_000` for per-month)
     pub window_secs: u64,
 }
 
 impl QuotaWindow {
     pub fn headroom(&self) -> Option<f32> {
+        #[allow(clippy::cast_precision_loss)] // u64→f32 for quota ratio; precision loss acceptable
         let limit = self.limit? as f32;
+        #[allow(clippy::cast_precision_loss)] // u64→f32 for quota ratio; precision loss acceptable
         let remaining = (limit - self.consumed as f32).max(0.0);
         Some(remaining / limit)
     }
 
+    #[allow(clippy::cast_sign_loss)] // num_seconds() is non-negative for past window_start; sign loss harmless
     pub fn is_window_expired(&self) -> bool {
         let age = Utc::now().signed_duration_since(self.window_start);
         age.num_seconds() as u64 >= self.window_secs

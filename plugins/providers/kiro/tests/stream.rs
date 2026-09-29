@@ -18,7 +18,7 @@ fn encode(message: &Message) -> Vec<u8> {
 }
 
 /// A real-shaped Kiro event frame.
-fn event(event_type: &'static str, payload: Value) -> Vec<u8> {
+fn event(event_type: &'static str, payload: &Value) -> Vec<u8> {
     encode(
         &Message::new(payload.to_string())
             .add_header(Header::new(
@@ -55,7 +55,7 @@ fn exception(kind: &'static str, message: &str) -> Vec<u8> {
 }
 
 fn text(s: &str) -> Vec<u8> {
-    event("assistantResponseEvent", json!({ "content": s }))
+    event("assistantResponseEvent", &json!({ "content": s }))
 }
 
 /// Feeds `bytes` in `chunk`-sized pieces, then ends the stream.
@@ -144,7 +144,7 @@ fn parses_every_aws_header_type() {
             ("ts", HeaderValue::Timestamp(1_700_000_000_123)),
             (
                 "u",
-                HeaderValue::Uuid(core::array::from_fn(|i| i as u8 + 1))
+                HeaderValue::Uuid(core::array::from_fn(|i| u8::try_from(i).unwrap_or(0) + 1))
             ),
         ]
     );
@@ -224,7 +224,7 @@ fn tool_use_fragments_accumulate_into_one_call() {
         if stop {
             p["stop"] = json!(true);
         }
-        event("toolUseEvent", p)
+        event("toolUseEvent", &p)
     };
     let bytes = [
         text("Checking."),
@@ -233,7 +233,7 @@ fn tool_use_fragments_accumulate_into_one_call() {
         tool("}", true),
         event(
             "contextUsageEvent",
-            json!({ "contextUsagePercentage": 1.5 }),
+            &json!({ "contextUsagePercentage": 1.5 }),
         ),
     ]
     .concat();
@@ -299,11 +299,11 @@ fn reported_metadata_usage_wins_over_estimate() {
         text("hi"),
         event(
             "metadataEvent",
-            json!({ "usage": { "inputTokens": 42, "outputTokens": 7 } }),
+            &json!({ "usage": { "inputTokens": 42, "outputTokens": 7 } }),
         ),
         event(
             "contextUsageEvent",
-            json!({ "contextUsagePercentage": 50.0 }),
+            &json!({ "contextUsagePercentage": 50.0 }),
         ),
     ]
     .concat();
@@ -346,7 +346,7 @@ fn invalid_state_event_fails() {
     let events = decode(
         &event(
             "invalidStateEvent",
-            json!({ "reason": "INVALID_TASK_ASSIST_PLAN", "message": "bad" }),
+            &json!({ "reason": "INVALID_TASK_ASSIST_PLAN", "message": "bad" }),
         ),
         1,
     );
@@ -359,15 +359,15 @@ fn invalid_state_event_fails() {
 #[test]
 fn reasoning_is_its_own_channel_and_metadata_never_leaks() {
     let bytes = [
-        event("meteringEvent", json!({ "unit": "credit", "usage": 0.1 })),
-        event("codeReferenceEvent", json!({ "references": [] })),
+        event("meteringEvent", &json!({ "unit": "credit", "usage": 0.1 })),
+        event("codeReferenceEvent", &json!({ "references": [] })),
         event(
             "supplementaryWebLinksEvent",
-            json!({ "supplementaryWebLinks": [] }),
+            &json!({ "supplementaryWebLinks": [] }),
         ),
         event(
             "reasoningContentEvent",
-            json!({ "text": "secret thoughts" }),
+            &json!({ "text": "secret thoughts" }),
         ),
         text("answer"),
     ]
@@ -428,7 +428,7 @@ fn cache_tokens_from_metadata_usage_are_reported() {
     let mut bytes = text("ok");
     bytes.extend(event(
         "metadataEvent",
-        json!({ "usage": { "inputTokens": 1200, "outputTokens": 3,
+        &json!({ "usage": { "inputTokens": 1200, "outputTokens": 3,
                            "cacheReadInputTokens": 1000, "cacheWriteInputTokens": 150 } }),
     ));
     let u = usage_of(&decode(&bytes, 7));
@@ -449,9 +449,9 @@ fn usage_event_and_cache_only_frames_are_read() {
     let mut bytes = text("ok");
     bytes.extend(event(
         "usageEvent",
-        json!({ "inputTokens": 40, "outputTokens": 2 }),
+        &json!({ "inputTokens": 40, "outputTokens": 2 }),
     ));
-    bytes.extend(event("metricsEvent", json!({ "cacheReadTokens": 30 })));
+    bytes.extend(event("metricsEvent", &json!({ "cacheReadTokens": 30 })));
     let u = usage_of(&decode(&bytes, 64));
     assert_eq!(
         u,
@@ -465,7 +465,7 @@ fn usage_event_and_cache_only_frames_are_read() {
 fn inline_thinking_tags_split_into_reasoning_and_content() {
     let mut bytes = event(
         "assistantResponseEvent",
-        json!({ "content": "<thinking>some reasoning</thinking>answer" }),
+        &json!({ "content": "<thinking>some reasoning</thinking>answer" }),
     );
     bytes.extend(text("more"));
     let events = decode(&bytes, 64);
@@ -499,11 +499,11 @@ fn inline_thinking_tag_split_across_frames() {
     // "</thinking" arrives in one frame, ">" in the next.
     let mut bytes = event(
         "assistantResponseEvent",
-        json!({ "content": "<thinking>think</think" }),
+        &json!({ "content": "<thinking>think</think" }),
     );
     bytes.extend(event(
         "assistantResponseEvent",
-        json!({ "content": "ing>answer" }),
+        &json!({ "content": "ing>answer" }),
     ));
     let events = decode(&bytes, 128);
     let reasoning: Vec<_> = events

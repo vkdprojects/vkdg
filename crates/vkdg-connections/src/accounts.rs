@@ -156,6 +156,7 @@ impl std::fmt::Debug for Account {
     }
 }
 
+#[allow(clippy::single_option_map)] // helper keeps call sites readable; not a pure map-over-argument
 fn expires_at_from(secs: Option<u64>) -> Option<DateTime<Utc>> {
     secs.map(|s| {
         Utc::now() + chrono::Duration::seconds(i64::try_from(s).unwrap_or(i64::MAX / 1000))

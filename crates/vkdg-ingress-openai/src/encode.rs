@@ -1,4 +1,4 @@
-//! Encode internal `ConversationEvent` values into OpenAI Chat Completions SSE chunks.
+//! Encode internal `ConversationEvent` values into `OpenAI` Chat Completions SSE chunks.
 
 use std::convert::Infallible;
 
@@ -28,7 +28,7 @@ fn usage_count_to_u32(count: &UsageCount) -> u32 {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Encode a single `ConversationEvent` as an OpenAI SSE `data:` line.
+/// Encode a single `ConversationEvent` as an `OpenAI` SSE `data:` line.
 ///
 /// Returns `None` for events that should not produce an SSE frame (e.g. `Failed`).
 /// `Completed` appends a `data: [DONE]` sentinel after the finish-reason chunk.
@@ -122,7 +122,7 @@ pub fn encode_event_to_oai_chunk(event: &ConversationEvent, request_id: &str) ->
     Some(format!("data: {s}\n\n"))
 }
 
-/// Wrap a `ConversationEvent` stream into an SSE `axum::response::Response` using OpenAI format.
+/// Wrap a `ConversationEvent` stream into an SSE `axum::response::Response` using `OpenAI` format.
 pub fn events_to_sse_stream(
     events: impl Stream<Item = ConversationEvent> + Send + 'static,
 ) -> Response {

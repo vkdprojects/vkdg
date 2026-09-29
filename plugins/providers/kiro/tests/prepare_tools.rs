@@ -7,7 +7,7 @@
 //! The wire shape is taken from AWS's Smithy model
 //! (`amzn-codewhisperer-streaming-client`: `UserInputMessageContext.tools`,
 //! `ToolSpecification`, `ToolResult`, `AssistantResponseMessage.toolUses`) and
-//! agrees with OmniRoute, Kiro-Go and jwadow/kiro-gateway. The rejection rules
+//! agrees with `OmniRoute`, Kiro-Go and jwadow/kiro-gateway. The rejection rules
 //! (description length, name length, schema keywords, orphan results) come from
 //! those gateways' production fixes, each of which records the upstream 400.
 
@@ -41,10 +41,8 @@ fn connection() -> ConnectionConfig {
 }
 
 fn credential() -> Credential {
-    let extra: HashMap<String, String> = [("auth_method", "social")]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect();
+    let extra: HashMap<String, String> =
+        HashMap::from([("auth_method".to_owned(), "social".to_owned())]);
     Credential {
         token: "tok".into(),
         extra: Arc::new(extra),

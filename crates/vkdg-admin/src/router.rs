@@ -31,7 +31,7 @@ pub struct AdminState {
     pub connection_tester: Option<ConnectionTester>,
 }
 
-/// Sends one smoke request (`"Hello"`, max_tokens=1) through the named connection
+/// Sends one smoke request (`"Hello"`, `max_tokens=1`) through the named connection
 /// and returns `(latency_ms, ok, error)`. Spawned as a blocking task if needed.
 pub type ConnectionTester = Arc<
     dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ConnectionTestResult> + Send>>

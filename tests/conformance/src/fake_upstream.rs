@@ -33,16 +33,16 @@ pub enum FakeUpstreamBehavior {
     /// Return a well-formed Anthropic-style 200 non-streaming response.
     AnthropicOk { content: String },
     /// Return a well-formed Anthropic SSE stream (text/event-stream).
-    /// Emits: message_start → content_block_start → content_block_delta → message_delta → [DONE]
+    /// Emits: `message_start` → `content_block_start` → `content_block_delta` → `message_delta` → [DONE]
     AnthropicStreamOk { content: String },
     /// Return HTTP 429 in Anthropic error format.
     AnthropicOk429,
     /// Return OpenAI-format streaming SSE chunks (text/event-stream).
     OpenAIStreamOk { content: String },
-    /// Return HTTP 429 in OpenAI error format.
+    /// Return HTTP 429 in `OpenAI` error format.
     OpenAI429,
     /// Stream raw bytes with an arbitrary content-type: lets a test serve a
-    /// non-SSE upstream protocol such as Kiro's AWS EventStream framing.
+    /// non-SSE upstream protocol such as Kiro's AWS `EventStream` framing.
     RawStream { content_type: String, body: Vec<u8> },
 }
 

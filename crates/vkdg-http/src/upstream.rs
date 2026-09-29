@@ -105,11 +105,17 @@ impl HttpClient {
             .map_err(|e| VkdgError::UpstreamError {
                 code: 0,
                 message: format!("{}: {e}", connect_error_kind(&e)),
+                retry_after: None,
             })?;
 
         let status = resp.status().as_u16();
 
         if !(200..300).contains(&status) {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok());
             // Collect error body for the message (bounded read — 4 KiB).
             let body_bytes = resp.bytes().await.unwrap_or_default();
             let message =
@@ -117,6 +123,7 @@ impl HttpClient {
             return Err(VkdgError::UpstreamError {
                 code: status,
                 message,
+                retry_after,
             });
         }
 
@@ -134,6 +141,7 @@ impl HttpClient {
             let body = resp.bytes().await.map_err(|e| VkdgError::UpstreamError {
                 code: status,
                 message: format!("body read error: {e}"),
+                retry_after: None,
             })?;
             Ok(UpstreamResponse::Complete { status, body })
         }
@@ -191,7 +199,7 @@ mod tests {
         let elapsed = started.elapsed();
 
         match result {
-            Err(VkdgError::UpstreamError { code, message }) => {
+            Err(VkdgError::UpstreamError { code, message, .. }) => {
                 assert!(
                     elapsed < Duration::from_secs(2),
                     "connect_timeout(300ms) must bound the attempt; took {elapsed:?} \

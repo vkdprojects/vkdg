@@ -19,23 +19,24 @@ pub async fn run_conversation_pipeline(
     // Transparent 429 fallback: if the upstream rate-limits us and we have not
     // yet committed any bytes to the client, retry with the failed connection
     // excluded so the router picks a different candidate.
-    let (ctx, outcome, final_attempt) =
-        if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
-            if ctx.can_retry() {
-                // Emit DecisionRecord for the failed first attempt before retrying.
-                let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
-                emit_decision_record(&pipeline, &ctx, &outcome, 1);
+    let (ctx, outcome, final_attempt) = match &outcome {
+        Err(VkdgError::UpstreamError {
+            code: code @ (429 | 529),
+            ..
+        }) if ctx.can_retry() => {
+            let code = *code;
+            let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
+            emit_decision_record(&pipeline, &ctx, &outcome, 1);
 
-                let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
-                let outcome2 =
-                    run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
-                (ctx2, outcome2, 2u32)
-            } else {
-                (ctx, outcome, 1u32)
-            }
-        } else {
-            (ctx, outcome, 1u32)
-        };
+            let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
+            let outcome2 =
+                run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
+            // If the retry also failed, carry the original code for metrics.
+            let _ = code; // suppress unused-var on non-debug builds
+            (ctx2, outcome2, 2u32)
+        }
+        _ => (ctx, outcome, 1u32),
+    };
 
     // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).
     emit_decision_record(&pipeline, &ctx, &outcome, final_attempt);

@@ -153,7 +153,11 @@ impl KiroEventDecoder {
     fn fail(&mut self, out: &mut Vec<ConversationEvent>, code: u16, message: String) {
         self.terminated = true;
         out.push(ConversationEvent::Failed {
-            error: VkdgError::UpstreamError { code, message },
+            error: VkdgError::UpstreamError {
+                code,
+                message,
+                retry_after: None,
+            },
         });
     }
 

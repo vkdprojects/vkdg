@@ -62,9 +62,14 @@ pub(super) fn error_response(err: &VkdgError) -> Response {
         VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
             (StatusCode::BAD_GATEWAY, "api_error")
         }
-        VkdgError::UpstreamError { code, .. } => {
-            let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
-            (s, "api_error")
+        VkdgError::UpstreamError {
+            code, retry_after, ..
+        } => {
+            // 529 = Anthropic "overloaded"; treat like 429 for the client.
+            let effective = if *code == 529 { 429 } else { *code };
+            let s = StatusCode::from_u16(effective).unwrap_or(StatusCode::BAD_GATEWAY);
+            let ra = *retry_after;
+            return build_upstream_error_response(s, err, ra);
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
@@ -86,6 +91,33 @@ pub(super) fn error_response(err: &VkdgError) -> Response {
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
+    (status, h, json_bytes).into_response()
+}
+
+/// Build the error response for upstream errors, forwarding `retry-after` when
+/// present so clients know when to retry.
+fn build_upstream_error_response(
+    status: http::StatusCode,
+    err: &VkdgError,
+    retry_after: Option<u32>,
+) -> Response {
+    use axum::response::IntoResponse;
+    use http::{HeaderMap, HeaderValue};
+    let body = json!({
+        "type": "error",
+        "error": { "type": "overloaded_error", "message": err.to_string() }
+    });
+    let json_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+    let mut h = HeaderMap::new();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    if let Some(secs) = retry_after {
+        if let Ok(v) = HeaderValue::from_str(&secs.to_string()) {
+            h.insert(http::header::RETRY_AFTER, v);
+        }
+    }
     (status, h, json_bytes).into_response()
 }
 

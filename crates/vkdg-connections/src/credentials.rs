@@ -206,6 +206,7 @@ impl CredentialManager {
                         message: format!(
                             "account {account_id}: token expired and refresh failed: {e}"
                         ),
+                        retry_after: None,
                     });
                 }
             }
@@ -312,6 +313,7 @@ impl CredentialManager {
             .map_err(|e| VkdgError::UpstreamError {
                 code: 0,
                 message: format!("OAuth2 request failed: {e}"),
+                retry_after: None,
             })?;
 
         if !resp.status().is_success() {
@@ -319,6 +321,7 @@ impl CredentialManager {
             return Err(VkdgError::UpstreamError {
                 code: status,
                 message: format!("OAuth2 token endpoint returned {status}"),
+                retry_after: None,
             });
         }
 

@@ -145,7 +145,13 @@ pub enum VkdgError {
     NoRouteMatched,
 
     #[error("upstream error {code}: {message}")]
-    UpstreamError { code: u16, message: String },
+    UpstreamError {
+        code: u16,
+        message: String,
+        /// Value of `retry-after` from the upstream, in seconds. Present on
+        /// 429/529; forwarded to the client so it knows when to retry.
+        retry_after: Option<u32>,
+    },
 
     #[error("plugin error ({plugin_id}): {message}")]
     PluginError { plugin_id: String, message: String },

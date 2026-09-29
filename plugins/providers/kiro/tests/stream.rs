@@ -82,7 +82,7 @@ fn texts(events: &[ConversationEvent]) -> String {
 fn failure(events: &[ConversationEvent]) -> Option<(u16, String)> {
     events.iter().find_map(|e| match e {
         ConversationEvent::Failed {
-            error: VkdgError::UpstreamError { code, message },
+            error: VkdgError::UpstreamError { code, message, .. },
         } => Some((*code, message.clone())),
         _ => None,
     })

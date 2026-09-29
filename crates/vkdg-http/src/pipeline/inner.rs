@@ -419,7 +419,11 @@ pub(super) async fn run_pipeline_inner(
     // 9. Send ──────────────────────────────────────────────────────────────────
     let upstream_resp = match pipeline.http_client.send(upstream_req, is_streaming).await {
         Ok(r) => r,
-        Err(VkdgError::UpstreamError { code, message }) if code == 429 || code >= 500 => {
+        Err(VkdgError::UpstreamError {
+            code,
+            message,
+            retry_after,
+        }) if code == 429 || code >= 500 => {
             if let Some(conn_arc) = ctx
                 .connection_id
                 .as_ref()
@@ -429,7 +433,11 @@ pub(super) async fn run_pipeline_inner(
                     conn.record_upstream_error(code);
                 }
             }
-            return Err(VkdgError::UpstreamError { code, message });
+            return Err(VkdgError::UpstreamError {
+                code,
+                message,
+                retry_after,
+            });
         }
         Err(e) => return Err(e),
     };

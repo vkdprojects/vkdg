@@ -24,6 +24,10 @@ pub struct ConnectionSummary {
     /// Set while the connection is cooling down or its circuit is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     cooldown_until: Option<String>,
+    /// The provider account backing this connection, when it authenticates via
+    /// a persisted account (`AuthKind::Account`). Omitted for API-key/OAuth2.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_count: Option<u32>,
 }
@@ -40,6 +44,10 @@ async fn summarize(
     conn: &vkdg_connections::ConnectionConfig,
 ) -> ConnectionSummary {
     use vkdg_connections::ConnectionState as S;
+    let account_id = match &conn.auth {
+        vkdg_connections::AuthKind::Account { account_id } => Some(account_id.clone()),
+        _ => None,
+    };
     let mut summary = ConnectionSummary {
         id: conn.id.0.clone(),
         provider: conn.provider.as_str().to_string(),
@@ -48,6 +56,7 @@ async fn summarize(
         active_requests: 0,
         max_concurrent: conn.max_concurrent,
         cooldown_until: None,
+        account_id,
         failure_count: None,
     };
     let Some(live) = state.catalog.as_ref().and_then(|c| c.get(&conn.id)) else {
@@ -220,6 +229,87 @@ mod tests {
         let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(list["total"], 1);
         assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn list_reports_account_id_for_account_auth_and_omits_it_otherwise() {
+        use vkdg_config::{schema::AuthDef, ConfigSnapshot, ConnectionDef, GatewayConfig};
+
+        let gateway_cfg = GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![
+                ConnectionDef {
+                    id: "acct-conn".into(),
+                    provider: "kiro".into(),
+                    auth: AuthDef::Account {
+                        account: "kiro-ab12cd34".into(),
+                    },
+                    models: vec!["*".into()],
+                    max_concurrent: None,
+                    weight: None,
+                    base_url: None,
+                    tags: vec![],
+                    endpoint: None,
+                },
+                ConnectionDef {
+                    id: "key-conn".into(),
+                    provider: "anthropic".into(),
+                    auth: AuthDef::ApiKey {
+                        env_var: "ANTHROPIC_API_KEY".into(),
+                    },
+                    models: vec!["claude-*".into()],
+                    max_concurrent: None,
+                    weight: None,
+                    base_url: None,
+                    tags: vec![],
+                    endpoint: None,
+                },
+            ],
+            routes: vec![],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        };
+        let snap = ConfigSnapshot::build(1, gateway_cfg).expect("build snapshot");
+        let (_tx, rx) = watch::channel(Arc::new(snap));
+
+        let sessions = crate::session::SessionStore::new("tok".into());
+        let session = sessions.bootstrap_login().unwrap();
+        let state = AdminState {
+            sessions,
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: crate::handlers::requests::RequestLog::new(),
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
+            catalog: None,
+            logins: None,
+        };
+
+        let mut headers = HeaderMap::new();
+        let cookie_val = format!("vkdg_session={}", session.session_id);
+        headers.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&cookie_val).unwrap(),
+        );
+
+        let resp = list_connections(State(state), headers).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let items = list["items"].as_array().unwrap();
+        let acct = items.iter().find(|i| i["id"] == "acct-conn").unwrap();
+        assert_eq!(acct["account_id"], "kiro-ab12cd34", "{acct}");
+        let key = items.iter().find(|i| i["id"] == "key-conn").unwrap();
+        assert!(
+            key.get("account_id").is_none(),
+            "api-key connection must not serialize account_id: {key}"
+        );
     }
 
     // The list said "healthy" and 0 in-flight for every connection, whatever

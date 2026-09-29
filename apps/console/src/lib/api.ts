@@ -50,6 +50,8 @@ export interface ConnectionSummary {
   max_concurrent: number;
   /** RFC 3339; set while cooling down or while the circuit is open. */
   cooldown_until?: string;
+  /** The provider account backing this connection; omitted for API-key/OAuth2. */
+  account_id?: string;
   /** Set only while cooling down. */
   failure_count?: number;
 }
@@ -124,6 +126,22 @@ export interface Account {
   has_refresh_token: boolean;
   status: 'active' | 'needs_login';
   revoked_reason?: string;
+  /**
+   * Credit reporting for providers that sell credits (Kiro's Q Developer
+   * plans). `reported` when the upstream answered, `unavailable` when it did
+   * not; absent for providers that bill some other way. A missing figure is
+   * omitted, never a fabricated 0.
+   */
+  credits_source?: 'reported' | 'unavailable';
+  credits_used?: number;
+  credits_limit?: number;
+  /** Unix seconds when the credit period resets. */
+  credits_period_end?: number;
+  credits_plan?: string;
+  /** RFC3339 time the credit figures were last read from the upstream. */
+  credits_checked_at?: string;
+  /** Opaque fingerprint of the upstream user, when reported. */
+  credits_user_ref?: string;
 }
 
 export type OAuthFlow = 'authorization_code_pkce' | 'device_code' | 'import_token';

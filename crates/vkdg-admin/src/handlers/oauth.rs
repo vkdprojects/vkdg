@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use vkdg_connections::{Account, AccountStore, CredentialManager};
 use vkdg_provider_sdk::{
     find_login_method, resolve_login_params, DevicePoll, LoginParams, LoginResult, LoginState,
-    OAuthFlow, OAuthProvider, ProviderAdapter, ProviderError, ProviderRegistry,
+    OAuthFlow, OAuthProvider, ProviderAdapter, ProviderError, ProviderRegistry, UsageSnapshot,
 };
 
 use crate::{
@@ -47,6 +47,20 @@ pub struct LoginService {
     /// When present, removed/re-logged accounts are evicted from the live cache.
     pub credentials: Option<Arc<CredentialManager>>,
     pending: Mutex<HashMap<String, PendingLogin>>,
+    /// Per-account credit usage, memoised so listing accounts does not hit the
+    /// upstream on every call. Holds both hits and misses for [`USAGE_TTL`].
+    usage_cache: Mutex<HashMap<String, CachedUsage>>,
+}
+
+/// How long a credit reading (success or failure) is reused before the next
+/// list refetches it. Credit balances move slowly; a few minutes is plenty.
+const USAGE_TTL: chrono::Duration = chrono::Duration::minutes(5);
+
+#[derive(Clone)]
+struct CachedUsage {
+    checked_at: DateTime<Utc>,
+    /// `Some` when the upstream reported usage, `None` when it did not.
+    snapshot: Option<UsageSnapshot>,
 }
 
 impl LoginService {
@@ -60,6 +74,7 @@ impl LoginService {
             store,
             credentials,
             pending: Mutex::new(HashMap::new()),
+            usage_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -73,11 +88,48 @@ impl LoginService {
     }
 
     /// Drop the live cached credential, so a reconnected (or replaced) account
-    /// is served from the store, not from a revoked cache entry.
+    /// is served from the store, not from a revoked cache entry. Also drops the
+    /// cached credit reading so the next list reflects the new tokens.
     async fn evict(&self, account_id: &str) {
+        self.usage_cache.lock().remove(account_id);
         if let Some(creds) = &self.credentials {
             creds.forget_account(account_id).await;
         }
+    }
+
+    /// Current-period credit usage for one account, memoised for [`USAGE_TTL`].
+    ///
+    /// Returns `Some(snapshot)` when the provider reported usage, `None` when it
+    /// does not sell credits, has no live token, or the upstream failed — the
+    /// caller renders the last two as `unavailable`, never a fabricated 0. Only
+    /// the account's own credential is used; nothing is shared between accounts.
+    async fn usage_for(&self, account: &Account) -> UsageOutcome {
+        let Some(adapter) = self.registry.get(&account.provider) else {
+            return UsageOutcome::NotCapable;
+        };
+        if adapter.usage().is_none() {
+            return UsageOutcome::NotCapable;
+        }
+        let now = Utc::now();
+        if let Some(hit) = self.usage_cache.lock().get(&account.id) {
+            if now - hit.checked_at < USAGE_TTL {
+                return UsageOutcome::Read(hit.checked_at, hit.snapshot.clone());
+            }
+        }
+        let usage = adapter.usage().expect("checked above");
+        let snapshot = usage
+            .fetch_usage(&account.credential())
+            .await
+            .map_err(|e| eprintln!("credit usage fetch failed for {}: {e}", account.id))
+            .ok();
+        self.usage_cache.lock().insert(
+            account.id.clone(),
+            CachedUsage {
+                checked_at: now,
+                snapshot: snapshot.clone(),
+            },
+        );
+        UsageOutcome::Read(now, snapshot)
     }
 
     fn save(
@@ -124,6 +176,15 @@ impl LoginService {
     }
 }
 
+/// What [`LoginService::usage_for`] found for one account.
+enum UsageOutcome {
+    /// The provider does not sell credits; the summary carries no credit fields.
+    NotCapable,
+    /// A usage read completed at the given time. `Some` = the upstream reported
+    /// figures; `None` = it did not (surfaced as `unavailable`, never 0).
+    Read(DateTime<Utc>, Option<UsageSnapshot>),
+}
+
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -138,6 +199,25 @@ pub struct AccountSummary {
     /// Upstream reason for the revocation (e.g. `401: ... Bad credentials`).
     #[serde(skip_serializing_if = "Option::is_none")]
     revoked_reason: Option<String>,
+    /// Credit reporting for providers that sell credits. `reported` when the
+    /// upstream answered, `unavailable` when it did not; absent for providers
+    /// that bill some other way. A missing figure is `null`, never a fabricated 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_source: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_used: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_limit: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_period_end: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_plan: Option<String>,
+    /// RFC3339 time the credit figures were last read from the upstream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_checked_at: Option<String>,
+    /// Opaque fingerprint of the upstream user, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credits_user_ref: Option<String>,
 }
 
 impl From<&Account> for AccountSummary {
@@ -154,7 +234,38 @@ impl From<&Account> for AccountSummary {
                 "active"
             },
             revoked_reason: a.revoked.clone(),
+            credits_source: None,
+            credits_used: None,
+            credits_limit: None,
+            credits_period_end: None,
+            credits_plan: None,
+            credits_checked_at: None,
+            credits_user_ref: None,
         }
+    }
+}
+
+impl AccountSummary {
+    /// Fold a fresh usage read (or its absence) onto the summary. `Some(snap)`
+    /// marks the source `reported` and copies every figure the provider gave;
+    /// `None` marks it `unavailable` and leaves the figures `null` — the caller
+    /// passes `None` on any upstream failure so a missing value is never 0.
+    fn with_usage(mut self, checked_at: &str, usage: Option<&UsageSnapshot>) -> Self {
+        match usage {
+            Some(u) => {
+                self.credits_source = Some("reported");
+                self.credits_used = Some(u.credits_used);
+                self.credits_limit = u.credits_limit;
+                self.credits_period_end = u.credits_period_end;
+                self.credits_plan = u.plan.clone();
+                self.credits_user_ref = u.upstream_user_ref.clone();
+            }
+            None => {
+                self.credits_source = Some("unavailable");
+            }
+        }
+        self.credits_checked_at = Some(checked_at.to_owned());
+        self
     }
 }
 
@@ -495,7 +606,19 @@ pub async fn list_accounts(State(state): State<AdminState>, headers: HeaderMap) 
     };
     match svc.store.list() {
         Ok(accounts) => {
-            let items: Vec<AccountSummary> = accounts.iter().map(AccountSummary::from).collect();
+            // Read every account's credit usage concurrently; each read uses only
+            // that account's own credential and is memoised for USAGE_TTL.
+            let svc = &svc;
+            let items: Vec<AccountSummary> =
+                futures::future::join_all(accounts.iter().map(|a| async move {
+                    let summary = AccountSummary::from(a);
+                    match svc.usage_for(a).await {
+                        UsageOutcome::NotCapable => summary,
+                        UsageOutcome::Read(checked_at, snapshot) => summary
+                            .with_usage(&checked_at.to_rfc3339(), snapshot.as_ref()),
+                    }
+                }))
+                .await;
             let total = items.len();
             Json(serde_json::json!({ "items": items, "total": total })).into_response()
         }
@@ -891,5 +1014,140 @@ mod tests {
         assert_eq!(accounts.len(), 1, "no second account minted");
         assert!(accounts[0].revoked.is_none());
         assert_eq!(accounts[0].access_token, "secret-access");
+    }
+
+    /// Usage-capable provider: returns a fixed snapshot, or an error when
+    /// `snapshot` is `None`, without touching the network.
+    struct FakeCredits {
+        snapshot: Option<UsageSnapshot>,
+    }
+
+    impl ProviderAdapter for FakeCredits {
+        fn id(&self) -> &str {
+            "credits"
+        }
+        fn display_name(&self) -> &str {
+            "Credits"
+        }
+        fn prepare(
+            &self,
+            _: &Operation,
+            _: &ConnectionConfig,
+            _: &Credential,
+        ) -> Result<PreparedRequest, ProviderError> {
+            Err(ProviderError::UnsupportedOperation)
+        }
+        fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
+            Some(self)
+        }
+    }
+
+    impl vkdg_provider_sdk::UsageProvider for FakeCredits {
+        fn fetch_usage<'a>(
+            &'a self,
+            _: &'a Credential,
+        ) -> BoxFuture<'a, Result<UsageSnapshot, ProviderError>> {
+            let snap = self.snapshot.clone();
+            Box::pin(async move { snap.ok_or_else(|| ProviderError::Http("boom".into())) })
+        }
+    }
+
+    fn state_with(adapter: Arc<dyn ProviderAdapter>) -> (AdminState, Arc<AccountStore>) {
+        let (_tx, rx) = watch::channel(Arc::new(ConfigSnapshot::default_empty()));
+        let mut registry = ProviderRegistry::empty();
+        registry.register(adapter);
+        let store = Arc::new(AccountStore::in_memory().unwrap());
+        let state = AdminState {
+            sessions: SessionStore::new("tok".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: RequestLog::new(),
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
+            catalog: None,
+            logins: Some(LoginService::new(Arc::new(registry), Arc::clone(&store), None)),
+        };
+        (state, store)
+    }
+
+    fn seed_account(store: &AccountStore, provider: &str) -> Account {
+        let account = Account::from_token_pair(
+            provider,
+            "acct@example.com",
+            TokenPair {
+                access_token: "ksk_secret".into(),
+                refresh_token: None,
+                expires_in_secs: None,
+                extra: HashMap::from([("auth_method".into(), "api_key".into())]),
+            },
+        );
+        store.upsert(&account).unwrap();
+        account
+    }
+
+    // Refutes: usage hook ignored; plan limit fabricated (e.g. 0 or overage cap);
+    // source not marked "reported"; checked-at timestamp missing.
+    #[tokio::test]
+    async fn list_accounts_reports_credits_from_usage_provider() {
+        let (state, store) = state_with(Arc::new(FakeCredits {
+            snapshot: Some(UsageSnapshot {
+                credits_used: 137.95,
+                credits_limit: Some(10000.0),
+                credits_period_end: Some(1_790_812_800),
+                plan: Some("KIRO POWER".into()),
+                upstream_user_ref: Some("d-9067c9".into()),
+            }),
+        }));
+        seed_account(&store, "credits");
+        let h = authed(&state);
+
+        let (status, v, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let item = &v["items"][0];
+        assert_eq!(item["credits_source"], "reported", "{raw}");
+        assert_eq!(item["credits_used"], 137.95, "{raw}");
+        assert_eq!(item["credits_limit"], 10000.0, "{raw}");
+        assert_eq!(item["credits_period_end"], 1_790_812_800_i64, "{raw}");
+        assert_eq!(item["credits_plan"], "KIRO POWER", "{raw}");
+        assert!(
+            item["credits_checked_at"].is_string(),
+            "checked-at timestamp must be recorded: {raw}"
+        );
+    }
+
+    // Refutes: an upstream error swallowed into a fabricated 0; source not marked
+    // "unavailable"; limit invented when none was reported.
+    #[tokio::test]
+    async fn list_accounts_marks_usage_unavailable_never_zero() {
+        let (state, store) = state_with(Arc::new(FakeCredits { snapshot: None }));
+        seed_account(&store, "credits");
+        let h = authed(&state);
+
+        let (status, v, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let item = &v["items"][0];
+        assert_eq!(item["credits_source"], "unavailable", "{raw}");
+        assert!(
+            item["credits_used"].is_null(),
+            "no usage figure when upstream fails, never 0: {raw}"
+        );
+        assert!(item["credits_limit"].is_null(), "{raw}");
+    }
+
+    // Refutes: forcing credit fields (or a source) onto providers that sell no
+    // credits at all.
+    #[tokio::test]
+    async fn list_accounts_omits_credits_for_provider_without_usage() {
+        let (state, store) = make_state();
+        seed_account(&store, "fake");
+        let h = authed(&state);
+
+        let (status, v, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let item = &v["items"][0];
+        assert!(item["credits_source"].is_null(), "{raw}");
+        assert!(item["credits_used"].is_null(), "{raw}");
     }
 }

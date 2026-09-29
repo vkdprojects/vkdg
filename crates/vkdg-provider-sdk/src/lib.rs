@@ -13,6 +13,7 @@ pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod request;
+pub mod usage;
 
 pub use error::ProviderError;
 pub use oauth::{
@@ -25,4 +26,5 @@ pub use request::{
     upstream_model, ConversationStreamDecoder, PreparedRequest, ProviderAdapter, ProviderCategory,
     ProviderMeta,
 };
+pub use usage::{UsageProvider, UsageSnapshot};
 pub use vkdg_connections::Credential;

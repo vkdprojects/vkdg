@@ -24,6 +24,7 @@ pub mod region;
 mod request;
 pub mod stream_decoder;
 mod thinking;
+pub mod usage;
 
 use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
 use crate::endpoint::EndpointKind;
@@ -180,6 +181,10 @@ impl ProviderAdapter for KiroAdapter {
 
     fn stream_decoder(&self) -> Option<Box<dyn ConversationStreamDecoder>> {
         Some(Box::new(stream_decoder::KiroStreamDecoder::new()))
+    }
+
+    fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
+        Some(&usage::KiroUsage)
     }
 }
 

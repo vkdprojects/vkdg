@@ -61,6 +61,7 @@ components:
         status:          { type: string, enum: [healthy, degraded, circuit_open, cooldown] }
         model_count:     { type: integer, example: 3 }
         active_requests: { type: integer, example: 1 }
+        account_id:      { type: string, description: "Provider account backing this connection; omitted for API-key/OAuth2 auth.", example: "kiro-7354913c" }
 
     ConnectionList:
       type: object

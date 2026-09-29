@@ -142,8 +142,9 @@ fn host_and_region_follow_the_account() {
         &[("auth_method", "api_key"), ("oidc_region", "us-east-1")],
     );
     assert_eq!(
-        url, "https://q.us-east-1.amazonaws.com/",
-        "API keys speak the Amazon Q protocol at the service root"
+        url, "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
+        "API keys speak the editor protocol on the CodeWhisperer plane; the legacy \
+         Amazon Q service root only exposes sonnet-4/4.5 and haiku-4.5"
     );
 
     // The ARN says eu-central-1 while the OIDC region says eu-north-1; the ARN wins,

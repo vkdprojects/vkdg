@@ -113,6 +113,25 @@ impl ConnectionCatalog {
             .collect()
     }
 
+    /// Connections whose declared `models` do not cover `model`.
+    ///
+    /// A route names its targets by id, so its `match_models` glob says nothing
+    /// about what each target actually serves. Without this the pipeline lets a
+    /// strategy pick a connection outside its catalogue and the upstream answers
+    /// an opaque 400. Health and capacity are deliberately not considered here:
+    /// those are transient and owned by the rate-limit filter, while a missing
+    /// model is a static property of the configuration.
+    pub fn not_serving_model(&self, model: &str) -> Vec<ConnectionId> {
+        self.connections
+            .read()
+            .iter()
+            .filter_map(|(id, arc)| {
+                let conn = arc.try_read().ok()?;
+                (!conn.serves_model(model)).then(|| id.clone())
+            })
+            .collect()
+    }
+
     /// Returns all connection IDs in this catalog.
     /// Used by the pipeline to populate RoutingHints for all known connections.
     pub fn connection_ids(&self) -> Vec<ConnectionId> {
@@ -178,5 +197,44 @@ mod reload_tests {
         catalog.apply(vec![cfg("b", &["*"], 4)]).await;
         assert_eq!(catalog.connection_ids(), vec![ConnectionId("b".into())]);
         assert!(catalog.get(&ConnectionId("a".into())).is_none());
+    }
+
+    // Plausible wrong impl: routing trusts only the route's `match_models` and
+    // never checks the connection's own catalogue, so a round-robin route whose
+    // targets have different catalogues sends every other request to a
+    // connection that cannot serve the model. Observed in production as
+    // alternating 200 / 400 INVALID_MODEL_ID on a two-target Kiro route.
+    #[tokio::test]
+    async fn connections_that_do_not_serve_the_model_are_reported() {
+        let catalog = ConnectionCatalog::new(vec![
+            cfg("full", &["claude-*", "glm-*"], 4),
+            cfg("limited", &["claude-sonnet-4.5"], 4),
+        ]);
+
+        assert_eq!(
+            catalog.not_serving_model("glm-5"),
+            vec![ConnectionId("limited".into())],
+            "only the connection without the model is reported"
+        );
+        assert!(
+            catalog.not_serving_model("claude-sonnet-4.5").is_empty(),
+            "a model both serve excludes nobody"
+        );
+        // A connection at capacity or in cooldown is still *able* to serve the
+        // model: that is the rate-limit filter's job, not this one. Reporting it
+        // here would permanently exclude a healthy target.
+        let guard = catalog
+            .get(&ConnectionId("full".into()))
+            .unwrap()
+            .read()
+            .await
+            .acquire();
+        assert!(guard.is_some());
+        assert!(
+            !catalog
+                .not_serving_model("glm-5")
+                .contains(&ConnectionId("full".into())),
+            "capacity is not a catalogue decision"
+        );
     }
 }

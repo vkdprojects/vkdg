@@ -49,6 +49,20 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- **Kiro API keys reach the whole catalogue.** A `ksk_` connection was sent to the legacy Amazon Q
+  protocol (service root + `x-amz-target` + `origin: CLI`), which only serves `claude-sonnet-4`,
+  `claude-sonnet-4.5` and `claude-haiku-4.5` and answers `INVALID_MODEL_ID` for everything else —
+  including `auto`. The same key on the editor plane (`codewhisperer.us-east-1.amazonaws.com`,
+  operation in the path, `origin: AI_EDITOR`) serves all 20 models, confirmed against
+  `GET /ListAvailableModels?origin=AI_EDITOR`. `EndpointKind` now has one variant per credential
+  type; the `Cli` / `SendMessage` buckets are gone, since nothing selected them once `api_key`
+  stopped doing so.
+- **Routing honours each connection's `models`.** A route names its targets by id, so its
+  `match_models` said nothing about what each target actually serves: a round-robin route over two
+  connections with different catalogues sent every other request to a connection that could not
+  serve the model, and the client got an opaque upstream 400. Candidates outside their catalogue are
+  now excluded before the strategy runs, with `model_not_served` in the decision record. The model
+  compared is the one that goes upstream, so a combo (whose id no connection lists) still routes.
 - `vkdg setup` and the console connection snippet generated YAML with broken indentation (`auth:`,
   `models:` at column 0). The gateway refused to load them.
 - Reconnecting an OAuth account now replaces the existing account in place instead of creating a new

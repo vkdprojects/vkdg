@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
@@ -108,15 +109,32 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // 3. Route ─────────────────────────────────────────────────────────────────
-    let filter = if excluded.is_empty() {
-        EligibilityFilter::default()
-    } else {
+    // Two independent reasons to drop a candidate: it is rate limited right now,
+    // or its configured catalogue does not cover the requested model. The route
+    // names targets by id, so without the second check a strategy happily picks
+    // a connection that answers 400 for this model.
+    //
+    // The model is the one that will actually go upstream: a combo request names
+    // the combo id (`coding-fast`), which no connection lists, and the combo's
+    // own `model` is what the provider receives. Filtering on the raw envelope
+    // would exclude every target of every combo.
+    let effective_model = csr
+        .combo_model
+        .clone()
+        .unwrap_or_else(|| ctx.envelope.model_requested.clone());
+    let filter = {
+        let mut reason_map: HashMap<ConnectionId, String> = excluded
+            .iter()
+            .map(|id| (id.clone(), "rate_limited".to_owned()))
+            .collect();
+        for id in pipeline.catalog.not_serving_model(&effective_model) {
+            reason_map
+                .entry(id)
+                .or_insert_with(|| "model_not_served".to_owned());
+        }
         EligibilityFilter {
-            excluded_connections: excluded.to_vec(),
-            reason_map: excluded
-                .iter()
-                .map(|id| (id.clone(), "rate_limited".into()))
-                .collect(),
+            excluded_connections: reason_map.keys().cloned().collect(),
+            reason_map,
         }
     };
     // Build routing hints from live quota signals.

@@ -119,10 +119,7 @@ impl ProviderAdapter for KiroAdapter {
             HeaderValue::from_str(&format!("Bearer {}", credential.token))
                 .map_err(|_| ProviderError::Http("credential is not a valid header".into()))?,
         );
-        // Operation routing is either the URL path (IDE) or this header, never both.
-        if let Some(target) = kind.amz_target() {
-            headers.insert("x-amz-target", HeaderValue::from_static(target));
-        }
+        // Operation routing is always the URL path; no plane takes x-amz-target.
         if kind.sends_api_key_token_type() {
             headers.insert("tokentype", HeaderValue::from_static("API_KEY"));
         }

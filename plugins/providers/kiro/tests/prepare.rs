@@ -19,6 +19,10 @@ use vkdg_provider_sdk::ProviderAdapter;
 const PROFILE_ARN: &str = "arn:aws:codewhisperer:eu-central-1:123456789012:profile/ABCDEF";
 
 fn connection(models: &[&str]) -> ConnectionConfig {
+    connection_on(models, None)
+}
+
+fn connection_on(models: &[&str], endpoint: Option<&str>) -> ConnectionConfig {
     ConnectionConfig {
         id: ConnectionId("kiro-1".into()),
         provider: ProviderKind::Plugin { id: "kiro".into() },
@@ -29,6 +33,7 @@ fn connection(models: &[&str]) -> ConnectionConfig {
         max_concurrent: 4,
         weight: 1,
         tags: vec![],
+        endpoint: endpoint.map(str::to_owned),
         capabilities: CapabilitySet::default(),
     }
 }
@@ -69,6 +74,28 @@ fn prepared(
 ) -> (String, Vec<(String, String)>, Value) {
     let req = KiroAdapter
         .prepare(&operation(model), &connection(models), &credential(extra))
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let headers = req
+        .headers
+        .iter()
+        .map(|(k, v)| (k.as_str().to_owned(), v.to_str().unwrap_or("").to_owned()))
+        .collect();
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    (req.url, headers, body)
+}
+
+/// Same, for a connection pinned to a specific plane.
+fn prepared_on(
+    model: &str,
+    endpoint: Option<&str>,
+    extra: &[(&str, &str)],
+) -> (String, Vec<(String, String)>, Value) {
+    let req = KiroAdapter
+        .prepare(
+            &operation(model),
+            &connection_on(&["claude-*"], endpoint),
+            &credential(extra),
+        )
         .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
     let headers = req
         .headers
@@ -216,5 +243,53 @@ fn prompt_caching_headers_are_sent() {
     assert!(
         has("anthropic-beta", "prompt-caching-2024-07-31"),
         "{headers:?}"
+    );
+}
+
+/// Refutes: ignoring `endpoint:` on the connection, which puts both connections
+/// of an account on one rate-limit bucket. The planes throttle independently —
+/// driving runtime.kiro.dev to 75% HTTP 429 left codewhisperer at 80/80 — so an
+/// OAuth account pinned to each plane is what doubles usable capacity.
+#[test]
+fn a_pinned_endpoint_selects_the_host_and_keeps_the_credential_rules() {
+    let oauth = &[("auth_method", "social"), ("profile_arn", PROFILE_ARN)];
+
+    let (url, headers, body) = prepared_on("claude-sonnet-4.5", Some("codewhisperer"), oauth);
+    assert_eq!(
+        url, "https://q.eu-central-1.amazonaws.com/generateAssistantResponse",
+        "an OAuth account may be pinned to the CodeWhisperer plane; outside the \
+         home region that plane is served by q.{{region}}, since codewhisperer.* \
+         only resolves in us-east-1"
+    );
+    assert_eq!(
+        body["profileArn"], PROFILE_ARN,
+        "an OAuth account keeps sending profileArn on either plane"
+    );
+    assert!(
+        header(&headers, "tokentype").is_none(),
+        "tokentype belongs to API keys, not to a pinned OAuth connection"
+    );
+
+    let (url, ..) = prepared_on("claude-sonnet-4.5", Some("runtime"), oauth);
+    assert_eq!(
+        url, "https://runtime.eu-central-1.kiro.dev/generateAssistantResponse",
+        "the other connection of the same account stays on the Kiro plane"
+    );
+
+    // runtime.* answers "profileArn is required for this request" to an API key,
+    // so the pin must not take that connection offline.
+    let (url, headers, body) = prepared_on(
+        "claude-sonnet-4.5",
+        Some("runtime"),
+        &[("auth_method", "api_key")],
+    );
+    assert_eq!(
+        url,
+        "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
+    );
+    assert_eq!(header(&headers, "tokentype"), Some("API_KEY"));
+    assert!(
+        body.get("profileArn").is_none(),
+        "an API key must never send profileArn: AWS answers 403"
     );
 }

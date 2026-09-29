@@ -1,32 +1,37 @@
 //! Endpoint selection for Kiro / Amazon Q.
 //!
-//! Kiro's data plane is reachable through several hosts, and which one works
-//! depends on how the account authenticates — not on preference:
+//! Kiro's data plane is reachable through two hosts, and they are not
+//! interchangeable for every credential:
 //!
-//! | kind     | host                                      | credential        |
-//! |----------|-------------------------------------------|-------------------|
-//! | `Ide`    | `runtime.{region}.kiro.dev`               | IDE/OAuth account |
-//! | `ApiKey` | `codewhisperer.us-east-1.amazonaws.com`   | `ksk_` API key    |
-//! |          | (`q.{region}.amazonaws.com` elsewhere)    |                   |
+//! | plane           | host                                    | credential          |
+//! |-----------------|-----------------------------------------|---------------------|
+//! | `Ide`           | `runtime.{region}.kiro.dev`             | OAuth account only  |
+//! | `CodeWhisperer` | `codewhisperer.us-east-1.amazonaws.com` | OAuth or `ksk_` key |
+//! |                 | (`q.{region}.amazonaws.com` elsewhere)  |                     |
 //!
-//! Both route the operation in the URL path (`/generateAssistantResponse`) and
-//! declare `origin: AI_EDITOR`. Three invariants come from measurements against
-//! the live service, not from guesswork:
+//! Both route the operation in the URL path and declare `origin: AI_EDITOR`.
+//! What each request carries depends on the CREDENTIAL, not on the plane:
+//! an API key must not send `profileArn` (AWS answers 403) and must send
+//! `tokentype: API_KEY`; an OAuth account sends `profileArn` on both planes.
 //!
-//! 1. **API-key accounts must not send `profileArn`.** The key belongs to a
-//!    tenant already; sending an ARN makes AWS answer 403.
-//! 2. **IDE accounts belong on `runtime.*`.** That host answers the IDE protocol
-//!    reliably, while `q.*` throttles it far harder. An API key on `runtime.*`
-//!    is refused with "profileArn is required for this request."
-//! 3. **An API key must stay on the editor protocol.** The same key reaches two
-//!    different catalogues: posting to the service root with
-//!    `x-amz-target: …GenerateAssistantResponse` and `origin: CLI` exposes only
-//!    the legacy Amazon Q set (`claude-sonnet-4`, `claude-sonnet-4.5`,
-//!    `claude-haiku-4.5`) and answers `INVALID_MODEL_ID` for everything else —
-//!    including `auto`. Routing by path with `origin: AI_EDITOR` serves the full
-//!    catalogue (20 ids: opus-5.5/5/4.8/4.7/4.6, sonnet-5/4.6, gpt-5.6-*, glm-5,
-//!    minimax-*, qwen3-coder-next, deepseek-3.2, …), confirmed against
-//!    `GET /ListAvailableModels?origin=AI_EDITOR` with the same credential.
+//! Measured against the live service:
+//!
+//! 1. **`runtime.*` refuses API keys** — "profileArn is required for this
+//!    request" — so a `ksk_` connection only works on `CodeWhisperer`.
+//! 2. **The legacy Amazon Q protocol truncates the catalogue.** Posting to the
+//!    service root with `x-amz-target` and `origin: CLI` serves only
+//!    `claude-sonnet-4`, `claude-sonnet-4.5` and `claude-haiku-4.5`, answering
+//!    `INVALID_MODEL_ID` for everything else — `auto` included. Routing by path
+//!    with `origin: AI_EDITOR` serves all 20 ids that
+//!    `GET /ListAvailableModels?origin=AI_EDITOR` reports for the same key.
+//! 3. **The two planes hold separate rate-limit buckets.** Driving
+//!    `runtime.kiro.dev` to 75% HTTP 429 (271 of 360 at 120 concurrent) left
+//!    `codewhisperer` answering 80/80 in the same window. Under a concurrency
+//!    ramp, `runtime.*` started throttling at 10 concurrent and refused ~50-66%
+//!    at 100, while `codewhisperer` served 2055 requests with zero errors up to
+//!    200 concurrent. Two connections on one account, one per plane, therefore
+//!    add capacity instead of sharing it — which is what `endpoint:` in the
+//!    connection config expresses.
 
 use crate::auth::AUTH_API_KEY;
 use crate::region::{is_valid_region, DEFAULT_REGION};
@@ -35,26 +40,51 @@ use crate::region::{is_valid_region, DEFAULT_REGION};
 /// Any other region has no `kiro.dev` host, so it must fall back.
 pub const RUNTIME_REGIONS: [&str; 2] = ["us-east-1", "eu-central-1"];
 
-/// Which host to use for a request.
+/// Config value naming each plane, as accepted by `endpoint:` in a connection.
+pub const ENDPOINT_RUNTIME: &str = "runtime";
+pub const ENDPOINT_CODEWHISPERER: &str = "codewhisperer";
+
+/// Which host serves the request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointKind {
-    /// Kiro IDE data plane, for OAuth accounts: `profileArn` in the body.
+    /// Kiro IDE data plane. OAuth accounts only.
     Ide,
-    /// CodeWhisperer editor plane, for `ksk_` API keys: no `profileArn`,
-    /// `tokentype: API_KEY` header.
-    ApiKey,
+    /// CodeWhisperer plane. Serves both credential types.
+    CodeWhisperer,
+}
+
+/// Whether a request authenticated this way carries `profileArn`.
+///
+/// An API key belongs to a tenant already and AWS answers 403 when one is sent;
+/// an OAuth account needs it on both planes.
+pub fn sends_profile_arn(auth_method: &str) -> bool {
+    auth_method != AUTH_API_KEY
+}
+
+/// Whether the request carries the `tokentype: API_KEY` header.
+pub fn sends_api_key_token_type(auth_method: &str) -> bool {
+    auth_method == AUTH_API_KEY
 }
 
 impl EndpointKind {
-    /// Endpoint an account uses, derived from how it authenticates.
-    ///
-    /// API keys speak the CodeWhisperer plane; every OAuth account (Builder ID,
-    /// IdC, social) belongs to the Kiro IDE data plane.
+    /// Plane an account uses when the connection does not name one.
     pub fn for_auth_method(auth_method: &str) -> Self {
         if auth_method == AUTH_API_KEY {
-            Self::ApiKey
+            Self::CodeWhisperer
         } else {
             Self::Ide
+        }
+    }
+
+    /// Plane named by the connection config, falling back to the credential's
+    /// default. `runtime` is downgraded for an API key because that host refuses
+    /// one outright — a config typo must not take the connection offline.
+    pub fn from_config(endpoint: Option<&str>, auth_method: &str) -> Self {
+        match endpoint {
+            Some(ENDPOINT_CODEWHISPERER) => Self::CodeWhisperer,
+            Some(ENDPOINT_RUNTIME) if auth_method != AUTH_API_KEY => Self::Ide,
+            Some(ENDPOINT_RUNTIME) => Self::CodeWhisperer,
+            _ => Self::for_auth_method(auth_method),
         }
     }
 
@@ -70,23 +100,13 @@ impl EndpointKind {
             Self::Ide => format!("https://runtime.{region}.kiro.dev/generateAssistantResponse"),
             // `codewhisperer.*` only resolves in the home region; every other
             // region serves the same editor protocol under `q.*`.
-            Self::ApiKey if region == DEFAULT_REGION => {
+            Self::CodeWhisperer if region == DEFAULT_REGION => {
                 format!("https://codewhisperer.{region}.amazonaws.com/generateAssistantResponse")
             }
-            Self::ApiKey => format!("https://q.{region}.amazonaws.com/generateAssistantResponse"),
+            Self::CodeWhisperer => {
+                format!("https://q.{region}.amazonaws.com/generateAssistantResponse")
+            }
         }
-    }
-
-    /// Whether the request body carries `profileArn`.
-    ///
-    /// API-key authentication does not accept it: AWS answers 403.
-    pub fn sends_profile_arn(self) -> bool {
-        matches!(self, Self::Ide)
-    }
-
-    /// Whether the request carries the `tokentype: API_KEY` header.
-    pub fn sends_api_key_token_type(self) -> bool {
-        matches!(self, Self::ApiKey)
     }
 
     /// `content-type` for the request body.
@@ -98,20 +118,17 @@ impl EndpointKind {
     }
 
     /// True when `region` can serve this endpoint.
-    ///
-    /// The Kiro planes only exist in two regions; an unsupported region must fall
-    /// back rather than produce a host that does not resolve.
     pub fn serves_region(self, region: &str) -> bool {
         match self {
             Self::Ide => RUNTIME_REGIONS.contains(&region),
             // The AWS hosts exist in more regions than the Kiro planes.
-            Self::ApiKey => is_valid_region(region),
+            Self::CodeWhisperer => is_valid_region(region),
         }
     }
 
     /// `origin` the request declares, from the service's `Origin` enum.
     ///
-    /// Both planes identify as an editor. `CLI` selects the legacy Amazon Q
+    /// Both planes identify as an editor. `CLI` selects the truncated Amazon Q
     /// catalogue and must not be used (see the module docs).
     pub fn origin(self) -> &'static str {
         "AI_EDITOR"
@@ -123,21 +140,24 @@ mod tests {
     use super::*;
     use crate::auth::{AUTH_BUILDER_ID, AUTH_IDC, AUTH_SOCIAL};
 
-    // Refutes: sending profileArn on an API-key account, which AWS answers 403,
-    // or omitting it for an IdC account, which then gets "not authorized".
+    // Refutes: tying profileArn to the plane. An OAuth account keeps sending it
+    // on CodeWhisperer (measured: 900/900 OK that way), and an API key must
+    // never send it on any plane — AWS answers 403.
     #[test]
-    fn profile_arn_is_sent_only_on_the_ide_plane() {
-        assert!(EndpointKind::for_auth_method(AUTH_IDC).sends_profile_arn());
-        assert!(EndpointKind::for_auth_method(AUTH_BUILDER_ID).sends_profile_arn());
-        assert!(EndpointKind::for_auth_method(AUTH_SOCIAL).sends_profile_arn());
-        assert!(!EndpointKind::for_auth_method(AUTH_API_KEY).sends_profile_arn());
+    fn profile_arn_follows_the_credential_not_the_plane() {
+        for oauth in [AUTH_IDC, AUTH_BUILDER_ID, AUTH_SOCIAL] {
+            assert!(sends_profile_arn(oauth));
+            assert!(!sends_api_key_token_type(oauth));
+        }
+        assert!(!sends_profile_arn(AUTH_API_KEY));
+        assert!(sends_api_key_token_type(AUTH_API_KEY));
     }
 
-    // Refutes: pointing OAuth accounts at the AWS hosts (heavily throttled for
-    // the IDE protocol) or API keys at runtime.*, which answers
-    // "profileArn is required for this request."
+    // Refutes: pointing OAuth accounts at the AWS hosts by default (documented as
+    // throttling-prone for the IDE protocol) or API keys at runtime.*, which
+    // answers "profileArn is required for this request."
     #[test]
-    fn each_auth_method_gets_its_own_host() {
+    fn each_auth_method_gets_its_own_default_host() {
         assert_eq!(
             EndpointKind::for_auth_method(AUTH_SOCIAL).url("us-east-1"),
             "https://runtime.us-east-1.kiro.dev/generateAssistantResponse"
@@ -152,27 +172,50 @@ mod tests {
         );
     }
 
-    // Refutes: keeping an API key on the legacy Amazon Q protocol (service root
-    // + `x-amz-target` + `origin: CLI`). That plane answers INVALID_MODEL_ID for
-    // claude-sonnet-5, glm-5, gpt-5.6-* and even `auto`, exposing only the three
-    // legacy ids, while the same key serves all 20 models on the editor plane.
+    // Refutes: ignoring `endpoint:`, which collapses both connections of an
+    // account onto one rate-limit bucket and throws away the second one.
     #[test]
-    fn an_api_key_stays_on_the_editor_protocol() {
-        let api_key = EndpointKind::for_auth_method(AUTH_API_KEY);
-        assert!(api_key
-            .url("us-east-1")
-            .ends_with("/generateAssistantResponse"));
-        assert_eq!(api_key.origin(), "AI_EDITOR");
-        assert!(api_key.sends_api_key_token_type());
+    fn a_connection_can_pin_its_plane() {
+        assert_eq!(
+            EndpointKind::from_config(Some(ENDPOINT_CODEWHISPERER), AUTH_SOCIAL),
+            EndpointKind::CodeWhisperer,
+            "an OAuth account may be pinned to the CodeWhisperer plane"
+        );
+        assert_eq!(
+            EndpointKind::from_config(Some(ENDPOINT_RUNTIME), AUTH_SOCIAL),
+            EndpointKind::Ide
+        );
+        assert_eq!(
+            EndpointKind::from_config(None, AUTH_SOCIAL),
+            EndpointKind::Ide,
+            "unset keeps the credential's default"
+        );
+        assert_eq!(
+            EndpointKind::from_config(None, AUTH_API_KEY),
+            EndpointKind::CodeWhisperer
+        );
     }
 
-    // Refutes: routing by path and header at the same time, which no host accepts.
+    // Refutes: honouring `endpoint: runtime` for an API key, which that host
+    // refuses outright — the connection would answer 400 on every request.
     #[test]
-    fn operation_routing_is_always_in_the_path() {
-        for kind in [EndpointKind::Ide, EndpointKind::ApiKey] {
+    fn an_api_key_never_reaches_the_runtime_plane() {
+        assert_eq!(
+            EndpointKind::from_config(Some(ENDPOINT_RUNTIME), AUTH_API_KEY),
+            EndpointKind::CodeWhisperer
+        );
+    }
+
+    // Refutes: routing by path and header at the same time, which no host accepts,
+    // or declaring origin CLI, which selects the truncated catalogue.
+    #[test]
+    fn every_plane_uses_the_editor_protocol() {
+        for kind in [EndpointKind::Ide, EndpointKind::CodeWhisperer] {
             assert!(kind
                 .url("us-east-1")
                 .ends_with("/generateAssistantResponse"));
+            assert_eq!(kind.origin(), "AI_EDITOR");
+            assert_eq!(kind.content_type(), "application/x-amz-json-1.0");
         }
     }
 
@@ -181,7 +224,7 @@ mod tests {
     #[test]
     fn unsupported_regions_fall_back_to_the_home_region() {
         assert_eq!(
-            EndpointKind::ApiKey.url("evil.example.com/"),
+            EndpointKind::CodeWhisperer.url("evil.example.com/"),
             "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
         );
         assert_eq!(
@@ -192,23 +235,11 @@ mod tests {
             EndpointKind::Ide.url("ap-southeast-1"),
             "https://runtime.us-east-1.kiro.dev/generateAssistantResponse"
         );
-        // eu-central-1 is one of the two real Kiro regions.
         assert_eq!(
             EndpointKind::Ide.url("eu-central-1"),
             "https://runtime.eu-central-1.kiro.dev/generateAssistantResponse"
         );
-        // The AWS plane exists in more regions than the Kiro planes.
-        assert!(EndpointKind::ApiKey.serves_region("us-west-2"));
+        assert!(EndpointKind::CodeWhisperer.serves_region("us-west-2"));
         assert!(!EndpointKind::Ide.serves_region("us-west-2"));
-    }
-
-    // Refutes: sending plain JSON; every Kiro plane speaks awsJson1_0.
-    #[test]
-    fn every_plane_uses_aws_json_content_type() {
-        for kind in [EndpointKind::Ide, EndpointKind::ApiKey] {
-            assert_eq!(kind.content_type(), "application/x-amz-json-1.0");
-        }
-        assert!(!EndpointKind::Ide.sends_api_key_token_type());
-        assert!(EndpointKind::ApiKey.sends_api_key_token_type());
     }
 }

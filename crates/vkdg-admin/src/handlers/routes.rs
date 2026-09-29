@@ -187,6 +187,7 @@ mod tests {
                 weight: None,
                 base_url: None,
                 tags: vec![],
+                endpoint: None,
             }],
             routes: vec![RouteDef {
                 id: "r1".into(),

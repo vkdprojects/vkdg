@@ -132,6 +132,34 @@ impl ConnectionCatalog {
             .collect()
     }
 
+    /// Connections that cannot take this request right now, each with the reason.
+    ///
+    /// Three independent causes, and the caller needs them separated in the
+    /// decision record: the model is outside the connection's catalogue (static),
+    /// the connection is unhealthy or in cooldown, or it is already at
+    /// `max_concurrent` (both transient). Routing by route alone ignores all
+    /// three, so a strategy can pick a target that then fails to reserve — the
+    /// request dies as "no eligible connection" instead of trying a sibling.
+    pub fn unroutable(&self, model: &str) -> Vec<(ConnectionId, &'static str)> {
+        self.connections
+            .read()
+            .iter()
+            .filter_map(|(id, arc)| {
+                let conn = arc.try_read().ok()?;
+                if !conn.serves_model(model) {
+                    return Some((id.clone(), "model_not_served"));
+                }
+                if !conn.state.is_healthy() {
+                    return Some((id.clone(), "unhealthy"));
+                }
+                if !conn.has_capacity() {
+                    return Some((id.clone(), "at_capacity"));
+                }
+                None
+            })
+            .collect()
+    }
+
     /// Returns all connection IDs in this catalog.
     /// Used by the pipeline to populate RoutingHints for all known connections.
     pub fn connection_ids(&self) -> Vec<ConnectionId> {
@@ -157,6 +185,7 @@ mod reload_tests {
             max_concurrent: max,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         }
     }
@@ -235,6 +264,49 @@ mod reload_tests {
                 .not_serving_model("glm-5")
                 .contains(&ConnectionId("full".into())),
             "capacity is not a catalogue decision"
+        );
+    }
+
+    // Plausible wrong impl: filtering candidates by model only. A route target
+    // already at `max_concurrent` is then still picked, fails to reserve, and
+    // the request dies as "no eligible connection" without trying the sibling
+    // that was free — observed in production as 502s under 12 concurrent
+    // requests across three Kiro connections.
+    #[tokio::test]
+    async fn a_target_without_a_free_slot_is_reported_with_its_reason() {
+        let catalog = ConnectionCatalog::new(vec![
+            cfg("busy", &["claude-*"], 1),
+            cfg("free", &["claude-*"], 1),
+            cfg("other-model", &["glm-*"], 1),
+        ]);
+        let guard = catalog
+            .get(&ConnectionId("busy".into()))
+            .unwrap()
+            .read()
+            .await
+            .acquire();
+        assert!(guard.is_some(), "the only slot is taken");
+
+        let out: std::collections::HashMap<_, _> = catalog
+            .unroutable("claude-sonnet-5")
+            .into_iter()
+            .map(|(id, reason)| (id.0, reason))
+            .collect();
+
+        assert_eq!(out.get("busy").copied(), Some("at_capacity"));
+        assert_eq!(out.get("other-model").copied(), Some("model_not_served"));
+        assert!(
+            !out.contains_key("free"),
+            "the free target must stay routable: {out:?}"
+        );
+
+        drop(guard);
+        assert!(
+            !catalog
+                .unroutable("claude-sonnet-5")
+                .iter()
+                .any(|(id, _)| id.0 == "busy"),
+            "releasing the slot makes it routable again"
         );
     }
 }

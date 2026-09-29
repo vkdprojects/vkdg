@@ -46,6 +46,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {

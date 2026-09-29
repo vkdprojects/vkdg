@@ -80,7 +80,9 @@ impl ProviderAdapter for KiroAdapter {
         // fallback, and only when it can host a profile at all.
         let region =
             region::runtime_region(profile_arn, extra.get("oidc_region").map(String::as_str));
-        let kind = EndpointKind::for_auth_method(auth_method);
+        // The connection may pin a plane; the two hold separate rate-limit
+        // buckets, so an account can run one connection on each.
+        let kind = EndpointKind::from_config(config.endpoint.as_deref(), auth_method);
 
         // The model the client asked for. The connection's `models` list holds
         // route patterns, so falling back to it would send a glob upstream.
@@ -97,9 +99,9 @@ impl ProviderAdapter for KiroAdapter {
 
         let body = KiroRequestBody {
             conversation_state: request::build_conversation_state(conv, &model_id, kind.origin()),
-            // API-key accounts must not send profileArn: AWS answers 403.
-            profile_arn: kind
-                .sends_profile_arn()
+            // profileArn follows the credential: an API key must not send it
+            // (AWS answers 403), an OAuth account sends it on either plane.
+            profile_arn: endpoint::sends_profile_arn(auth_method)
                 .then(|| profile_arn.map(str::to_owned))
                 .flatten(),
             additional_fields,
@@ -120,7 +122,7 @@ impl ProviderAdapter for KiroAdapter {
                 .map_err(|_| ProviderError::Http("credential is not a valid header".into()))?,
         );
         // Operation routing is always the URL path; no plane takes x-amz-target.
-        if kind.sends_api_key_token_type() {
+        if endpoint::sends_api_key_token_type(auth_method) {
             headers.insert("tokentype", HeaderValue::from_static("API_KEY"));
         }
         if auth_method == AUTH_EXTERNAL_IDP {

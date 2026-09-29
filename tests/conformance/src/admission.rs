@@ -41,6 +41,7 @@ fn app_with_admission_limit(limit: usize) -> axum::Router {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {
@@ -169,6 +170,7 @@ async fn blocked_ip_rejected_before_admission_consumes_capacity() {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {

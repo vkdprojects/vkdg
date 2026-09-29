@@ -18,6 +18,7 @@ fn make_config(id: &str, capabilities: CapabilitySet) -> ConnectionConfig {
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities,
     }
 }

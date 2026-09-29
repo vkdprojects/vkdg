@@ -28,6 +28,13 @@ pub struct ConnectionDef {
     /// `http://localhost:11434`. Refused for every other provider.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Which of a provider's endpoints this connection uses, when it has more
+    /// than one. Only `kiro` has them today: `runtime` (the Kiro IDE plane) and
+    /// `codewhisperer` (the CodeWhisperer plane). They keep separate rate-limit
+    /// buckets, so two connections on the same account — one per endpoint — add
+    /// capacity instead of sharing it. Omitted, the plugin picks by credential.
+    #[serde(default)]
+    pub endpoint: Option<String>,
     pub auth: AuthDef,
     pub models: Vec<String>,
     pub max_concurrent: Option<u32>,

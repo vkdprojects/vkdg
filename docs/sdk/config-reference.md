@@ -47,6 +47,7 @@ connections:
 | `models` | list of strings | yes | none | Model names or patterns this connection serves |
 | `max_concurrent` | integer | no | `u32::MAX` | Maximum simultaneous in-flight requests |
 | `weight` | integer | no | `1` | Relative weight for `weighted` strategy |
+| `endpoint` | string | no | — | Which endpoint of the provider to use, when it has more than one. Only `kiro` today: `runtime` or `codewhisperer`. Refused for every other provider. |
 
 ### provider values
 
@@ -55,7 +56,7 @@ connections:
 | `anthropic` | Anthropic Messages API (`https://api.anthropic.com`) |
 | `openai` | OpenAI API (`https://api.openai.com`) |
 | `google` | Google Generative Language API |
-| `kiro` | Kiro / Amazon Q (fixed endpoint `https://q.us-east-1.amazonaws.com`) |
+| `kiro` | Kiro / Amazon Q. Two endpoints, see `endpoint` above: `runtime.{region}.kiro.dev` (OAuth accounts) and `codewhisperer.us-east-1.amazonaws.com` (OAuth or `ksk_` API key) |
 | `custom:<url>` | Any URL, e.g. `custom:https://my-proxy.internal` |
 
 Any registered provider plugin id is also accepted — see [providers.md](../plugins/providers.md) for the full built-in list.

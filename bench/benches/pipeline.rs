@@ -60,6 +60,7 @@ fn bench_admission_routing(c: &mut Criterion) {
         max_concurrent: 10_000,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     }]));
 
@@ -149,6 +150,7 @@ fn bench_provider_prepare(c: &mut Criterion) {
         max_concurrent: 1_000,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let adapter = AnthropicAdapter;

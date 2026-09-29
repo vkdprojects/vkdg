@@ -35,6 +35,7 @@ fn connection() -> ConnectionConfig {
         max_concurrent: 4,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     }
 }

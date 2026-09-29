@@ -385,6 +385,7 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         }
     }
@@ -402,6 +403,7 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         }
     }

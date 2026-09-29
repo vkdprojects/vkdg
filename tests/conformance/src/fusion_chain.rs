@@ -82,6 +82,7 @@ fn make_two_connection_pipeline(
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let cfg2 = ConnectionConfig {
@@ -96,6 +97,7 @@ fn make_two_connection_pipeline(
         max_concurrent: 10,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
     let route = RouteConfig {

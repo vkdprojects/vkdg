@@ -109,10 +109,12 @@ pub(super) async fn run_pipeline_inner(
     }
 
     // 3. Route ─────────────────────────────────────────────────────────────────
-    // Two independent reasons to drop a candidate: it is rate limited right now,
-    // or its configured catalogue does not cover the requested model. The route
-    // names targets by id, so without the second check a strategy happily picks
-    // a connection that answers 400 for this model.
+    // A route names its targets by id and matches only on its own `match_models`,
+    // so on its own it will happily pick a connection that cannot take the
+    // request: one whose catalogue lacks the model (upstream answers 400), one in
+    // cooldown, or one already at `max_concurrent` — the last dies later as
+    // "no eligible connection" at reservation, without ever trying a sibling.
+    // Excluding them here lets the strategy choose among targets that can serve.
     //
     // The model is the one that will actually go upstream: a combo request names
     // the combo id (`coding-fast`), which no connection lists, and the combo's
@@ -127,10 +129,8 @@ pub(super) async fn run_pipeline_inner(
             .iter()
             .map(|id| (id.clone(), "rate_limited".to_owned()))
             .collect();
-        for id in pipeline.catalog.not_serving_model(&effective_model) {
-            reason_map
-                .entry(id)
-                .or_insert_with(|| "model_not_served".to_owned());
+        for (id, reason) in pipeline.catalog.unroutable(&effective_model) {
+            reason_map.entry(id).or_insert_with(|| reason.to_owned());
         }
         EligibilityFilter {
             excluded_connections: reason_map.keys().cloned().collect(),
@@ -1185,6 +1185,7 @@ mod tests {
             max_concurrent: 100,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         };
         let route = RouteConfig {
@@ -1255,6 +1256,7 @@ mod tests {
                 max_concurrent: 10,
                 weight: 1,
                 tags: vec![],
+                endpoint: None,
                 capabilities: CapabilitySet::default(),
             })
             .collect();
@@ -1402,6 +1404,7 @@ mod tests {
                 max_concurrent: 10,
                 weight: 1,
                 tags: vec![],
+                endpoint: None,
                 capabilities: CapabilitySet::default(),
             })
             .collect();

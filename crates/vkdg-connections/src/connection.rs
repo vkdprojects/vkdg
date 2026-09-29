@@ -92,6 +92,10 @@ pub struct ConnectionConfig {
     pub max_concurrent: u32,
     pub weight: u32,
     pub tags: Vec<String>,
+    /// Provider endpoint this connection uses, when the provider exposes more
+    /// than one (`kiro`: `runtime` | `codewhisperer`). `None` lets the plugin
+    /// choose from the credential type.
+    pub endpoint: Option<String>,
     /// Capabilities this connection supports (e.g. Vision, Tools, Streaming).
     /// Empty set means no capability filtering is applied (legacy / unconfigured).
     pub capabilities: CapabilitySet,
@@ -252,6 +256,7 @@ mod tests {
             max_concurrent: 4,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: vkdg_core::CapabilitySet::default(),
         })
     }
@@ -324,6 +329,7 @@ mod tests {
             max_concurrent: 10,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: vkdg_core::CapabilitySet::default(),
         };
         let catalog = ConnectionCatalog::new(vec![config]);

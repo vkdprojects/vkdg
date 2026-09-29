@@ -156,6 +156,8 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
             }
         };
 
+        let endpoint = parse_endpoint(&def.id, &def.provider, def.endpoint.as_deref())?;
+
         out.push(ConnectionConfig {
             id: ConnectionId(def.id.clone()),
             provider,
@@ -164,11 +166,45 @@ fn build_connections(cfg: &GatewayConfig) -> Result<Vec<ConnectionConfig>, Confi
             max_concurrent: def.max_concurrent.unwrap_or(100),
             weight: def.weight.unwrap_or(1),
             tags: def.tags.clone(),
+            endpoint,
             capabilities: CapabilitySet::default(),
         });
     }
 
     Ok(out)
+}
+
+/// Endpoints a provider exposes, when it has more than one. A name outside the
+/// list is refused rather than ignored: silently falling back to the default
+/// plane would hide a typo behind traffic that still works, but on one bucket.
+fn provider_endpoints(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "kiro" => &["runtime", "codewhisperer"],
+        _ => &[],
+    }
+}
+
+fn parse_endpoint(
+    conn: &str,
+    provider: &str,
+    endpoint: Option<&str>,
+) -> Result<Option<String>, ConfigError> {
+    let Some(name) = endpoint.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let known = provider_endpoints(provider);
+    if known.is_empty() {
+        return Err(ConfigError::Validation(format!(
+            "connection '{conn}': provider {provider} has a single endpoint, so `endpoint` does not apply"
+        )));
+    }
+    if !known.contains(&name) {
+        return Err(ConfigError::Validation(format!(
+            "connection '{conn}': unknown endpoint {name:?} for {provider}; known: {}",
+            known.join(", ")
+        )));
+    }
+    Ok(Some(name.to_owned()))
 }
 
 /// Resolve `provider` (and `base_url`) to a provider kind. `base_url` is only
@@ -384,6 +420,41 @@ mod tests {
             // typos in connection and auth fields
             "  - id: c\n    provider: openai-compat\n    base_ur: http://x\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
             "  - id: c\n    provider: openai\n    auth: { type: api_key, env_vr: K }\n    models: [m]\n",
+        ];
+        for conn in bad {
+            assert!(load(&format!("{CONN}{conn}")).is_err(), "accepted:\n{conn}");
+        }
+    }
+
+    // Refutes: pinning every Kiro connection to one host. The two planes keep
+    // SEPARATE rate-limit buckets — measured: saturating runtime.kiro.dev to 75%
+    // HTTP 429 left codewhisperer answering 80/80 at the same moment — so two
+    // connections on the same account, one per plane, add real capacity. That is
+    // only expressible if the plane is part of the connection config.
+    #[test]
+    fn a_connection_can_name_its_provider_endpoint() {
+        let snap = load(&format!(
+            "{CONN}  - id: k-rt\n    provider: kiro\n    endpoint: runtime\n    auth: {{ type: account, account: a1 }}\n    models: [\"claude-*\"]\n  - id: k-cw\n    provider: kiro\n    endpoint: codewhisperer\n    auth: {{ type: account, account: a1 }}\n    models: [\"claude-*\"]\n  - id: k-def\n    provider: kiro\n    auth: {{ type: account, account: a1 }}\n    models: [\"claude-*\"]\n"
+        ))
+        .unwrap();
+        assert_eq!(snap.connections[0].endpoint.as_deref(), Some("runtime"));
+        assert_eq!(
+            snap.connections[1].endpoint.as_deref(),
+            Some("codewhisperer")
+        );
+        assert_eq!(
+            snap.connections[2].endpoint, None,
+            "omitting it keeps the plugin's own default"
+        );
+    }
+
+    // Refutes: accepting any string, so a typo silently sends traffic to the
+    // default plane, or accepting the field on a provider that ignores it.
+    #[test]
+    fn an_unknown_or_misplaced_endpoint_is_an_error() {
+        let bad = [
+            "  - id: c\n    provider: kiro\n    endpoint: runtim\n    auth: { type: account, account: a1 }\n    models: [m]\n",
+            "  - id: c\n    provider: anthropic\n    endpoint: runtime\n    auth: { type: api_key, env_var: K }\n    models: [m]\n",
         ];
         for conn in bad {
             assert!(load(&format!("{CONN}{conn}")).is_err(), "accepted:\n{conn}");

@@ -292,6 +292,7 @@ mod tests {
             max_concurrent: 1,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: CapabilitySet::default(),
         };
         let op = Operation::Conversation(ConversationRequest {

@@ -244,6 +244,7 @@ mod tests {
             max_concurrent: 1,
             weight: 1,
             tags: vec![],
+            endpoint: None,
             capabilities: vkdg_core::CapabilitySet::default(),
         }]));
         let svc = vkdg_combos::ComboService::open(

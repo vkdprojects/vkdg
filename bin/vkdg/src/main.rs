@@ -732,6 +732,7 @@ fn build_pipeline_from_env(
         max_concurrent: max_concurrent as u32,
         weight: 1,
         tags: vec![],
+        endpoint: None,
         capabilities: CapabilitySet::default(),
     };
 

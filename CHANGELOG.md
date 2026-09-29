@@ -49,6 +49,19 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- **`endpoint:` per connection, so one account can use both Kiro planes.** Kiro answers on
+  `runtime.{region}.kiro.dev` and on `codewhisperer.us-east-1.amazonaws.com`, and the two keep
+  SEPARATE rate-limit buckets: driving `runtime` to 75% HTTP 429 (271 of 360 at 120 concurrent) left
+  `codewhisperer` answering 80/80 in the same window. Under a concurrency ramp `runtime` starts
+  refusing at 10 concurrent and denies ~50-66% at 100, while `codewhisperer` served 2055 requests
+  with zero errors up to 200. A connection may now name its plane, so the same account can run one
+  connection per plane and the router adds both buckets instead of sharing one. `runtime` is refused
+  for an API key (that host answers "profileArn is required"), and `profileArn` now follows the
+  credential rather than the plane, so an OAuth account keeps sending it on either host.
+- **Routing skips targets that cannot take the request.** Besides the model catalogue, a candidate
+  already at `max_concurrent` or in cooldown is now excluded before the strategy runs. It used to be
+  picked anyway and then fail to reserve, killing the request with "no eligible connection" without
+  ever trying a free sibling — 15 of 36 requests at 12 concurrent, in a three-connection route.
 - **Kiro API keys reach the whole catalogue.** A `ksk_` connection was sent to the legacy Amazon Q
   protocol (service root + `x-amz-target` + `origin: CLI`), which only serves `claude-sonnet-4`,
   `claude-sonnet-4.5` and `claude-haiku-4.5` and answers `INVALID_MODEL_ID` for everything else —

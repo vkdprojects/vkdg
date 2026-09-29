@@ -30,6 +30,15 @@
   function toggleCollapsed() {
     collapsed = !collapsed;
     localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
+    // The toggle button lives inside the sidebar's own mouseenter/mouseleave
+    // region, so clicking it never fires a mouseleave. Without this, a
+    // click made while peek-expanded (mouse still over the rail) leaves
+    // `peeking` stuck true: with `collapsed` now flipped, the two states
+    // become visually indistinguishable (both render at full width), so it
+    // reads as "stuck expanded" even though the class list is technically
+    // consistent. Forcing peeking false makes the post-click state always
+    // exactly match `collapsed` until the next real hover/focus.
+    peeking = false;
   }
 
   const navGroups = [

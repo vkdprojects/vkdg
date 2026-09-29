@@ -3,6 +3,7 @@
   import { api } from '$lib/api.js';
   import type { RequestStatusFilter, RequestSummary } from '$lib/api.js';
   import { Badge, Button, EmptyState, Select, Spinner } from '$lib/components/index.js';
+  import { formatNumber, formatDateTime, formatTime } from '$lib/format.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
   import { PauseIcon, PlayIcon, XIcon } from 'lucide-svelte';
@@ -35,13 +36,11 @@
     pending: m.request_status_pending,
   };
 
-  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
   /** Localized usage; each absent metric stays distinct from a reported numeric zero. */
   function fmtTokens(r: RequestSummary): string {
     return m.request_tokens_value({
-      input: r.input_tokens == null ? m.request_metric_unavailable() : r.input_tokens.toLocaleString(),
-      output: r.output_tokens == null ? m.request_metric_unavailable() : r.output_tokens.toLocaleString(),
+      input: r.input_tokens == null ? m.request_metric_unavailable() : formatNumber(r.input_tokens),
+      output: r.output_tokens == null ? m.request_metric_unavailable() : formatNumber(r.output_tokens),
     });
   }
 
@@ -179,7 +178,7 @@
                   aria-label={m.request_open_detail({ id: r.request_id })}
                   onclick={(e) => { e.stopPropagation(); openDetail(r.request_id); }}
                 >
-                  {timeFmt.format(new Date(r.started_at_ms))}
+                  {formatTime(r.started_at_ms)}
                 </button>
               </td>
               <td>{r.model}</td>
@@ -221,7 +220,7 @@
             <dt>{m.request_api_type()}</dt><dd class="mono">{d.api_type}</dd>
             <dt>{m.request_status()}</dt><dd><Badge status={d.status} label={statusLabels[d.status]?.() ?? d.status} /></dd>
             <dt>{m.request_connection()}</dt><dd class="mono">{d.connection_id ?? m.common_none()}</dd>
-            <dt>{m.request_started()}</dt><dd class="mono">{new Date(d.started_at_ms).toLocaleString()}</dd>
+            <dt>{m.request_started()}</dt><dd class="mono">{formatDateTime(d.started_at_ms)}</dd>
             <dt>{m.request_duration()}</dt><dd class="mono">{fmtDuration(d.duration_ms)}</dd>
             <dt>{m.request_tokens()}</dt><dd class="mono">{fmtTokens(d)}</dd>
             <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>

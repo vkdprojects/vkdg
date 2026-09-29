@@ -6,6 +6,7 @@
   import type { Account } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
+  import { formatRelativeTime } from '$lib/format.js';
   import ConnectAccountModal from './ConnectAccountModal.svelte';
 
   let accounts = $state<Account[]>([]);
@@ -19,18 +20,17 @@
   function formatExpiry(iso: string): string {
     const date = new Date(iso);
     const seconds = Math.round((date.getTime() - Date.now()) / 1000);
-    const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
-    if (Math.abs(seconds) < 60) return relative.format(seconds, 'second');
+    if (Math.abs(seconds) < 60) return formatRelativeTime(seconds, 'second');
     const minutes = Math.round(seconds / 60);
-    if (Math.abs(minutes) < 60) return relative.format(minutes, 'minute');
+    if (Math.abs(minutes) < 60) return formatRelativeTime(minutes, 'minute');
     const hours = Math.round(minutes / 60);
-    if (Math.abs(hours) < 24) return relative.format(hours, 'hour');
+    if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
     const days = Math.round(hours / 24);
-    if (Math.abs(days) < 30) return relative.format(days, 'day');
+    if (Math.abs(days) < 30) return formatRelativeTime(days, 'day');
     const months = Math.round(days / 30);
-    if (Math.abs(months) < 12) return relative.format(months, 'month');
-    return relative.format(Math.round(months / 12), 'year');
+    if (Math.abs(months) < 12) return formatRelativeTime(months, 'month');
+    return formatRelativeTime(Math.round(months / 12), 'year');
   }
 
   async function refresh() {

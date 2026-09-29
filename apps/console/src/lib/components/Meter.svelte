@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatNumber } from '$lib/format.js';
   /**
    * Usage/limit gauge. Honest by construction: pass `limit={null}` (absent
    * limit) and it renders "no limit configured" text instead of a fake bar —
@@ -41,11 +42,11 @@
   {#if label}<div class="meter-label">{label}</div>{/if}
   <div class="meter-track" role="progressbar" aria-valuenow={ratio !== null ? Math.round(ratio * 100) : undefined} aria-valuemin={0} aria-valuemax={100}>
     {#if ratio !== null}
-      <div class="meter-fill" data-tone={effectiveTone} style="width: {ratio * 100}%"></div>
+      <div class="meter-fill" class:meter-fill-min={ratio > 0} data-tone={effectiveTone} style="width: {ratio * 100}%"></div>
     {/if}
   </div>
   <div class="meter-foot">
-    <span class="meter-value mono">{valueText ?? value.toLocaleString()}</span>
+    <span class="meter-value mono">{valueText ?? formatNumber(value)}</span>
     {#if ratio === null}
       <span class="meter-unlimited">{unlimitedText}</span>
     {:else}
@@ -89,6 +90,9 @@
   .meter-fill[data-tone='success'] { background: var(--success); }
   .meter-fill[data-tone='warning'] { background: var(--warning); }
   .meter-fill[data-tone='danger'] { background: var(--danger); }
+  /* Distinguish "used a little" from "used nothing": floor the visible fill
+     so a 1% ratio isn't an invisible sliver, while ratio===0 stays truly empty. */
+  .meter-fill-min { min-width: 3px; }
 
   .meter-foot {
     display: flex;

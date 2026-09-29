@@ -7,7 +7,7 @@
   import { api } from '$lib/api.js';
   import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { getLocale } from '$lib/paraglide/runtime.js';
+  import { formatNumber, formatDateTime, formatDate, formatTime } from '$lib/format.js';
   import { Badge, Button, CopyButton, EmptyState, Meter, Select, Spinner, StatusDot } from '$lib/components/index.js';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
   import { toast } from 'svelte-sonner';
@@ -115,9 +115,6 @@
     circuit_open: m.connection_status_circuit_open, cooldown: m.connection_status_cooldown,
     unknown: m.connection_status_unknown,
   };
-  function fmtTime(d: Date): string {
-    return new Intl.DateTimeFormat(getLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(d);
-  }
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   async function load() {
@@ -161,10 +158,6 @@
     try { await api.deleteAccount(a.id); await load(); } finally { deleting = null; }
   }
 
-  function formatDate(iso: string) {
-    return new Intl.DateTimeFormat(getLocale(), { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
-  }
-
   function cooldownRemaining(iso: string): string {
     const seconds = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 1000));
     return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
@@ -187,10 +180,6 @@
     }
     return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());
   });
-
-  function formatPeriodEnd(unixSecs: number): string {
-    return new Intl.DateTimeFormat(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(unixSecs * 1000));
-  }
 
   /** Coarse "checked X ago" — a cache-age hint, not a live clock. */
   function checkedAgo(iso: string): string {
@@ -228,7 +217,7 @@
     </div>
 
     <div class="section-header">
-      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: fmtTime(updatedAt) })}</p>{/if}</div>
+      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: formatTime(updatedAt) })}</p>{/if}</div>
       <div class="header-actions"><Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}><RefreshCwIcon size={14} /> {m.common_refresh()}</Button>{#if provider.category === 'oauth_ide'}<Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>{/if}<Button size="sm" onclick={openConnDialog}><PlusIcon size={14} /> {m.connection_add()}</Button></div>
     </div>
     {#if accounts.length === 0 && provider.category === 'oauth_ide'}
@@ -238,13 +227,13 @@
         {#each accounts as a (a.id)}
           <article class="account-panel">
             <header class="account-head"><div><span class="eyebrow">{m.provider_account()}</span><h3>{a.label}</h3><span class="mono account-id">{a.id}</span>{#if a.credits_user_ref && duplicateUserRefs.has(a.id)}<div class="dup-warning"><Badge status="degraded" label={m.account_duplicate_user()} /> <span>{m.account_duplicate_user_desc()}</span></div>{/if}</div><div class="account-actions"><Badge status={a.status === 'active' ? 'healthy' : 'degraded'} label={a.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()} /><Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm" onclick={() => connect(a.id)}>{m.acct_reauth()}</Button><Button variant="danger" size="sm" disabled={deleting === a.id} onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button></div></header>
-            <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDate(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
+            <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDateTime(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
             {#if a.credits_source === 'reported' && a.credits_used != null && a.credits_limit != null}
               <div class="limits" data-state="reported">
                 <div class="limits-head"><span>{m.plan_limits_title()}</span>{#if a.credits_plan}<span class="plan-name">{a.credits_plan}</span>{/if}</div>
-                <Meter value={a.credits_used} limit={a.credits_limit} valueText={`${a.credits_used.toLocaleString(getLocale())} / ${a.credits_limit.toLocaleString(getLocale())}`} />
+                <Meter value={a.credits_used} limit={a.credits_limit} valueText={`${formatNumber(a.credits_used)} / ${formatNumber(a.credits_limit)}`} />
                 <div class="limits-foot">
-                  {#if a.credits_period_end != null}<span>{m.credits_resets_on({ date: formatPeriodEnd(a.credits_period_end) })}</span>{/if}
+                  {#if a.credits_period_end != null}<span>{m.credits_resets_on({ date: formatDate(a.credits_period_end * 1000) })}</span>{/if}
                   {#if a.credits_checked_at}<span class="checked-at">{m.credits_last_checked({ time: checkedAgo(a.credits_checked_at) })}</span>{/if}
                 </div>
               </div>

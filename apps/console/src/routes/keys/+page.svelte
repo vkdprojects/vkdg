@@ -4,6 +4,7 @@
   import type { ClientKey, CreatedKey, KeyLimits, KeyPatch, KeyScope } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Badge, Button, Card, CopyButton, EmptyState, Meter, Spinner, Stat } from '$lib/components/index.js';
+  import { formatNumber, formatDateTime, formatRelativeTime } from '$lib/format.js';
   import { Dialog } from 'bits-ui';
   import { XIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
@@ -155,25 +156,14 @@
     }
   }
 
-  function formatDate(iso: string): string {
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(iso));
-  }
-
   function humanizeDate(iso: string): string {
     const delta = new Date(iso).getTime() - Date.now();
     const abs = Math.abs(delta);
-    const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-    if (abs < 60 * 60 * 1000) return relative.format(Math.round(delta / (60 * 1000)), 'minute');
-    if (abs < 24 * 60 * 60 * 1000) return relative.format(Math.round(delta / (60 * 60 * 1000)), 'hour');
-    if (abs < 30 * 24 * 60 * 60 * 1000) return relative.format(Math.round(delta / (24 * 60 * 60 * 1000)), 'day');
-    if (abs < 365 * 24 * 60 * 60 * 1000) return relative.format(Math.round(delta / (30 * 24 * 60 * 60 * 1000)), 'month');
-    return relative.format(Math.round(delta / (365 * 24 * 60 * 60 * 1000)), 'year');
+    if (abs < 60 * 60 * 1000) return formatRelativeTime(Math.round(delta / (60 * 1000)), 'minute');
+    if (abs < 24 * 60 * 60 * 1000) return formatRelativeTime(Math.round(delta / (60 * 60 * 1000)), 'hour');
+    if (abs < 30 * 24 * 60 * 60 * 1000) return formatRelativeTime(Math.round(delta / (24 * 60 * 60 * 1000)), 'day');
+    if (abs < 365 * 24 * 60 * 60 * 1000) return formatRelativeTime(Math.round(delta / (30 * 24 * 60 * 60 * 1000)), 'month');
+    return formatRelativeTime(Math.round(delta / (365 * 24 * 60 * 60 * 1000)), 'year');
   }
 
   onMount(async () => {
@@ -341,15 +331,15 @@
                       limit={k.monthly_token_limit}
                       label={m.key_usage_month()}
                       valueText={k.monthly_token_limit == null
-                        ? used.toLocaleString()
-                        : m.key_usage_tokens({ used: used.toLocaleString(), limit: k.monthly_token_limit.toLocaleString() })}
+                        ? formatNumber(used)
+                        : m.key_usage_tokens({ used: formatNumber(used), limit: formatNumber(k.monthly_token_limit) })}
                       unlimitedText={m.key_no_limit()}
                     />
                   </div>
                   <div class="usage-meta">
                     <span>{m.key_usage_requests({ n: k.usage_this_month?.requests ?? 0 })}</span>
                     {#if k.requests_per_minute != null}
-                      <Stat label={m.key_rpm()} value={k.requests_per_minute.toLocaleString()} />
+                      <Stat label={m.key_rpm()} value={formatNumber(k.requests_per_minute)} />
                     {/if}
                   </div>
                 </div>
@@ -357,15 +347,15 @@
                 <dl class="key-dates">
                   <div>
                     <dt>{m.key_expires()}</dt>
-                    <dd title={k.expires_at ? formatDate(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
+                    <dd title={k.expires_at ? formatDateTime(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
                   </div>
                   <div>
                     <dt>{m.key_created()}</dt>
-                    <dd>{formatDate(k.created_at)}</dd>
+                    <dd>{formatDateTime(k.created_at)}</dd>
                   </div>
                   <div>
                     <dt>{m.key_last_used()}</dt>
-                    <dd>{k.last_used_at ? formatDate(k.last_used_at) : m.key_never()}</dd>
+                    <dd>{k.last_used_at ? formatDateTime(k.last_used_at) : m.key_never()}</dd>
                   </div>
                 </dl>
 
@@ -728,6 +718,7 @@
   .key-card-body {
     display: grid;
     grid-template-columns: minmax(16rem, 1.4fr) minmax(16rem, 1fr);
+    align-items: start;
     gap: 1rem 1.5rem;
     padding: 1rem;
   }

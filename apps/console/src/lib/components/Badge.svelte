@@ -12,7 +12,7 @@
     healthy: 'var(--success)',
     degraded: 'var(--warning)',
     circuit_open: 'var(--danger)',
-    cooldown: 'oklch(0.62 0.18 290)',
+    cooldown: 'var(--cooldown)',
     success: 'var(--success)',
     error: 'var(--danger)',
     pending: 'var(--warning)',
@@ -36,14 +36,15 @@
     align-items: center;
     gap: 5px;
     padding: 0.125rem 0.5rem;
-    border-radius: 99px;
-    font-size: 0.7rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-2xs);
     font-weight: 600;
+    font-family: var(--font-mono);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    background: color-mix(in oklch, var(--badge-color) 15%, transparent);
+    background: color-mix(in oklch, var(--badge-color) 14%, transparent);
     color: var(--badge-color);
-    border: 1px solid color-mix(in oklch, var(--badge-color) 30%, transparent);
+    border: 1px solid color-mix(in oklch, var(--badge-color) 34%, transparent);
     white-space: nowrap;
   }
 </style>

@@ -18,5 +18,6 @@
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    background-image: linear-gradient(180deg, var(--bg-elevated) 0%, var(--bg-surface) 100%);
   }
 </style>

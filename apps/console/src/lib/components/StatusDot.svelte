@@ -12,7 +12,7 @@
     healthy: 'var(--success)',
     degraded: 'var(--warning)',
     circuit_open: 'var(--danger)',
-    cooldown: 'oklch(0.62 0.18 290)',
+    cooldown: 'var(--cooldown)',
   };
 
   const color = $derived(colorMap[status] ?? 'var(--text-3)');
@@ -31,7 +31,7 @@
     display: inline-block;
     width: var(--dot-size);
     height: var(--dot-size);
-    border-radius: 50%;
+    border-radius: 2px;
     background: var(--dot-color);
     flex-shrink: 0;
   }

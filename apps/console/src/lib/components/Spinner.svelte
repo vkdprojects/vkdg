@@ -18,7 +18,7 @@
     border-radius: 50%;
     border: 2px solid var(--border-strong);
     border-top-color: var(--accent);
-    animation: spin 0.7s linear infinite;
+    animation: spin 0.6s linear infinite;
     flex-shrink: 0;
   }
 

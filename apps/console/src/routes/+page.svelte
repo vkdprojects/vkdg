@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { SystemInfo, ConnectionSummary } from '$lib/api.js';
-  import { Badge, StatusDot, Card, Button, EmptyState, Spinner } from '$lib/components/index.js';
+  import { Badge, StatusDot, Card, Button, EmptyState, Spinner, Stat, Meter } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { PlusIcon } from 'lucide-svelte';
 
@@ -15,6 +15,13 @@
     const h = Math.floor(secs / 3600);
     const min = Math.floor((secs % 3600) / 60);
     return h > 0 ? `${h}h ${min}m` : `${min}m`;
+  }
+
+  function cooldownRemaining(iso: string): string {
+    const ms = new Date(iso).getTime() - Date.now();
+    if (ms <= 0) return '0s';
+    const s = Math.round(ms / 1000);
+    return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
   }
 
   onMount(async () => {
@@ -49,44 +56,42 @@
   {:else if error}
     <p class="error-msg" role="alert">{error}</p>
   {:else if system}
+    {@const status = system.status}
     <div class="stats-bar">
       <Card>
-        <div class="stat-card">
-          <span class="stat-label">{m.system_version()}</span>
-          <span class="stat-value">{system.version}</span>
-        </div>
+        <Stat label={m.system_status()} value={status}>
+          {#snippet icon()}<StatusDot {status} />{/snippet}
+        </Stat>
       </Card>
       <Card>
-        <div class="stat-card">
-          <span class="stat-label">{m.system_status()}</span>
-          <Badge status={system.status} />
-        </div>
+        <Stat label={m.system_version()} value={system.version} />
       </Card>
       <Card>
-        <div class="stat-card">
-          <span class="stat-label">{m.system_uptime()}</span>
-          <span class="stat-value">{formatUptime(system.uptime_secs)}</span>
-        </div>
+        <Stat label={m.system_uptime()} value={formatUptime(system.uptime_secs)} />
       </Card>
       <Card>
-        <div class="stat-card">
-          <span class="stat-label">{m.system_active_requests()}</span>
-          <span class="stat-value">{system.active_requests} <span class="stat-unit">requests</span></span>
-        </div>
+        <Stat
+          label={m.system_active_requests()}
+          value={system.active_requests}
+          tone={system.active_requests > 0 ? 'success' : 'default'}
+        />
       </Card>
     </div>
 
     <section aria-labelledby="connections-heading">
-      <h2 id="connections-heading" class="section-title">{m.nav_connections()}</h2>
+      <div class="section-head">
+        <h2 id="connections-heading" class="section-title">{m.nav_connections()}</h2>
+        <span class="section-count mono">{connections.length}</span>
+      </div>
       {#if connections.length === 0}
         <EmptyState
           title={m.connection_empty()}
-          description="Add a provider connection to start routing requests."
+          description={m.connection_empty_desc()}
         />
       {:else}
         <div class="conn-grid">
           {#each connections as conn (conn.id)}
-            <Card>
+            <Card padding="0">
               <div class="conn-card">
                 <div class="conn-header">
                   <div class="conn-name">
@@ -95,10 +100,29 @@
                   </div>
                   <Badge status={conn.status} />
                 </div>
-                <div class="conn-meta">
-                  {conn.model_count} models · {conn.active_requests} active
+
+                <!-- Concurrency is the one real, tangible "limit" the data plane
+                     exposes today (active_requests / max_concurrent slots) —
+                     see REDESIGN-NOTES.md §1.1. Credits/quota are not shown
+                     because upstream does not report them. -->
+                <Meter
+                  label={m.connection_active_requests()}
+                  value={conn.active_requests}
+                  limit={conn.max_concurrent}
+                  valueText="{conn.active_requests} / {conn.max_concurrent}"
+                  unlimitedText="—"
+                />
+
+                <div class="conn-foot">
+                  <span class="conn-models mono">{conn.model_count} {m.connection_models().toLowerCase()}</span>
+                  {#if conn.status === 'cooldown' && conn.cooldown_until}
+                    <span class="conn-cooldown mono">{cooldownRemaining(conn.cooldown_until)}</span>
+                  {:else if conn.status === 'circuit_open' && conn.failure_count}
+                    <span class="conn-cooldown mono">{m.connection_failures({ n: conn.failure_count })}</span>
+                  {/if}
                 </div>
-                <div class="conn-id">{conn.id}</div>
+
+                <div class="conn-id mono">{conn.id}</div>
               </div>
             </Card>
           {/each}
@@ -109,70 +133,81 @@
 </div>
 
 <style>
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+  }
+
+  .page-title {
+    margin: 0;
+  }
+
   .loading {
     display: flex;
     align-items: center;
     gap: 8px;
     color: var(--text-3);
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
     padding: 32px 0;
-  }
-
-  .error-msg {
-    color: var(--danger);
-    font-size: 0.875rem;
   }
 
   .stats-bar {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin-bottom: 32px;
+    gap: 1px;
+    margin-bottom: 2rem;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
   }
 
-  .stat-card {
+  .stats-bar > :global(.card) {
+    border: none;
+    border-radius: 0;
+    background-image: none;
+    background: var(--bg-surface);
+    padding: 1rem 1.25rem;
+  }
+
+  .section-head {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
+    align-items: baseline;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
   }
 
-  .stat-label {
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--text-3);
+  .section-title {
+    margin: 0;
+    border: none;
+    padding: 0;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-1);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
 
-  .stat-value {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: var(--text-1);
-  }
-
-  .stat-unit {
-    font-size: 0.8125rem;
-    font-weight: 400;
+  .section-count {
     color: var(--text-3);
-  }
-
-  .section-title {
-    font-size: 0.9375rem;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0 0 16px;
+    font-size: var(--text-xs);
   }
 
   .conn-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 12px;
   }
 
   .conn-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0.75rem;
+    padding: 1rem;
   }
 
   .conn-header {
@@ -188,20 +223,31 @@
   }
 
   .provider {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--text-1);
   }
 
-  .conn-meta {
-    font-size: 0.8125rem;
-    color: var(--text-2);
+  .conn-foot {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    font-size: var(--text-xs);
+  }
+
+  .conn-models {
+    color: var(--text-3);
+  }
+
+  .conn-cooldown {
+    color: var(--warning);
   }
 
   .conn-id {
-    font-size: 0.75rem;
+    font-size: var(--text-2xs);
     color: var(--text-3);
-    font-family: monospace;
+    border-top: 1px solid var(--border);
+    padding-top: 0.5rem;
   }
 
   @media (max-width: 768px) {

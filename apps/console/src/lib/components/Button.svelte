@@ -33,12 +33,12 @@
     align-items: center;
     justify-content: center;
     gap: 6px;
-    border: none;
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 500;
-    transition: background 0.1s, color 0.1s, opacity 0.1s;
+    transition: background 0.1s, color 0.1s, opacity 0.1s, border-color 0.1s;
     white-space: nowrap;
   }
 
@@ -48,16 +48,18 @@
   }
 
   /* Sizes */
-  .sm { padding: 0.25rem 0.625rem; font-size: 0.75rem; }
+  .sm { padding: 0.25rem 0.625rem; font-size: var(--text-xs); }
   .md { padding: 0.4375rem 0.875rem; }
-  .lg { padding: 0.625rem 1.25rem; font-size: 0.9375rem; }
+  .lg { padding: 0.625rem 1.25rem; font-size: var(--text-md); }
 
   /* Variants */
   .primary {
     background: var(--accent);
-    color: #fff;
+    color: var(--bg-base);
+    font-weight: 600;
   }
   .primary:not(:disabled):hover { background: var(--accent-hover); }
+  .primary:not(:disabled):active { background: var(--accent-active); }
 
   .ghost {
     background: transparent;
@@ -67,14 +69,15 @@
 
   .danger {
     background: var(--danger);
-    color: #fff;
+    color: var(--bg-base);
+    font-weight: 600;
   }
   .danger:not(:disabled):hover { opacity: 0.85; }
 
   .outline {
     background: transparent;
     color: var(--text-2);
-    border: 1px solid var(--border-strong);
+    border-color: var(--border-strong);
   }
-  .outline:not(:disabled):hover { border-color: var(--text-3); color: var(--text-1); }
+  .outline:not(:disabled):hover { border-color: var(--accent); color: var(--text-1); }
 </style>

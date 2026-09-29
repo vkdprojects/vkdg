@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { ConnectionStatus, ConnectionSummary } from '$lib/api.js';
-  import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton } from '$lib/components/index.js';
+  import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
+  import { formatTime, formatRelativeTime } from '$lib/format.js';
   import { Dialog } from 'bits-ui';
   import { PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
@@ -21,7 +22,21 @@
     unknown: m.connection_status_unknown,
   };
 
-  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const totalActive = $derived(connections.reduce((sum, conn) => sum + conn.active_requests, 0));
+  const totalCapacity = $derived(connections.reduce((sum, conn) => sum + conn.max_concurrent, 0));
+
+  function humanizeCooldown(value: string) {
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return m.common_none();
+
+    const seconds = Math.round((timestamp - Date.now()) / 1000);
+    if (Math.abs(seconds) < 60) return formatRelativeTime(seconds, 'second');
+    const minutes = Math.round(seconds / 60);
+    if (Math.abs(minutes) < 60) return formatRelativeTime(minutes, 'minute');
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
+    return formatRelativeTime(Math.round(hours / 24), 'day');
+  }
 
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
@@ -174,8 +189,20 @@
 
   <p class="refresh-note" aria-live="polite">
     {m.connection_auto_refresh()}
-    {#if updatedAt}{m.common_updated_at({ time: timeFmt.format(updatedAt) })}{/if}
+    {#if updatedAt}{m.common_updated_at({ time: formatTime(updatedAt) })}{/if}
   </p>
+  {#if !loading && connections.length > 0}
+    <div class="summary-grid">
+      <Stat label={m.connection_active_requests()} value={totalActive} unit={`/ ${totalCapacity}`} />
+      <Meter
+        label={m.connection_active_requests()}
+        value={totalActive}
+        limit={totalCapacity}
+        valueText={`${totalActive} / ${totalCapacity}`}
+      />
+    </div>
+  {/if}
+
 
   {#if loading}
     <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
@@ -205,12 +232,21 @@
               </div>
             </td>
             <td>{conn.model_count}</td>
-            <td class="mono">{conn.active_requests}/{conn.max_concurrent}</td>
+            <td class="concurrency-cell">
+              <Meter
+                value={conn.active_requests}
+                limit={conn.max_concurrent}
+                valueText={`${conn.active_requests} / ${conn.max_concurrent}`}
+              />
+            </td>
             <td class="cooldown-cell">
               {#if conn.cooldown_until}
-                <div>{m.connection_cooldown_until({ time: timeFmt.format(new Date(conn.cooldown_until)) })}</div>
-                {#if conn.failure_count != null}<div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>{/if}
-              {:else}
+                <div>{m.connection_cooldown_until({ time: humanizeCooldown(conn.cooldown_until) })}</div>
+              {/if}
+              {#if conn.failure_count != null}
+                <div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>
+              {/if}
+              {#if !conn.cooldown_until && conn.failure_count == null}
                 {m.common_none()}
               {/if}
             </td>
@@ -387,6 +423,29 @@
     font-size: 0.75rem;
     color: var(--text-3);
   }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: minmax(9rem, 0.35fr) minmax(16rem, 1fr);
+    gap: 1px;
+    margin: 1rem 0;
+    border: 1px solid var(--border);
+    background: var(--border);
+  }
+
+  .summary-grid > :global(*) {
+    min-width: 0;
+    padding: 0.875rem;
+    background: var(--bg-surface);
+  }
+
+  .concurrency-cell {
+    min-width: 10rem;
+  }
+
+  .concurrency-cell :global(.meter) {
+    gap: 0.25rem;
+  }
+
 
   .cooldown-cell {
     font-size: 0.8125rem;
@@ -407,6 +466,12 @@
   .mono {
     font-family: monospace;
     font-size: 0.8125rem;
+  }
+
+  @media (max-width: 720px) {
+    .summary-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   .field {

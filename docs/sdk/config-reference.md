@@ -184,14 +184,18 @@ Global request limits applied before routing. All fields are optional; absence m
 limits:
   max_concurrent_requests: 500
   max_body_bytes: 10485760      # 10 MiB
-  request_timeout_secs: 120
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `max_concurrent_requests` | integer | unlimited | Total concurrent requests gateway-wide; excess requests receive `429` |
 | `max_body_bytes` | integer | unlimited | Maximum request body size in bytes; larger bodies receive `413` |
-| `request_timeout_secs` | integer | unlimited | Per-request wall-clock timeout in seconds; expired requests receive `504` |
+
+Per-request timeouts are not configurable here: this gateway forwards SSE
+streams that can legitimately run for minutes, so no blanket request
+deadline is applied. The upstream client bounds only the connect phase
+(TCP + TLS + DNS) to fail fast on a dead or unreachable provider; once a
+response starts streaming, it runs to completion.
 
 ---
 
@@ -273,7 +277,6 @@ routes:
 limits:
   max_concurrent_requests: 200
   max_body_bytes: 5242880     # 5 MiB
-  request_timeout_secs: 90
 
 observe:
   otlp_endpoint: "http://localhost:4317"

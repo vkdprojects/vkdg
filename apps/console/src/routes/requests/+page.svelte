@@ -3,6 +3,7 @@
   import { api } from '$lib/api.js';
   import type { RequestStatusFilter, RequestSummary } from '$lib/api.js';
   import { Badge, Button, EmptyState, Select, Spinner } from '$lib/components/index.js';
+  import { formatNumber, formatDateTime, formatTime } from '$lib/format.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
   import { PauseIcon, PlayIcon, XIcon } from 'lucide-svelte';
@@ -35,20 +36,17 @@
     pending: m.request_status_pending,
   };
 
-  const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-  /** `in → out`; a dash when the response reported no usage (or is still streaming). */
+  /** Localized usage; each absent metric stays distinct from a reported numeric zero. */
   function fmtTokens(r: RequestSummary): string {
-    if (r.input_tokens == null && r.output_tokens == null) return '—';
     return m.request_tokens_value({
-      input: (r.input_tokens ?? 0).toLocaleString(),
-      output: (r.output_tokens ?? 0).toLocaleString(),
+      input: r.input_tokens == null ? m.request_metric_unavailable() : formatNumber(r.input_tokens),
+      output: r.output_tokens == null ? m.request_metric_unavailable() : formatNumber(r.output_tokens),
     });
   }
 
-  /** USD from microdollars; a dash when the provider lists no price (not $0). */
+  /** USD from microdollars; an explicit localized empty value when no price was reported. */
   function fmtCost(micro: number | null | undefined): string {
-    if (micro == null) return '—';
+    if (micro == null) return m.request_metric_unavailable();
     const usd = micro / 1_000_000;
     return `$${usd < 0.01 ? usd.toFixed(6) : usd.toFixed(4)}`;
   }
@@ -172,7 +170,7 @@
         <tbody>
           {#each requests as r (r.request_id)}
             <tr class="clickable" onclick={() => openDetail(r.request_id)}>
-              <td>
+              <td class="mono">
                 <!-- The button makes the row reachable by keyboard; the row click is a mouse shortcut. -->
                 <button
                   type="button"
@@ -180,14 +178,14 @@
                   aria-label={m.request_open_detail({ id: r.request_id })}
                   onclick={(e) => { e.stopPropagation(); openDetail(r.request_id); }}
                 >
-                  {timeFmt.format(new Date(r.started_at_ms))}
+                  {formatTime(r.started_at_ms)}
                 </button>
               </td>
               <td>{r.model}</td>
               <td class="mono">{r.api_type}</td>
               <td><Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} /></td>
               <td class="mono">{r.connection_id ?? m.common_none()}</td>
-              <td>{fmtDuration(r.duration_ms)}</td>
+              <td class="mono">{fmtDuration(r.duration_ms)}</td>
               <td class="mono">{fmtTokens(r)}</td>
               <td class="mono">{fmtCost(r.cost_microdollars)}</td>
             </tr>
@@ -222,8 +220,8 @@
             <dt>{m.request_api_type()}</dt><dd class="mono">{d.api_type}</dd>
             <dt>{m.request_status()}</dt><dd><Badge status={d.status} label={statusLabels[d.status]?.() ?? d.status} /></dd>
             <dt>{m.request_connection()}</dt><dd class="mono">{d.connection_id ?? m.common_none()}</dd>
-            <dt>{m.request_started()}</dt><dd>{new Date(d.started_at_ms).toLocaleString()}</dd>
-            <dt>{m.request_duration()}</dt><dd>{fmtDuration(d.duration_ms)}</dd>
+            <dt>{m.request_started()}</dt><dd class="mono">{formatDateTime(d.started_at_ms)}</dd>
+            <dt>{m.request_duration()}</dt><dd class="mono">{fmtDuration(d.duration_ms)}</dd>
             <dt>{m.request_tokens()}</dt><dd class="mono">{fmtTokens(d)}</dd>
             <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>
           </dl>

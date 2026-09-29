@@ -83,6 +83,13 @@ pub trait ProviderAdapter: Send + Sync {
         None
     }
 
+    /// Account credit / quota reporting. Return `Some(self)` when the plugin
+    /// implements [`UsageProvider`](crate::UsageProvider); `None` means the
+    /// provider exposes no usage figures.
+    fn usage(&self) -> Option<&dyn crate::UsageProvider> {
+        None
+    }
+
     /// List prices per model, specific patterns first. Empty (the default)
     /// means the provider bills some other way (subscription, free tier) and
     /// its requests have no per-token cost, shown as unknown rather than $0.

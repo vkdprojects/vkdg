@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Dialog } from 'bits-ui';
-  import { X as XIcon, ExternalLink } from 'lucide-svelte';
+  import { X as XIcon, ExternalLink, Check, AlertTriangle } from 'lucide-svelte';
   import { api } from '$lib/api.js';
   import type { Account, LoginMethod, LoginStart } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
@@ -196,7 +196,12 @@
     <Dialog.Overlay class="dialog-overlay" />
     <Dialog.Content class="dialog-content" aria-describedby={undefined}>
       <div class="dialog-header">
-        <Dialog.Title class="dialog-title">{m.acct_connect()}</Dialog.Title>
+        <div class="dialog-heading">
+          <Dialog.Title class="dialog-title">{m.acct_connect()}</Dialog.Title>
+          {#if step !== 'pick'}
+            <span class="step-tag mono">{selected}</span>
+          {/if}
+        </div>
         <button class="dialog-close" aria-label={m.acct_close()} onclick={() => (open = false)}>
           <XIcon size={16} aria-hidden="true" />
         </button>
@@ -223,6 +228,9 @@
                       onclick={() => pickMethod(mx.id)}
                       aria-pressed={methodId === mx.id}
                     >
+                      {#if methodId === mx.id}
+                        <Check class="method-check" size={14} aria-hidden="true" />
+                      {/if}
                       {#if mx.icon_char}
                         <span class="method-icon">{mx.icon_char}</span>
                       {/if}
@@ -248,6 +256,9 @@
                             value={opt}
                             bind:group={params[f.id]}
                           />
+                          {#if params[f.id] === opt}
+                            <Check class="social-check" size={12} aria-hidden="true" />
+                          {/if}
                           {opt}
                         </label>
                       {/each}
@@ -268,7 +279,6 @@
                 {/if}
               {/each}
             {/if}
-
             <div class="footer">
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
               <Button type="submit" disabled={busy || !method}>
@@ -278,10 +288,13 @@
             </div>
           </form>
         {:else if step === 'device' && flow?.flow === 'device_code'}
-          <p>{m.acct_device_step()}</p>
+          <p class="step-intro">{m.acct_device_step()}</p>
           <div class="code-box">
-            <span class="user-code">{flow.user_code}</span>
-            <CopyButton text={flow.user_code} label={m.acct_copy_code()} />
+            <span class="code-eyebrow mono">{m.acct_copy_code()}</span>
+            <div class="code-row">
+              <span class="user-code mono">{flow.user_code}</span>
+              <CopyButton text={flow.user_code} label={m.acct_copy_code()} />
+            </div>
           </div>
           <a
             class="verify-link"
@@ -296,12 +309,12 @@
             <Spinner size="sm" /> {m.acct_waiting()}
           </div>
           <!-- Countdown updates every second; keep it out of the live region to avoid chatter. -->
-          <p class="muted" aria-live="off">{m.acct_expires_in({ time: fmtTime(secondsLeft) })}</p>
+          <p class="muted mono" aria-live="off">{m.acct_expires_in({ time: fmtTime(secondsLeft) })}</p>
           <div class="footer">
             <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
           </div>
         {:else if step === 'pkce' && flow?.flow === 'authorization_code_pkce'}
-          <p>{m.acct_pkce_step()}</p>
+          <p class="step-intro">{m.acct_pkce_step()}</p>
           <a class="verify-link" href={flow.authorize_url} target="_blank" rel="noopener noreferrer">
             <ExternalLink size={14} aria-hidden="true" />
             {m.acct_open_authorize()}
@@ -320,7 +333,10 @@
             </div>
           </form>
         {:else if step === 'error'}
-          <p class="error" role="alert">{errorMsg}</p>
+          <div class="error" role="alert">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <p>{errorMsg}</p>
+          </div>
           <div class="footer">
             <Button variant="outline" onclick={() => (open = false)}>{m.acct_close()}</Button>
             <Button onclick={() => { reset(); loadMethods(selected); }}>{m.acct_retry()}</Button>
@@ -381,6 +397,22 @@
     padding: 20px 20px 0;
   }
 
+  .dialog-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .step-tag {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    text-transform: lowercase;
+  }
+
   .body {
     padding: 20px;
     display: flex;
@@ -426,19 +458,37 @@
     gap: 8px;
   }
 
+  .step-intro {
+    color: var(--text-2);
+    font-size: 0.875rem;
+    margin: 0;
+  }
+
   .code-box {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    flex-direction: column;
+    gap: 8px;
     background: var(--bg-base);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 14px 16px;
   }
 
+  .code-eyebrow {
+    color: var(--text-3);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .code-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
   .user-code {
-    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
     font-size: 1.75rem;
     font-weight: 700;
     letter-spacing: 0.12em;
@@ -464,10 +514,27 @@
   }
 
   .error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
     color: var(--danger);
+    background: var(--danger-subtle);
+    border: 1px solid color-mix(in oklch, var(--danger) 34%, transparent);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+  }
+
+  .error :global(svg) {
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+  }
+
+  .error p {
     font-size: 0.875rem;
     margin: 0;
+    color: var(--text-1);
   }
+
 
   .method-grid {
     display: grid;
@@ -476,6 +543,7 @@
   }
 
   .method-card {
+    position: relative;
     align-items: flex-start;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -494,10 +562,19 @@
     border-color: var(--accent);
   }
 
+
   .method-card.selected {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    background: var(--accent-subtle);
   }
+
+  :global(.method-check) {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    color: var(--accent);
+  }
+
 
   .method-icon {
     font-size: 1.25rem;
@@ -560,7 +637,11 @@
 
   .social-opt.checked {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent);
+    background: var(--accent-subtle);
     color: var(--text-1);
+  }
+
+  :global(.social-check) {
+    color: var(--accent);
   }
 </style>

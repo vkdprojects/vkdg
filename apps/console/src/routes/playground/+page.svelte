@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { ConnectionSummary } from '$lib/api.js';
-  import { Button, EmptyState, Spinner } from '$lib/components/index.js';
+  import { Button, Card, EmptyState, Input, Select, Spinner, Stat } from '$lib/components/index.js';
+  import { m } from '$lib/paraglide/messages.js';
   import { SendHorizonal, ChevronDown, ChevronUp } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
@@ -27,6 +28,10 @@
   let duration = $state<number | null>(null);
   let tokenCount = $state<number | null>(null);
   let hasResult = $state(false);
+
+  const connectionOptions = $derived(
+    connections.map((conn) => ({ value: conn.id, label: `${conn.id} (${conn.provider})` })),
+  );
 
   onMount(async () => {
     try {
@@ -119,158 +124,170 @@
 </script>
 
 <div class="page playground">
-  <h1>Playground</h1>
+  <div class="page-header">
+    <h1 class="page-title">{m.playground_heading()}</h1>
+  </div>
 
   <div class="panels">
     <!-- Left: controls -->
-    <aside class="controls">
-      <div class="field-group">
-        <label for="api-key">API Key</label>
-        <input
+    <Card padding="1.25rem">
+      <aside class="controls">
+        <Input
           id="api-key"
           type="password"
+          label={m.playground_api_key()}
           bind:value={apiKey}
           placeholder="vkdg_…"
           autocomplete="off"
         />
-        <p class="hint">Your VKDG API key. Leave blank if the gateway allows unauthenticated access.</p>
-      </div>
+        <p class="hint">{m.playground_api_key_hint()}</p>
 
-      <div class="field-group">
-        <label for="connection">Connection <span class="optional">optional</span></label>
-        {#if loadingConnections}
-          <p class="hint"><Spinner size="sm" /> Loading…</p>
-        {:else if connections.length === 0}
-          <p class="hint">No connections configured.</p>
-        {:else}
-          <select id="connection" bind:value={selectedConnection}>
-            {#each connections as conn (conn.id)}
-              <option value={conn.id}>{conn.id} ({conn.provider})</option>
-            {/each}
-          </select>
-        {/if}
-      </div>
-
-      <div class="field-group">
-        <label for="model">Model <span class="optional">optional</span></label>
-        <input id="model" type="text" bind:value={model} placeholder="e.g. claude-3-5-sonnet-20241022" />
-      </div>
-
-      <!-- Collapsible system prompt -->
-      <div class="field-group">
-        <button
-          type="button"
-          class="collapse-toggle"
-          onclick={() => (systemOpen = !systemOpen)}
-          aria-expanded={systemOpen}
-        >
-          System prompt
-          {#if systemOpen}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
-        </button>
-        {#if systemOpen}
-          <textarea
-            id="system-prompt"
-            bind:value={systemPrompt}
-            rows={4}
-            placeholder="You are a helpful assistant."
-            aria-label="System prompt"
-          ></textarea>
-        {/if}
-      </div>
-
-      <div class="field-group">
-        <label for="user-message">User message</label>
-        <textarea
-          id="user-message"
-          bind:value={userMessage}
-          rows={6}
-          placeholder="Say something…"
-          required
-        ></textarea>
-      </div>
-
-      <div class="field-group">
-        <label for="temperature">
-          Temperature
-          <span class="value-badge">{temperature.toFixed(1)}</span>
-        </label>
-        <input
-          id="temperature"
-          type="range"
-          min="0"
-          max="1"
-          step="0.1"
-          bind:value={temperature}
-        />
-        <div class="range-labels">
-          <span>0.0</span><span>1.0</span>
+        <div class="field-group">
+          <span class="field-label">{m.playground_connection()} <span class="optional">optional</span></span>
+          {#if loadingConnections}
+            <p class="hint"><Spinner size="sm" /> {m.common_loading()}</p>
+          {:else if connections.length === 0}
+            <p class="hint">{m.connection_empty()}</p>
+          {:else}
+            <Select id="connection" options={connectionOptions} bind:value={selectedConnection} />
+          {/if}
         </div>
-      </div>
 
-      <div class="field-group toggle-row">
-        <span class="toggle-label">Streaming</span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={useStreaming}
-          aria-label="Streaming"
-          class="switch"
-          class:on={useStreaming}
-          onclick={() => (useStreaming = !useStreaming)}
+        <Input
+          id="model"
+          type="text"
+          label={`${m.playground_model_label()} (optional)`}
+          bind:value={model}
+          placeholder="e.g. claude-3-5-sonnet-20241022"
+        />
+
+        <!-- Collapsible system prompt -->
+        <div class="field-group">
+          <button
+            type="button"
+            class="collapse-toggle"
+            onclick={() => (systemOpen = !systemOpen)}
+            aria-expanded={systemOpen}
+          >
+            {m.playground_system_prompt()}
+            {#if systemOpen}<ChevronUp size={14} />{:else}<ChevronDown size={14} />{/if}
+          </button>
+          {#if systemOpen}
+            <textarea
+              id="system-prompt"
+              bind:value={systemPrompt}
+              rows={4}
+              placeholder="You are a helpful assistant."
+              aria-label={m.playground_system_prompt()}
+            ></textarea>
+          {/if}
+        </div>
+
+        <div class="field-group">
+          <label for="user-message">{m.playground_message_label()}</label>
+          <textarea
+            id="user-message"
+            class="mono"
+            bind:value={userMessage}
+            rows={6}
+            placeholder="Say something…"
+            required
+          ></textarea>
+        </div>
+
+        <div class="field-group">
+          <label for="temperature">
+            {m.playground_temperature()}
+            <span class="value-badge mono">{temperature.toFixed(1)}</span>
+          </label>
+          <input
+            id="temperature"
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            bind:value={temperature}
+          />
+          <div class="range-labels mono">
+            <span>0.0</span><span>1.0</span>
+          </div>
+        </div>
+
+        <div class="field-group toggle-row">
+          <span class="toggle-label">{m.playground_streaming()}</span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={useStreaming}
+            aria-label={m.playground_streaming()}
+            class="switch"
+            class:on={useStreaming}
+            onclick={() => (useStreaming = !useStreaming)}
+          >
+            <span class="thumb"></span>
+          </button>
+        </div>
+
+        <Button
+          variant="primary"
+          size="lg"
+          disabled={sending || !userMessage.trim()}
+          onclick={send}
         >
-          <span class="thumb"></span>
-        </button>
-      </div>
-
-      <Button
-        variant="primary"
-        size="lg"
-        disabled={sending || !userMessage.trim()}
-        onclick={send}
-      >
-        {#if sending}<Spinner size="sm" />{/if}
-        Send
-        {#if !sending}<SendHorizonal size={14} />{/if}
-      </Button>
-    </aside>
+          {#if sending}<Spinner size="sm" />{/if}
+          {m.playground_send()}
+          {#if !sending}<SendHorizonal size={14} aria-hidden="true" />{/if}
+        </Button>
+      </aside>
+    </Card>
 
     <!-- Right: response -->
-    <section class="output" class:has-error={!!error}>
-      {#if !hasResult && !sending && !error}
-        <EmptyState
-          title="No response yet"
-          description="Fill in a message and click Send to test your gateway."
-        />
-      {:else if error}
-        <div class="error-box">
-          <p class="error-label">Error</p>
-          <pre class="error-body">{error}</pre>
-        </div>
-      {:else}
-        {#if sending && !response}
-          <div class="loading-hint"><Spinner size="sm" /> Waiting for response…</div>
+    <Card padding="1.25rem">
+      <section class="output" class:has-error={!!error}>
+        {#if !hasResult && !sending && !error}
+          <EmptyState
+            title={m.playground_empty_title()}
+            description={m.playground_empty()}
+          />
+        {:else if error}
+          <div class="error-box">
+            <p class="error-label">{m.common_error()}</p>
+            <pre class="error-body mono">{error}</pre>
+          </div>
         {:else}
-          <pre class="response-text">{response}<span class="cursor" class:visible={sending}>▌</span></pre>
-        {/if}
+          {#if sending && !response}
+            <div class="loading-hint"><Spinner size="sm" /> {m.playground_waiting()}</div>
+          {:else}
+            <pre class="response-text mono">{response}<span class="cursor" class:visible={sending}>▌</span></pre>
+          {/if}
 
-        <div class="meta-row">
-          {#if ttft !== null}
-            <span class="meta-chip">TTFT {ttft}ms</span>
-          {/if}
-          {#if duration !== null}
-            <span class="meta-chip">Total {duration}ms</span>
-          {/if}
-          {#if tokenCount !== null}
-            <span class="meta-chip">{tokenCount} tokens</span>
-          {/if}
-        </div>
-      {/if}
-    </section>
+          <div class="meta-row">
+            {#if ttft !== null}
+              <Stat label={m.playground_ttft()} value={ttft} unit="ms" />
+            {/if}
+            {#if duration !== null}
+              <Stat label={m.playground_total()} value={duration} unit="ms" />
+            {/if}
+            {#if tokenCount !== null}
+              <Stat label={m.playground_tokens()} value={tokenCount} />
+            {/if}
+          </div>
+        {/if}
+      </section>
+    </Card>
   </div>
 </div>
 
 <style>
-  .playground { max-width: 1200px; }
+
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+  }
+
+  .page-title { margin: 0; }
 
   .panels {
     display: flex;
@@ -279,20 +296,23 @@
   }
 
   .controls {
-    width: 40%;
-    flex-shrink: 0;
+    width: 100%;
     display: flex;
     flex-direction: column;
     gap: 16px;
   }
 
-  .output {
+  :global(.panels > :first-child) {
+    width: 40%;
+    flex-shrink: 0;
+  }
+
+  :global(.panels > :last-child) {
     flex: 1;
+  }
+
+  .output {
     min-height: 480px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 20px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -300,7 +320,10 @@
   }
 
   .output.has-error {
-    border-color: var(--danger);
+    margin: -1px;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    padding: calc(1.25rem - 1px);
   }
 
   .field-group {
@@ -324,15 +347,13 @@
     font-size: 0.75rem;
   }
 
+  .field-group .field-label,
   .field-group label {
     font-size: 0.8125rem;
     font-weight: 500;
     color: var(--text-2);
   }
 
-  .field-group input[type="text"],
-  .field-group input[type="password"],
-  .field-group select,
   .field-group textarea {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -347,14 +368,11 @@
     resize: vertical;
   }
 
-  .field-group input:focus,
-  .field-group select:focus,
   .field-group textarea:focus {
     border-color: var(--accent);
     outline: none;
   }
 
-  .field-group input::placeholder,
   .field-group textarea::placeholder {
     color: var(--text-3);
   }
@@ -437,11 +455,10 @@
     flex: 1;
     white-space: pre-wrap;
     word-break: break-word;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     color: var(--text-1);
     margin: 0;
     line-height: 1.6;
-    font-family: inherit;
   }
 
   .cursor { opacity: 0; }
@@ -461,20 +478,11 @@
 
   .meta-row {
     display: flex;
-    gap: 8px;
+    gap: 24px;
     flex-wrap: wrap;
     border-top: 1px solid var(--border);
-    padding-top: 10px;
+    padding-top: 12px;
     margin-top: auto;
-  }
-
-  .meta-chip {
-    font-size: 0.75rem;
-    color: var(--text-3);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 2px 8px;
   }
 
   .error-box {

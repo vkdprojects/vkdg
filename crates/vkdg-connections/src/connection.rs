@@ -139,8 +139,26 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
+    /// True when the connection can currently be selected.
+    ///
+    /// `Cooldown` and `CircuitOpen` carry an `until` deadline rather than a
+    /// standing flag: once the deadline has passed the connection is
+    /// eligible again even if nothing has yet written `Healthy` back into
+    /// `self`. The write-back (`Connection::check_cooldown`) only runs after
+    /// a request is actually dispatched to the connection, which can never
+    /// happen while a naive discriminant match keeps excluding it — that
+    /// deadlock is what let all three production connections stay stuck in
+    /// `Cooldown` long after `until` had elapsed. Comparing the clock here,
+    /// at the read used for selection, makes recovery self-healing without
+    /// taking a writer lock on the hot path.
     pub fn is_healthy(&self) -> bool {
-        matches!(self, ConnectionState::Healthy)
+        match self {
+            ConnectionState::Healthy => true,
+            ConnectionState::Degraded { .. } => false,
+            ConnectionState::CircuitOpen { until } | ConnectionState::Cooldown { until, .. } => {
+                chrono::Utc::now() >= *until
+            }
+        }
     }
 }
 
@@ -346,6 +364,51 @@ mod tests {
         assert!(
             eligible.is_empty(),
             "connection in cooldown must not be eligible for routing"
+        );
+    }
+
+    // Plausible wrong impl: eligibility reads a cached Healthy/Cooldown
+    // discriminant that is only updated by an explicit check_cooldown() call
+    // (itself only invoked after a successful dispatch to that very
+    // connection) instead of comparing `until` against the clock at
+    // selection time. Reproduces production: a connection whose cooldown
+    // has expired must become selectable again with no intervening write.
+    #[test]
+    fn connection_with_expired_cooldown_is_eligible_without_explicit_recovery() {
+        use crate::catalog::ConnectionCatalog;
+
+        let conn_id = ConnectionId("c".into());
+        let config = ConnectionConfig {
+            id: conn_id.clone(),
+            provider: ProviderKind::Anthropic,
+            auth: AuthKind::ApiKey {
+                env_var: "K".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: vkdg_core::CapabilitySet::default(),
+        };
+        let catalog = ConnectionCatalog::new(vec![config]);
+        // Set the connection into an already-expired cooldown, as would be
+        // observed long after `record_upstream_error` fired and nothing has
+        // dispatched to this connection since (it was excluded from every
+        // selection while unhealthy, so check_cooldown() never ran).
+        {
+            let conn_arc = catalog.get(&conn_id).unwrap();
+            let mut conn = conn_arc.try_write().unwrap();
+            conn.state = ConnectionState::Cooldown {
+                until: chrono::Utc::now() - chrono::Duration::seconds(1),
+                failure_count: 1,
+            };
+        }
+        let eligible = catalog.eligible("claude-3-5-haiku-20241022", &[]);
+        assert!(
+            eligible.contains(&conn_id),
+            "connection whose cooldown has already expired must be eligible \
+             for routing without a prior explicit recovery call"
         );
     }
 }

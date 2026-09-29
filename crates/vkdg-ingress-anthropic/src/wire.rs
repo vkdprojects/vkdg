@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct AnthropicRequest {
     pub(crate) model: String,
     pub(crate) messages: Vec<AnthropicMessage>,
-    pub(crate) system: Option<String>,
+    /// String, or an array of text blocks (the form Claude Code sends).
+    pub(crate) system: Option<AnthropicContent>,
     pub(crate) max_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: Option<bool>,

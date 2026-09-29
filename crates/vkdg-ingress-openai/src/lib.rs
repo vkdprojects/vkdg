@@ -66,6 +66,8 @@ pub fn vkdg_error_to_oai_response(err: &VkdgError) -> Response {
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        // OpenAI has no dedicated type; the 413 status carries the meaning.
+        VkdgError::BodyTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "invalid_request_error"),
         // Stored login is dead; the client request is fine.
         VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
         VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
@@ -95,14 +97,10 @@ pub fn vkdg_error_to_oai_response(err: &VkdgError) -> Response {
 pub async fn handle_chat_completions(State(state): State<AppState>, req: Request) -> Response {
     // 1. Split request to access headers and body separately.
     let (parts, body) = req.into_parts();
-    let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
+    let limit = state.front_door.server_config.max_body_bytes;
+    let bytes: Bytes = match vkdg_http::read_body(body, limit).await {
         Ok(b) => b,
-        Err(_) => {
-            return vkdg_error_to_oai_response(&VkdgError::ConfigInvalid {
-                field: "body".into(),
-                message: "body too large or unreadable".into(),
-            });
-        }
+        Err(e) => return vkdg_error_to_oai_response(&e),
     };
 
     // 2. Decode OpenAI JSON → (model, Operation).
@@ -163,14 +161,10 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
 pub async fn handle_image_generations(State(state): State<AppState>, req: Request) -> Response {
     // 1. Split request to access headers and body separately.
     let (parts, body) = req.into_parts();
-    let bytes: Bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
+    let limit = state.front_door.server_config.max_body_bytes;
+    let bytes: Bytes = match vkdg_http::read_body(body, limit).await {
         Ok(b) => b,
-        Err(_) => {
-            return vkdg_error_to_oai_response(&VkdgError::ConfigInvalid {
-                field: "body".into(),
-                message: "body too large or unreadable".into(),
-            });
-        }
+        Err(e) => return vkdg_error_to_oai_response(&e),
     };
 
     // 2. Decode OpenAI Images JSON → (model, Operation::ImageGenerate).

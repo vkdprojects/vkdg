@@ -27,12 +27,11 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
     // Split request into parts so we can read headers before consuming the body.
     let (parts, body) = req.into_parts();
 
-    // 1. Read body (4 MB hard limit — same as ServerConfig::default).
-    let Ok(bytes) = axum::body::to_bytes(body, 4 * 1024 * 1024).await else {
-        return vkdg_error_to_anthropic_response(&VkdgError::ConfigInvalid {
-            field: "body".into(),
-            message: "body too large or unreadable".into(),
-        });
+    // 1. Read body, capped at `limits.max_body_bytes`.
+    let limit = state.front_door.server_config.max_body_bytes;
+    let bytes = match vkdg_http::read_body(body, limit).await {
+        Ok(b) => b,
+        Err(e) => return vkdg_error_to_anthropic_response(&e),
     };
 
     // 2. Decode Anthropic JSON → (model, Operation).

@@ -68,6 +68,7 @@ pub(super) fn error_response(err: &VkdgError) -> Response {
         }
         VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
+        VkdgError::BodyTooLarge { .. } => (StatusCode::PAYLOAD_TOO_LARGE, "request_too_large"),
         // The gateway's stored login for this connection is dead; the client's
         // request is fine. Anthropic's `authentication_error` is the closest fit.
         VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),

@@ -33,11 +33,11 @@ anyhow      = { workspace = true }
 reqwest         = { workspace = true }
 parking_lot = { workspace = true }
 chrono      = { workspace = true }
+http-body-util = { workspace = true }
 
 [dev-dependencies]
 tower       = { workspace = true }
 hyper-util  = { workspace = true }
-http-body-util = { workspace = true }
 tokio-stream = { version = "0.1", default-features = false }
 
 [lib]

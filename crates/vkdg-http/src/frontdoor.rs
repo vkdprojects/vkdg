@@ -4,7 +4,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use vkdg_core::net::IpNet;
-use vkdg_core::{ApiType, RequestEnvelope, RequestId};
+use vkdg_core::{ApiType, RequestEnvelope, RequestId, VkdgError};
 
 use crate::admission::AdmissionGuard;
 
@@ -19,9 +19,30 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: "0.0.0.0:8080".to_string(),
-            max_body_bytes: 4 * 1024 * 1024, // 4 MB
+            // Anthropic's own Messages limit. Coding agents send long histories
+            // and screenshots; 4 MiB rejected ordinary sessions.
+            max_body_bytes: 32 * 1024 * 1024,
             max_concurrent_requests: 1000,
         }
+    }
+}
+
+/// Read a request body, capped at `limit` bytes.
+///
+/// Over the cap is [`VkdgError::BodyTooLarge`] (413), so a client can tell
+/// "too big" from "malformed"; any other read failure is `ConfigInvalid` (400).
+pub async fn read_body(body: axum::body::Body, limit: u64) -> Result<bytes::Bytes, VkdgError> {
+    use http_body_util::BodyExt;
+    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+    match http_body_util::Limited::new(body, cap).collect().await {
+        Ok(collected) => Ok(collected.to_bytes()),
+        Err(e) if e.is::<http_body_util::LengthLimitError>() => {
+            Err(VkdgError::BodyTooLarge { limit_bytes: limit })
+        }
+        Err(e) => Err(VkdgError::ConfigInvalid {
+            field: "body".into(),
+            message: format!("unreadable body: {e}"),
+        }),
     }
 }
 

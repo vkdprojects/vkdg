@@ -356,7 +356,7 @@ async fn serve(
         ..Default::default()
     });
 
-    let server_config = ServerConfig {
+    let mut server_config = ServerConfig {
         listen_addr: listen.clone(),
         ..Default::default()
     };
@@ -397,6 +397,10 @@ async fn serve(
         match load_and_validate(path, 1) {
             Ok(snap) => {
                 tracing::info!(path = %path, version = snap.version, "loaded config from file");
+                // Read once at startup: the body cap sizes the listener, not a route.
+                if let Some(limit) = snap.limits.max_body_bytes {
+                    server_config.max_body_bytes = limit;
+                }
                 let mut pipeline = build_pipeline_from_snapshot(
                     &snap,
                     max_concurrent,

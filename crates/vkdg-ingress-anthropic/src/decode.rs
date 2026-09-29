@@ -62,7 +62,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         max_tokens: req.max_tokens,
         temperature: req.temperature,
         stream: req.stream.unwrap_or(false),
-        system: req.system,
+        system: req.system.map(system_text),
         required_capabilities: CapabilitySet::default(),
         thinking: req.thinking.filter(|t| t.kind != "disabled").map(|t| {
             vkdg_operations::ThinkingRequest {
@@ -74,6 +74,20 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
 
     Ok((req.model, operation))
 }
+/// Flatten `system` to text. Block arrays keep their order, joined by a blank
+/// line; non-text blocks carry no system text and are skipped.
+fn system_text(system: AnthropicContent) -> String {
+    match system {
+        AnthropicContent::Text(s) => s,
+        AnthropicContent::Blocks(blocks) => blocks
+            .into_iter()
+            .filter(|b| b.type_ == "text")
+            .filter_map(|b| b.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
+}
+
 /// Convert an Anthropic wire block into a [`ContentBlock`].
 /// Returns `None` for unrecognised block types.
 fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
@@ -135,12 +149,12 @@ mod tests {
         r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}"#
     }
 
-    async fn call_handler(state: AppState, body: &'static str) -> Response {
+    async fn call_handler(state: AppState, body: impl Into<axum::body::Body>) -> Response {
         let mut req = Request::builder()
             .method(Method::POST)
             .uri("/v1/messages")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(body))
+            .body(body.into())
             .unwrap();
         // What `vkdg_http::require_api_key` attaches for an authenticated caller.
         req.extensions_mut().insert(vkdg_http::ClientIdentity {
@@ -191,5 +205,58 @@ mod tests {
         let body = valid_body().as_bytes();
         let (model, _op) = decode_request(body).unwrap();
         assert_eq!(model, "claude-3-5-sonnet-20241022");
+    }
+
+    // Plausible wrong impl: `system` typed as a string rejects the block-array
+    // form Claude Code sends (400), or joins blocks out of order / drops one.
+    #[test]
+    fn system_block_array_is_accepted_in_order() {
+        let body = br#"{"model":"m","max_tokens":8,
+            "system":[{"type":"text","text":"You are Claude Code."},
+                      {"type":"text","text":"Project rules.","cache_control":{"type":"ephemeral"}}],
+            "messages":[{"role":"user","content":"hi"}]}"#;
+        let (_, op) = decode_request(body).expect("block-array system must decode");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        assert_eq!(
+            req.system.as_deref(),
+            Some("You are Claude Code.\n\nProject rules.")
+        );
+    }
+
+    /// `valid_body()` padded with whitespace to exactly `len` bytes.
+    fn padded_body(len: usize) -> Vec<u8> {
+        let mut b = valid_body().as_bytes().to_vec();
+        b.resize(len, b' ');
+        b
+    }
+
+    // Plausible wrong impl: oversize body mapped to a generic 400
+    // invalid_request_error, so clients can't tell "too big" from "malformed".
+    #[tokio::test]
+    async fn body_over_configured_limit_returns_413() {
+        let state = AppState::new(ServerConfig {
+            max_body_bytes: 256,
+            ..ServerConfig::default()
+        });
+        let resp = call_handler(state, padded_body(257)).await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["type"], "request_too_large");
+    }
+
+    // Plausible wrong impl: limit still hardcoded at 4 MiB, ignoring
+    // ServerConfig. A 5 MiB body under an 8 MiB limit must reach the pipeline
+    // (501 here, since pipeline=None), not be rejected as too large.
+    #[tokio::test]
+    async fn body_under_raised_limit_is_accepted() {
+        let state = AppState::new(ServerConfig {
+            max_body_bytes: 8 * 1024 * 1024,
+            ..ServerConfig::default()
+        });
+        let resp = call_handler(state, padded_body(5 * 1024 * 1024)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
     }
 }

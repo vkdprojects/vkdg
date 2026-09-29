@@ -5,7 +5,7 @@
   import { api } from '$lib/api.js';
   import type { Account } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Button, EmptyState, Spinner } from '$lib/components/index.js';
+  import { Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
   import ConnectAccountModal from './ConnectAccountModal.svelte';
 
   let accounts = $state<Account[]>([]);
@@ -16,14 +16,21 @@
   let pendingDelete = $state<Account | null>(null);
   let deleting = $state(false);
 
-  function formatDate(iso: string): string {
-    return new Intl.DateTimeFormat(undefined, {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(new Date(iso));
+  function formatExpiry(iso: string): string {
+    const date = new Date(iso);
+    const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+    const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+    if (Math.abs(seconds) < 60) return relative.format(seconds, 'second');
+    const minutes = Math.round(seconds / 60);
+    if (Math.abs(minutes) < 60) return relative.format(minutes, 'minute');
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 24) return relative.format(hours, 'hour');
+    const days = Math.round(hours / 24);
+    if (Math.abs(days) < 30) return relative.format(days, 'day');
+    const months = Math.round(days / 30);
+    if (Math.abs(months) < 12) return relative.format(months, 'month');
+    return relative.format(Math.round(months / 12), 'year');
   }
 
   async function refresh() {
@@ -77,51 +84,58 @@
   {:else if accounts.length === 0}
     <EmptyState title={m.acct_empty()} description={m.acct_empty_desc()} />
   {:else}
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">{m.acct_provider()}</th>
-          <th scope="col">{m.acct_label()}</th>
-          <th scope="col">{m.acct_expires()}</th>
-          <th scope="col">{m.acct_status()}</th>
-          <th scope="col"><span class="sr-only">{m.common_actions()}</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each accounts as a (a.id)}
-          <tr>
-            <td><code>{a.provider}</code></td>
-            <td class="label-cell">{a.label}</td>
-            <td class="date-cell">{a.expires_at ? formatDate(a.expires_at) : m.acct_never()}</td>
-            <td>
-              <!-- Text, not color alone, carries the state. -->
-              {#if a.status === 'needs_login'}
-                <span class="badge warn">{m.acct_status_needs_login()}</span>
-                {#if a.revoked_reason}
-                  <p class="reason">{a.revoked_reason}</p>
-                {/if}
-              {:else}
-                <span class="badge ok">{m.acct_status_active()}</span>
+    <div class="account-grid">
+      {#each accounts as account (account.id)}
+        <Card padding="0">
+          <article class="account-card">
+            <header class="account-header">
+              <div class="account-identity">
+                <span class="provider mono">{account.provider}</span>
+                <h2>{account.label}</h2>
+              </div>
+              <div class="account-status">
+                <StatusDot status={account.status === 'active' ? 'healthy' : 'degraded'} />
+                <Badge
+                  status={account.status === 'active' ? 'healthy' : 'degraded'}
+                  label={account.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()}
+                />
+              </div>
+            </header>
+
+            <div class="account-details">
+              <div class="detail">
+                <span class="detail-label">{m.acct_expires()}</span>
+                <span class="detail-value mono" title={account.expires_at ?? undefined}>
+                  {account.expires_at ? formatExpiry(account.expires_at) : m.acct_never()}
+                </span>
+              </div>
+              {#if account.has_refresh_token}
+                <Badge status="cancelled" label={m.acct_refresh_token()} />
               {/if}
-            </td>
-            <td class="action-cell">
+            </div>
+
+            {#if account.revoked_reason}
+              <p class="reason">{account.revoked_reason}</p>
+            {/if}
+
+            <footer class="account-actions">
               <Button
-                variant={a.status === 'needs_login' ? 'primary' : 'outline'}
+                variant={account.status === 'needs_login' ? 'primary' : 'outline'}
                 size="sm"
-                onclick={() => connect(a.provider, a.id)}
-                ariaLabel={`${m.acct_reauth()} ${a.label}`}
+                onclick={() => connect(account.provider, account.id)}
+                ariaLabel={`${m.acct_reauth()} ${account.label}`}
               >{m.acct_reauth()}</Button>
               <Button
                 variant="danger"
                 size="sm"
-                onclick={() => (pendingDelete = a)}
-                ariaLabel={`${m.acct_delete()} ${a.label}`}
+                onclick={() => (pendingDelete = account)}
+                ariaLabel={`${m.acct_delete()} ${account.label}`}
               >{m.acct_delete()}</Button>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+            </footer>
+          </article>
+        </Card>
+      {/each}
+    </div>
   {/if}
 </div>
 
@@ -168,58 +182,90 @@
     padding: 16px 0;
   }
 
-  .label-cell {
-    font-weight: 500;
+  .account-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+    gap: 12px;
+  }
+
+  .account-card {
+    min-height: 100%;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .account-header,
+  .account-details,
+  .account-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .account-identity {
+    min-width: 0;
+  }
+
+  .account-identity h2 {
+    margin: 3px 0 0;
     color: var(--text-1);
-  }
-
-  .date-cell {
-    font-size: 0.8125rem;
-    white-space: nowrap;
-  }
-
-  .action-cell {
-    text-align: right;
-    white-space: nowrap;
-  }
-
-  .action-cell :global(.btn + .btn) {
-    margin-left: 6px;
-  }
-
-  .badge {
-    display: inline-flex;
-    padding: 2px 8px;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-  }
-
-  .badge.ok {
-    background: color-mix(in oklch, var(--success) 15%, transparent);
-    color: var(--success);
-  }
-
-  .badge.warn {
-    background: color-mix(in oklch, var(--warning) 15%, transparent);
-    color: var(--warning);
-  }
-
-  .reason {
-    margin: 4px 0 0;
-    font-size: 0.75rem;
-    color: var(--text-3);
-    max-width: 280px;
+    font-size: 0.9375rem;
+    line-height: 1.25;
     overflow-wrap: anywhere;
   }
 
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
+  .provider,
+  .detail-label {
+    color: var(--text-3);
+    font-size: var(--text-2xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .account-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+  }
+
+  .account-details {
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .detail {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .detail-value {
+    color: var(--text-2);
+    font-size: 0.8125rem;
+  }
+
+  .reason {
+    margin: -0.25rem 0 0;
+    padding: 0.625rem 0.75rem;
+    border-left: 2px solid var(--warning);
+    background: color-mix(in oklch, var(--warning) 7%, transparent);
+    color: var(--text-2);
+    font-size: 0.75rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  .account-actions {
+    justify-content: flex-end;
+    margin-top: auto;
+  }
+
+  .account-actions :global(.btn + .btn) {
+    margin-left: 0;
   }
 
   .confirm {

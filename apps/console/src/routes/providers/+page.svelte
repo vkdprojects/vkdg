@@ -2,20 +2,57 @@
   import { onMount } from 'svelte';
   import { ExternalLink } from 'lucide-svelte';
   import { api } from '$lib/api.js';
-  import type { Account, OAuthProvider } from '$lib/api.js';
+  import type { Account, ConnectionStatus, ConnectionSummary, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { EmptyState, Spinner } from '$lib/components/index.js';
+  import { EmptyState, Meter, Spinner, Stat, StatusDot } from '$lib/components/index.js';
 
   type Filter = 'all' | 'oauth_ide' | 'llm_api' | 'compatible';
 
   let providers = $state<OAuthProvider[]>([]);
   let accounts = $state<Account[]>([]);
+  let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
   let filter = $state<Filter>('all');
 
   const filtered = $derived(
     filter === 'all' ? providers : providers.filter((p) => p.category === filter)
   );
+  const connectionsByProvider = $derived.by(() => {
+    const grouped = new Map<string, ConnectionSummary[]>();
+    for (const connection of connections) {
+      const group = grouped.get(connection.provider);
+      if (group) group.push(connection);
+      else grouped.set(connection.provider, [connection]);
+    }
+    return grouped;
+  });
+
+  const statusLabels: Record<ConnectionStatus, () => string> = {
+    healthy: m.connection_status_healthy,
+    degraded: m.connection_status_degraded,
+    circuit_open: m.connection_status_circuit_open,
+    cooldown: m.connection_status_cooldown,
+    unknown: m.connection_status_unknown,
+  };
+
+  const relativeTimeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+  function humanizeCooldown(value: string) {
+    const timestamp = new Date(value).getTime();
+    if (!Number.isFinite(timestamp)) return m.common_none();
+
+    const seconds = Math.round((timestamp - Date.now()) / 1000);
+    if (Math.abs(seconds) < 60) return relativeTimeFmt.format(seconds, 'second');
+    const minutes = Math.round(seconds / 60);
+    if (Math.abs(minutes) < 60) return relativeTimeFmt.format(minutes, 'minute');
+    const hours = Math.round(minutes / 60);
+    if (Math.abs(hours) < 24) return relativeTimeFmt.format(hours, 'hour');
+    return relativeTimeFmt.format(Math.round(hours / 24), 'day');
+  }
+  function connectionsFor(id: string) {
+    return connectionsByProvider.get(id) ?? [];
+  }
+
 
   /** How many active accounts each provider has */
   function countFor(id: string) {
@@ -29,9 +66,14 @@
 
   onMount(async () => {
     try {
-      const [pRes, aRes] = await Promise.all([api.oauthProviders(), api.listAccounts()]);
+      const [pRes, aRes, cRes] = await Promise.all([
+        api.oauthProviders(),
+        api.listAccounts(),
+        api.listConnections(),
+      ]);
       providers = pRes.items;
       accounts = aRes.items;
+      connections = cRes.items;
     } finally {
       loading = false;
     }
@@ -68,7 +110,8 @@
   {:else}
     <div class="grid">
       {#each filtered as p (p.id)}
-        <a class="card" href="/providers/{encodeURIComponent(p.id)}" aria-label={p.display_name}>
+        <article class="card">
+          <a class="card-link" href="/providers/{encodeURIComponent(p.id)}" aria-label={p.display_name}></a>
           <div class="card-head">
             <span class="icon" style:background={p.icon_color}>{p.icon_char}</span>
             <div class="card-name">
@@ -91,6 +134,42 @@
           {#if p.description}
             <p class="desc">{p.description}</p>
           {/if}
+          {#if connectionsFor(p.id).length > 0}
+            <div class="connection-summary">
+              <Stat
+                label={m.connection_active_requests()}
+                value={connectionsFor(p.id).reduce((sum, connection) => sum + connection.active_requests, 0)}
+                unit={`/ ${connectionsFor(p.id).reduce((sum, connection) => sum + connection.max_concurrent, 0)}`}
+              />
+              {#each connectionsFor(p.id) as connection (connection.id)}
+                <div class="connection-row">
+                  <div class="connection-head">
+                    <span class="connection-name">
+                      <StatusDot status={connection.status} size={7} />
+                      <span class="connection-id">{connection.id}</span>
+                    </span>
+                    <span class="connection-status">{(statusLabels[connection.status] ?? m.connection_status_unknown)()}</span>
+                  </div>
+                  <Meter
+                    value={connection.active_requests}
+                    limit={connection.max_concurrent}
+                    valueText={`${connection.active_requests} / ${connection.max_concurrent}`}
+                  />
+                  {#if connection.cooldown_until || connection.failure_count != null}
+                    <div class="connection-detail">
+                      {#if connection.cooldown_until}
+                        <span>{m.connection_cooldown_until({ time: humanizeCooldown(connection.cooldown_until) })}</span>
+                      {/if}
+                      {#if connection.failure_count != null}
+                        <span>{m.connection_failures({ n: connection.failure_count })}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+
 
           <div class="card-foot">
             {#if countFor(p.id) > 0}
@@ -103,7 +182,7 @@
               <span class="pill warn" aria-label="Authentication issue">{m.acct_status_needs_login()}</span>
             {/if}
           </div>
-        </a>
+        </article>
       {/each}
     </div>
   {/if}
@@ -163,6 +242,7 @@
   }
 
   .card {
+    position: relative;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -173,6 +253,22 @@
     text-decoration: none;
     transition: border-color 0.12s, box-shadow 0.12s;
   }
+  .card-link {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+
+  .card-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .site-link {
+    position: relative;
+    z-index: 1;
+  }
+
 
   .card:hover {
     border-color: var(--accent);
@@ -231,8 +327,65 @@
     margin: 0;
     overflow: hidden;
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
+  }
+  .connection-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .connection-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .connection-head,
+  .connection-name,
+  .connection-detail {
+    display: flex;
+    align-items: center;
+  }
+
+  .connection-head {
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .connection-name {
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .connection-id,
+  .connection-status,
+  .connection-detail {
+    font-size: 0.6875rem;
+  }
+
+  .connection-id {
+    overflow: hidden;
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .connection-status {
+    flex-shrink: 0;
+    color: var(--text-3);
+  }
+
+  .connection-detail {
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+    color: var(--text-3);
+    font-family: var(--font-mono);
   }
 
   .card-foot {

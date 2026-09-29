@@ -264,5 +264,8 @@
   "provider_detail_accounts": "Contas",
   "provider_detail_no_accounts": "Nenhuma conta conectada neste provider.",
   "provider_detail_connect": "Conectar conta",
+  "request_metric_unavailable": "Não informado",
+  "acct_refresh_token": "Token de atualização",
+  "key_no_limit": "Sem limite configurado",
   "method_pick_title": "Como você quer entrar"
 }

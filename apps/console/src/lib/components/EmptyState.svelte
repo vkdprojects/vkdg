@@ -33,6 +33,8 @@
     gap: 0.5rem;
     padding: 3rem 1.5rem;
     text-align: center;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
   }
 
   .icon {
@@ -41,14 +43,14 @@
   }
 
   .title {
-    font-size: 0.9375rem;
+    font-size: var(--text-md);
     font-weight: 500;
     color: var(--text-2);
     margin: 0;
   }
 
   .desc {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-3);
     margin: 0;
     max-width: 320px;

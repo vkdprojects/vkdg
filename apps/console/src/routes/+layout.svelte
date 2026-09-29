@@ -88,8 +88,9 @@
 <div class="shell">
   <aside class="sidebar">
     <a href="/" class="logo" aria-label="VKDG home">
-      <Logo size={36} />
+      <Logo size={28} />
       <span class="logo-text">VKDG</span>
+      <span class="logo-tag">console</span>
     </a>
 
     <nav class="nav">
@@ -127,12 +128,14 @@
       </div>
 
       {#if user}
-        <span class="user-role">{user.role}</span>
-        <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
+        <div class="footer-row">
+          <span class="user-role mono">{user.role}</span>
+          <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
+        </div>
       {/if}
 
       {#if system?.version}
-        <span class="version">v{system.version}</span>
+        <span class="version mono">v{system.version}</span>
       {/if}
     </div>
   </aside>

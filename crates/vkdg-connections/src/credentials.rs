@@ -334,13 +334,21 @@ impl CredentialManager {
     }
 }
 
-/// Resolve an account without calling the refresh endpoint, when that is the
-/// right answer: its token is still fresh, or its refresh token was revoked.
+/// Resolve an account without calling the refresh endpoint when its credential
+/// is long-lived, still fresh, or its refresh token was revoked.
+///
+/// No expiry plus no refresh token denotes a long-lived imported credential
+/// such as a Kiro API key. Unknown expiry with a refresh token remains an OAuth
+/// token that must be refreshed.
 ///
 /// A revoked account keeps serving its access token until it expires, then fails
 /// with the stored reason. It is never refreshed again: only a new login can
 /// replace a rejected refresh token.
 fn serve_without_refresh(acct: &Account) -> Option<Result<Credential>> {
+    if acct.expires_at.is_none() && acct.refresh_token.is_none() {
+        return Some(Ok(acct.credential()));
+    }
+
     match &acct.revoked {
         Some(reason) => Some(if acct.expires_within(chrono::Duration::zero()) {
             let (status, message) = reason
@@ -614,6 +622,23 @@ mod tests {
         let (mgr, _store, refresher) = setup(&account(chrono::Duration::minutes(6)), false);
         let cred = mgr.get_token(&account_conn()).await.unwrap();
         assert_eq!(cred.token, "access-0");
+        assert_eq!(refresher.calls.load(Ordering::SeqCst), 0);
+    }
+
+    // Plausible wrong impl: an imported long-lived API key has no expires_at and
+    // no refresh token, but unknown OAuth expiry logic treats it as expired and
+    // rejects it before the provider can authenticate the key.
+    #[tokio::test]
+    async fn account_without_expiry_or_refresh_token_serves_stored_credential() {
+        let mut acct = account(chrono::Duration::hours(1));
+        acct.access_token = "ksk-long-lived".into();
+        acct.expires_at = None;
+        acct.refresh_token = None;
+        acct.extra.insert("auth_method".into(), "api_key".into());
+        let (mgr, _store, refresher) = setup(&acct, false);
+
+        let cred = mgr.get_token(&account_conn()).await.unwrap();
+        assert_eq!(cred.token, "ksk-long-lived");
         assert_eq!(refresher.calls.load(Ordering::SeqCst), 0);
     }
 

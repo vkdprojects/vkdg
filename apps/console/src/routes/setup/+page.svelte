@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button, Card, Input, Spinner, CopyButton, Badge } from '$lib/components/index.js';
   import { Zap, ArrowRight, ArrowLeft, CheckCircle2 } from 'lucide-svelte';
+  import { m } from '$lib/paraglide/messages.js';
 
   // ── state ──────────────────────────────────────────────────────────────────
   let step = $state(1);
@@ -17,21 +18,19 @@
     id: string;
     label: string;
     desc: string;
-    color: string;
-    dot: string;
     url: string;
     free?: boolean;
   };
 
   const providers: Provider[] = [
-    { id: 'anthropic',   label: 'Anthropic',               desc: 'API key',                    color: '#7c3aed', dot: '#a78bfa', url: 'https://console.anthropic.com/settings/keys' },
-    { id: 'openai',      label: 'OpenAI',                  desc: 'API key',                    color: '#16a34a', dot: '#4ade80', url: 'https://platform.openai.com/api-keys' },
-    { id: 'groq',        label: 'Groq',                    desc: 'API key, free tier',         color: '#ea580c', dot: '#fb923c', url: 'https://console.groq.com/keys', free: true },
-    { id: 'gemini',      label: 'Google Gemini',           desc: 'API key',                    color: '#1d4ed8', dot: '#60a5fa', url: 'https://aistudio.google.com/app/apikey' },
-    { id: 'deepseek',    label: 'DeepSeek',                desc: 'API key',                    color: '#0d9488', dot: '#2dd4bf', url: 'https://platform.deepseek.com/api_keys' },
-    { id: 'mistral',     label: 'Mistral',                 desc: 'API key',                    color: '#374151', dot: '#9ca3af', url: 'https://console.mistral.ai/api-keys/' },
-    { id: 'kiro',        label: 'Kiro (Amazon Q)',         desc: 'API key',                    color: '#c2410c', dot: '#fb923c', url: 'https://kiro.dev/' },
-    { id: 'custom',      label: 'Custom (OpenAI-compat)',  desc: 'Any OpenAI-compat endpoint', color: '#4b5563', dot: '#6b7280', url: '' },
+    { id: 'anthropic',   label: 'Anthropic',               desc: m.setup_provider_api_key(),      url: 'https://console.anthropic.com/settings/keys' },
+    { id: 'openai',      label: 'OpenAI',                  desc: m.setup_provider_api_key(),      url: 'https://platform.openai.com/api-keys' },
+    { id: 'groq',        label: 'Groq',                    desc: m.setup_provider_free_tier(),    url: 'https://console.groq.com/keys', free: true },
+    { id: 'gemini',      label: 'Google Gemini',           desc: m.setup_provider_api_key(),      url: 'https://aistudio.google.com/app/apikey' },
+    { id: 'deepseek',    label: 'DeepSeek',                desc: m.setup_provider_api_key(),      url: 'https://platform.deepseek.com/api_keys' },
+    { id: 'mistral',     label: 'Mistral',                 desc: m.setup_provider_api_key(),      url: 'https://console.mistral.ai/api-keys/' },
+    { id: 'kiro',        label: 'Kiro (Amazon Q)',         desc: m.setup_provider_api_key(),      url: 'https://kiro.dev/' },
+    { id: 'custom',      label: 'Custom (OpenAI-compat)',  desc: m.setup_provider_custom_desc(),  url: '' },
   ];
 
   function pickProvider(p: Provider) {
@@ -59,7 +58,7 @@
 
 <div class="wizard-wrap">
   <!-- ── step indicator ──────────────────────────────────────────────────── -->
-  <div class="step-bar">
+  <div class="step-bar" role="progressbar" aria-valuemin={1} aria-valuemax={5} aria-valuenow={step} aria-label={m.setup_progress_label()}>
     {#each [1, 2, 3, 4, 5] as s}
       <div class="step-dot" class:active={step === s} class:done={step > s}></div>
     {/each}
@@ -71,12 +70,12 @@
   {#if step === 1}
     <div class="step center-step">
       <div class="hero-icon">
-        <Zap size={36} strokeWidth={1.5} />
+        <Zap size={32} strokeWidth={1.5} />
       </div>
-      <h1 class="wizard-title">Your AI gateway is running</h1>
-      <p class="wizard-sub">Connect a provider and you'll be sending requests in under 2 minutes.</p>
+      <h1 class="wizard-title">{m.setup_welcome_title()}</h1>
+      <p class="wizard-sub">{m.setup_welcome_sub()}</p>
       <Button size="lg" onclick={() => (step = 2)}>
-        Get started <ArrowRight size={15} />
+        {m.setup_get_started()} <ArrowRight size={15} />
       </Button>
     </div>
 
@@ -85,16 +84,16 @@
   <!-- ══════════════════════════════════════════════════════════════════════ -->
   {:else if step === 2}
     <div class="step">
-      <h1 class="wizard-title">Connect your first provider</h1>
+      <h1 class="wizard-title">{m.setup_pick_provider_title()}</h1>
       <div class="provider-grid">
         {#each providers as p}
           <button class="provider-card" onclick={() => pickProvider(p)}>
-            <div class="provider-dot" style="background: {p.dot}"></div>
+            <span class="provider-dot" aria-hidden="true"></span>
             <div class="provider-info">
               <span class="provider-name">
                 {p.label}
                 {#if p.free}
-                  <Badge status="success" label="Free tier" />
+                  <Badge status="success" label={m.setup_free_tier_badge()} />
                 {/if}
               </span>
               <span class="provider-desc">{p.desc}</span>
@@ -110,36 +109,36 @@
   <!-- ══════════════════════════════════════════════════════════════════════ -->
   {:else if step === 3}
     <div class="step narrow-step">
-      <h1 class="wizard-title">Enter your {selectedProviderLabel} API key</h1>
+      <h1 class="wizard-title">{m.setup_enter_key_title({ provider: selectedProviderLabel })}</h1>
       {#if providerUrl()}
         <p class="wizard-sub">
-          Find your key at
+          {m.setup_find_key_at()}
           <a href={providerUrl()} target="_blank" rel="noopener noreferrer">{providerUrl()}</a>
         </p>
       {:else}
-        <p class="wizard-sub">Enter the base URL and API key for your custom endpoint.</p>
+        <p class="wizard-sub">{m.setup_custom_endpoint_hint()}</p>
       {/if}
 
       <div class="form-group">
         <Input
-          label="API Key"
+          label={m.setup_api_key_label()}
           type="password"
           placeholder="sk-..."
           bind:value={apiKey}
           autocomplete="off"
         />
-        <p class="key-note">Your key is stored encrypted and never exposed.</p>
+        <p class="key-note">{m.setup_key_stored_note()}</p>
       </div>
 
       <div class="action-row">
         <Button variant="ghost" onclick={() => (step = 2)}>
-          <ArrowLeft size={14} /> Back
+          <ArrowLeft size={14} /> {m.common_back()}
         </Button>
         <Button
           disabled={apiKey.trim().length === 0}
           onclick={testConnection}
         >
-          Test connection <ArrowRight size={14} />
+          {m.setup_test_connection()} <ArrowRight size={14} />
         </Button>
       </div>
     </div>
@@ -151,14 +150,14 @@
     <div class="step center-step">
       {#if testing}
         <Spinner size="lg" />
-        <p class="testing-label">Testing connection...</p>
+        <p class="testing-label">{m.setup_testing_connection()}</p>
       {:else}
         <div class="success-icon">
           <CheckCircle2 size={40} strokeWidth={1.5} />
         </div>
-        <p class="testing-label success-label">Connected! 3 models available</p>
+        <p class="testing-label success-label">{m.setup_connected_models({ n: 3 })}</p>
         <Button size="lg" onclick={finish}>
-          Continue <ArrowRight size={15} />
+          {m.common_continue()} <ArrowRight size={15} />
         </Button>
       {/if}
     </div>
@@ -168,39 +167,39 @@
   <!-- ══════════════════════════════════════════════════════════════════════ -->
   {:else if step === 5}
     <div class="step narrow-step">
-      <h1 class="wizard-title">You're ready!</h1>
-      <p class="wizard-sub">Point your AI client at this endpoint:</p>
+      <h1 class="wizard-title">{m.setup_ready_title()}</h1>
+      <p class="wizard-sub">{m.setup_ready_sub()}</p>
 
       <div class="endpoint-row">
-        <code class="endpoint-url">{ENDPOINT}</code>
-        <CopyButton text={ENDPOINT} label="Copy URL" />
+        <code class="endpoint-url mono">{ENDPOINT}</code>
+        <CopyButton text={ENDPOINT} label={m.setup_copy_url()} />
       </div>
 
       <div class="divider">
-        <span>Configure your AI client</span>
+        <span>{m.setup_configure_client()}</span>
       </div>
 
       <div class="code-blocks">
         <div class="code-block">
           <span class="code-label">Claude Code</span>
           <div class="code-line">
-            <code>claude config set ANTHROPIC_BASE_URL {ENDPOINT}</code>
-            <CopyButton text="claude config set ANTHROPIC_BASE_URL {ENDPOINT}" />
+            <code class="mono">claude config set ANTHROPIC_BASE_URL {ENDPOINT}</code>
+            <CopyButton text="claude config set ANTHROPIC_BASE_URL {ENDPOINT}" label={m.common_copy()} />
           </div>
         </div>
 
         <div class="code-block">
           <span class="code-label">Codex CLI</span>
           <div class="code-line">
-            <code>codex --config openai-base-url={ENDPOINT}</code>
-            <CopyButton text="codex --config openai-base-url={ENDPOINT}" />
+            <code class="mono">codex --config openai-base-url={ENDPOINT}</code>
+            <CopyButton text="codex --config openai-base-url={ENDPOINT}" label={m.common_copy()} />
           </div>
         </div>
       </div>
 
       <div class="action-row justify-end">
         <a href="/" class="btn-link">
-          Go to dashboard <ArrowRight size={15} />
+          {m.setup_go_to_dashboard()} <ArrowRight size={15} />
         </a>
       </div>
     </div>
@@ -227,7 +226,7 @@
   .step-dot {
     width: 6px;
     height: 6px;
-    border-radius: 50%;
+    border-radius: 2px;
     background: var(--border-strong);
     transition: background 0.2s, transform 0.2s;
   }
@@ -245,7 +244,6 @@
   .step {
     width: 100%;
     max-width: 640px;
-    animation: fade-in 0.18s ease;
   }
 
   .narrow-step {
@@ -260,18 +258,13 @@
     gap: 1rem;
   }
 
-  @keyframes fade-in {
-    from { opacity: 0; transform: translateY(6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
   /* ── step 1: welcome ─────────────────────────────────────────────────── */
   .hero-icon {
-    width: 72px;
-    height: 72px;
-    border-radius: 16px;
-    background: color-mix(in oklch, var(--accent) 12%, transparent);
-    border: 1px solid color-mix(in oklch, var(--accent) 25%, transparent);
+    width: 64px;
+    height: 64px;
+    border-radius: var(--radius);
+    background: var(--accent-subtle);
+    border: 1px solid var(--border-strong);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -280,7 +273,7 @@
   }
 
   .wizard-title {
-    font-size: 1.5rem;
+    font-size: var(--text-xl);
     font-weight: 700;
     color: var(--text-1);
     margin: 0 0 0.25rem;
@@ -288,7 +281,7 @@
   }
 
   .wizard-sub {
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     color: var(--text-2);
     margin: 0 0 1.5rem;
     line-height: 1.5;
@@ -328,10 +321,16 @@
     background: var(--bg-elevated);
   }
 
+  .provider-card:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   .provider-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--accent);
     flex-shrink: 0;
   }
 
@@ -344,7 +343,7 @@
   }
 
   .provider-name {
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
     font-weight: 500;
     color: var(--text-1);
     display: flex;
@@ -353,7 +352,7 @@
   }
 
   .provider-desc {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-3);
   }
 
@@ -368,7 +367,7 @@
   }
 
   .key-note {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-3);
     margin: 0.5rem 0 0;
   }
@@ -385,7 +384,7 @@
 
   /* ── step 4: testing ─────────────────────────────────────────────────── */
   .testing-label {
-    font-size: 1rem;
+    font-size: var(--text-md);
     color: var(--text-2);
     margin: 0;
   }
@@ -413,8 +412,7 @@
 
   .endpoint-url {
     flex: 1;
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
     color: var(--accent);
   }
 
@@ -424,7 +422,7 @@
     gap: 0.75rem;
     margin-bottom: 1.25rem;
     color: var(--text-3);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -454,7 +452,7 @@
 
   .code-label {
     display: block;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -471,8 +469,7 @@
   }
 
   .code-line code {
-    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-1);
     word-break: break-all;
   }
@@ -483,10 +480,10 @@
     gap: 6px;
     padding: 0.625rem 1.25rem;
     background: var(--accent);
-    color: #fff;
+    color: var(--bg-base);
     border-radius: var(--radius-sm);
-    font-size: 0.9375rem;
-    font-weight: 500;
+    font-size: var(--text-base);
+    font-weight: 600;
     text-decoration: none;
     transition: background 0.1s;
     white-space: nowrap;
@@ -494,5 +491,10 @@
 
   .btn-link:hover {
     background: var(--accent-hover);
+  }
+
+  .btn-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
 </style>

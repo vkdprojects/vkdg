@@ -23,8 +23,8 @@
     autocomplete,
   }: Props = $props();
 
-  let inputId = $state(id ?? `input-${Math.random().toString(36).slice(2)}`);
-  let errorId = $derived(`${inputId}-error`);
+  const inputId = $derived(id ?? `input-${Math.random().toString(36).slice(2)}`);
+  const errorId = $derived(`${inputId}-error`);
 </script>
 
 <div class="field">

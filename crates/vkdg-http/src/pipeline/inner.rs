@@ -509,6 +509,12 @@ pub(super) async fn run_pipeline_inner(
             // Guard: if upstream closes before [DONE], inject error event so
             // clients can detect the incomplete response (instead of silent 200).
             let guarded_body = crate::with_termination_guard(filtered_body);
+            // Keep the socket alive while the model thinks without emitting bytes.
+            let guarded_body = crate::sse::with_heartbeat(
+                guarded_body,
+                crate::sse::HEARTBEAT_INTERVAL,
+                crate::sse::COMMENT_PING,
+            );
             let mut builder = axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
@@ -662,7 +668,11 @@ async fn fusion_one_target(
                 .header(header::CONTENT_TYPE, "text/event-stream")
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
-                .body(axum::body::Body::from_stream(body))
+                .body(axum::body::Body::from_stream(crate::sse::with_heartbeat(
+                    body,
+                    crate::sse::HEARTBEAT_INTERVAL,
+                    crate::sse::COMMENT_PING,
+                )))
                 .map_err(|e| VkdgError::Internal(e.to_string()))?
         }
     };

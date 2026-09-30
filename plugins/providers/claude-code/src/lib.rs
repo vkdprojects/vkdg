@@ -82,25 +82,152 @@ impl ProviderAdapter for ClaudeCodeAdapter {
     }
 }
 
+/// Public OAuth `client_id` for the Claude Code CLI.
+/// This is a public value — the same one the official `Claude Code CLI` ships in
+/// its binary and that the Anthropic `OAuth` flow is designed to accept from any
+/// `PKCE` public client. Source: `OmniRoute` `open-sse/utils/publicCreds.ts`.
+const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const CLAUDE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
+const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
+const CLAUDE_BOOTSTRAP_URL: &str = "https://api.anthropic.com/api/claude_cli/bootstrap";
+
 impl OAuthProvider for ClaudeCodeAdapter {
+    fn login_methods(&self) -> Vec<vkdg_provider_sdk::LoginMethod> {
+        use vkdg_provider_sdk::{LoginField, LoginMethod};
+        vec![LoginMethod {
+            id: "pkce".into(),
+            label: "Sign in with Claude".into(),
+            flow: vkdg_provider_sdk::OAuthFlow::AuthorizationCodePkce,
+            hint: Some("Opens claude.ai in your browser. Paste the code back here.".into()),
+            icon_char: Some('C'),
+            fields: vec![LoginField {
+                id: "code".into(),
+                label: "Authorization code".into(),
+                required: true,
+                secret: false,
+                default: None,
+                placeholder: Some("Paste the code from your browser".into()),
+            }],
+        }]
+    }
+
     fn oauth_config(&self) -> OAuthConfig {
         let mut extra_auth_params = HashMap::new();
+        // prompt=login forces re-authentication on every login so that
+        // multi-account setups never silently reuse an existing session.
         extra_auth_params.insert("prompt".into(), "login".into());
-
         OAuthConfig {
             flow: OAuthFlow::AuthorizationCodePkce,
-            authorize_url: Some("https://claude.ai/oauth/authorize".into()),
-            token_url: "https://api.anthropic.com/v1/oauth/token".into(),
-            client_id: std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_default(),
+            authorize_url: Some(CLAUDE_AUTHORIZE_URL.into()),
+            token_url: CLAUDE_TOKEN_URL.into(),
+            client_id: std::env::var("CLAUDE_OAUTH_CLIENT_ID")
+                .unwrap_or_else(|_| CLAUDE_CLIENT_ID.into()),
             scopes: vec![
                 "org:create_api_key".into(),
                 "user:profile".into(),
                 "user:inference".into(),
                 "user:sessions:claude_code".into(),
+                "user:mcp_servers".into(),
             ],
-            redirect_uri: Some("https://platform.claude.com/oauth/code/callback".into()),
+            redirect_uri: Some(CLAUDE_REDIRECT_URI.into()),
             extra_auth_params,
         }
+    }
+
+    fn start_pkce_login<'a>(
+        &'a self,
+        _method: &'a str,
+        _params: &'a vkdg_provider_sdk::LoginParams,
+    ) -> BoxFuture<'a, Result<vkdg_provider_sdk::PkceAuthorization, ProviderError>> {
+        Box::pin(async {
+            use base64::Engine as _;
+            use rand::RngCore;
+            use sha2::{Digest, Sha256};
+
+            // Generate a cryptographically random code verifier (RFC 7636 §4.1).
+            let mut verifier_bytes = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut verifier_bytes);
+            let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+
+            // S256 challenge = BASE64URL(SHA256(verifier)).
+            let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(Sha256::digest(verifier.as_bytes()));
+
+            // OAuth `state` — random anti-CSRF nonce.
+            let mut state_bytes = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut state_bytes);
+            let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(state_bytes);
+
+            let client_id =
+                std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_else(|_| CLAUDE_CLIENT_ID.into());
+
+            let scopes = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers";
+
+            let mut url = reqwest::Url::parse(CLAUDE_AUTHORIZE_URL)
+                .map_err(|e| ProviderError::Http(e.to_string()))?;
+            url.query_pairs_mut()
+                .append_pair("code", "true")
+                .append_pair("client_id", &client_id)
+                .append_pair("response_type", "code")
+                .append_pair("redirect_uri", CLAUDE_REDIRECT_URI)
+                .append_pair("scope", scopes)
+                .append_pair("code_challenge", &challenge)
+                .append_pair("code_challenge_method", "S256")
+                .append_pair("state", &state)
+                .append_pair("prompt", "login");
+
+            let mut login_state = HashMap::new();
+            login_state.insert("code_verifier".into(), verifier);
+            login_state.insert("state".into(), state);
+
+            Ok(vkdg_provider_sdk::PkceAuthorization {
+                authorize_url: url.to_string(),
+                state: login_state,
+            })
+        })
+    }
+
+    fn finish_pkce_login<'a>(
+        &'a self,
+        _method: &'a str,
+        state: &'a vkdg_provider_sdk::LoginState,
+        code: &'a str,
+    ) -> BoxFuture<'a, Result<vkdg_provider_sdk::LoginResult, ProviderError>> {
+        Box::pin(async move {
+            let verifier = state
+                .get("code_verifier")
+                .map(String::as_str)
+                .unwrap_or_default();
+            let original_state = state.get("state").map(String::as_str).unwrap_or_default();
+
+            // OmniRoute: the user may paste the full callback URL; strip to code+state.
+            let (auth_code, code_state) = if code.contains('#') {
+                let parts: Vec<&str> = code.splitn(2, '#').collect();
+                (parts[0], parts.get(1).copied().unwrap_or(""))
+            } else if code.starts_with("https://") {
+                // Full callback URL: parse code from query string.
+                let parsed =
+                    reqwest::Url::parse(code).map_err(|e| ProviderError::Http(e.to_string()))?;
+                let pairs: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+                let c = pairs
+                    .get("code")
+                    .cloned()
+                    .unwrap_or_else(|| code.to_owned());
+                let s = pairs.get("state").cloned().unwrap_or_default();
+                return finish_exchange(verifier.to_owned(), original_state.to_owned(), c, s).await;
+            } else {
+                (code, "")
+            };
+
+            finish_exchange(
+                verifier.to_owned(),
+                original_state.to_owned(),
+                auth_code.to_owned(),
+                code_state.to_owned(),
+            )
+            .await
+        })
     }
 
     fn refresh_token<'a>(
@@ -109,10 +236,11 @@ impl OAuthProvider for ClaudeCodeAdapter {
         _extra: &'a HashMap<String, String>,
     ) -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
         Box::pin(async move {
-            let client_id = std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_default();
+            let client_id =
+                std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_else(|_| CLAUDE_CLIENT_ID.into());
             let client = reqwest::Client::new();
             let resp = client
-                .post("https://api.anthropic.com/v1/oauth/token")
+                .post(CLAUDE_TOKEN_URL)
                 .json(&json!({
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
@@ -121,7 +249,6 @@ impl OAuthProvider for ClaudeCodeAdapter {
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
-
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -129,12 +256,10 @@ impl OAuthProvider for ClaudeCodeAdapter {
                     "HTTP {status}: {body}"
                 )));
             }
-
             let json: Value = resp
                 .json()
                 .await
                 .map_err(|e| ProviderError::Serialization(e.to_string()))?;
-
             Ok(TokenPair {
                 access_token: json["access_token"]
                     .as_str()
@@ -146,6 +271,94 @@ impl OAuthProvider for ClaudeCodeAdapter {
             })
         })
     }
+}
+
+/// Exchange an authorization code for tokens, then enrich with bootstrap data.
+async fn finish_exchange(
+    verifier: String,
+    original_state: String,
+    auth_code: String,
+    code_state: String,
+) -> Result<vkdg_provider_sdk::LoginResult, ProviderError> {
+    let client_id =
+        std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_else(|_| CLAUDE_CLIENT_ID.into());
+    let effective_state = if code_state.is_empty() {
+        &original_state
+    } else {
+        &code_state
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(CLAUDE_TOKEN_URL)
+        .json(&json!({
+            "code": auth_code,
+            "state": effective_state,
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "redirect_uri": CLAUDE_REDIRECT_URI,
+            "code_verifier": verifier,
+        }))
+        .send()
+        .await
+        .map_err(|e| ProviderError::Http(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProviderError::TokenRefresh(format!(
+            "token exchange HTTP {status}: {body}"
+        )));
+    }
+    let tokens: Value = resp
+        .json()
+        .await
+        .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+    let access_token = tokens["access_token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    // Post-exchange: fetch bootstrap data (email, org) — best-effort.
+    let mut extra: HashMap<String, String> = HashMap::new();
+    if let Ok(bs_resp) = client
+        .get(CLAUDE_BOOTSTRAP_URL)
+        .header("Authorization", format!("Bearer {access_token}"))
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("User-Agent", "claude-cli/2.1.280.096 (external, cli)")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        if let Ok(bs) = bs_resp.json::<Value>().await {
+            let acct = &bs["oauth_account"];
+            if let Some(email) = acct["account_email"].as_str() {
+                extra.insert("account_email".into(), email.into());
+            }
+            if let Some(uuid) = acct["account_uuid"].as_str() {
+                extra.insert("account_uuid".into(), uuid.into());
+            }
+            if let Some(org) = acct["organization_uuid"].as_str() {
+                extra.insert("organization_uuid".into(), org.into());
+            }
+            if let Some(org_name) = acct["organization_name"].as_str() {
+                extra.insert("organization_name".into(), org_name.into());
+            }
+        }
+    }
+
+    let label = extra.get("account_email").cloned().unwrap_or_default();
+
+    Ok(vkdg_provider_sdk::LoginResult {
+        tokens: TokenPair {
+            access_token,
+            refresh_token: tokens["refresh_token"].as_str().map(str::to_string),
+            expires_in_secs: tokens["expires_in"].as_u64(),
+            extra,
+        },
+        label,
+    })
 }
 
 fn base_url(config: &ConnectionConfig) -> String {

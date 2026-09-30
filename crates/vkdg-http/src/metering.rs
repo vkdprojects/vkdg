@@ -47,6 +47,8 @@ pub struct UsageMeter {
     body: Vec<u8>,
     sse: Option<bool>,
     usage: TokenUsage,
+    /// Stop reason from the final `message_delta` SSE event.
+    stop_reason: Option<String>,
 }
 
 /// Non-streaming bodies larger than this are not metered from their JSON: the
@@ -82,6 +84,12 @@ impl UsageMeter {
         self.usage
     }
 
+    /// Stop reason extracted from the stream (`end_turn`, `max_tokens`, etc.).
+    /// `None` until a `message_delta` event carrying one is observed.
+    pub fn stop_reason(&self) -> Option<String> {
+        self.stop_reason.clone()
+    }
+
     fn observe_line(&mut self, line: &[u8]) {
         let Some(data) = line.strip_prefix(b"data:") else {
             return;
@@ -108,6 +116,16 @@ impl UsageMeter {
             self.usage.output = self.usage.output.max(output);
             self.usage.cache_read = self.usage.cache_read.max(read);
             self.usage.cache_write = self.usage.cache_write.max(write);
+        }
+        // Anthropic `message_delta` carries the stop reason.
+        if let Some(sr) = v
+            .get("delta")
+            .and_then(|d| d.get("stop_reason"))
+            .and_then(Value::as_str)
+        {
+            if !sr.is_empty() {
+                self.stop_reason = Some(sr.to_owned());
+            }
         }
     }
 }

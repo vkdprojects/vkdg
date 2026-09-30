@@ -49,6 +49,19 @@ pub struct RequestRecord {
     /// provider declares no price for the model (subscription, free tier).
     #[serde(default)]
     pub cost_microdollars: Option<u64>,
+    /// Model stop reason: `end_turn`, `max_tokens`, `tool_use`, `stop_sequence`.
+    /// Absent until the stream ends. Key for diagnosing empty responses.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Error message when status is `failed`. Never contains prompt text.
+    #[serde(default)]
+    pub error_message: Option<String>,
+    /// Whether extended reasoning (thinking) was requested by the client.
+    #[serde(default)]
+    pub thinking_requested: Option<bool>,
+    /// Number of messages in the conversation (proxy for context depth).
+    #[serde(default)]
+    pub message_count: Option<u32>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -137,6 +150,7 @@ impl RequestLog {
         tokens: vkdg_core::pricing::BilledTokens,
         body_ended: bool,
         price: Option<&vkdg_core::pricing::ModelPrice>,
+        stop_reason: Option<String>,
     ) {
         let conn = self.conn.lock();
         let Ok(json) = conn.query_row(
@@ -153,6 +167,9 @@ impl RequestLog {
             r.input_tokens = Some(tokens.input);
             r.output_tokens = Some(tokens.output);
             r.cost_microdollars = price.map(|p| p.cost_microdollars(tokens));
+        }
+        if let Some(sr) = stop_reason {
+            r.stop_reason = Some(sr);
         }
         if r.status == STATUS_PENDING {
             r.status = if body_ended { "completed" } else { "cancelled" }.into();
@@ -328,6 +345,10 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
         });
         state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
@@ -342,6 +363,10 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -375,6 +400,10 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
         }
     }
 
@@ -421,10 +450,10 @@ mod tests {
             ..BilledTokens::default()
         };
         let price = ModelPrice::new("m", 3_000_000, 15_000_000);
-        log.finish("streamed", t(11, 4), true, Some(&price));
-        log.finish("dropped", t(11, 1), false, None);
-        log.finish("failed", t(0, 0), true, Some(&price));
-        log.finish("unknown", t(1, 1), true, None);
+        log.finish("streamed", t(11, 4), true, Some(&price), None);
+        log.finish("dropped", t(11, 1), false, None, None);
+        log.finish("failed", t(0, 0), true, Some(&price), None);
+        log.finish("unknown", t(1, 1), true, None, None);
 
         let r = log.get("streamed").unwrap();
         assert_eq!(r.status, "completed");

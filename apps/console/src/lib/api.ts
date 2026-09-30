@@ -226,6 +226,14 @@ export interface RequestSummary {
   output_tokens?: number | null;
   /** Microdollars at the provider's list price; absent when it lists none. */
   cost_microdollars?: number | null;
+  /** Model stop reason; absent until stream ends. */
+  stop_reason?: string | null;
+  /** Error message when status is "failed". */
+  error_message?: string | null;
+  /** Whether thinking/extended reasoning was requested. */
+  thinking_requested?: boolean | null;
+  /** Number of messages in the conversation. */
+  message_count?: number | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';

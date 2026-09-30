@@ -332,6 +332,7 @@ impl Metered {
             return;
         };
         let usage = self.meter.finish();
+        let stop_reason = self.meter.stop_reason();
         let ended = self.ended;
         let write = move || {
             if let Some((store, key_id)) = charge {
@@ -340,7 +341,7 @@ impl Metered {
                 }
             }
             if let Some((log, id, price)) = history {
-                log.finish(&id, usage.billed(), ended, price.as_ref());
+                log.finish(&id, usage.billed(), ended, price.as_ref(), stop_reason);
             }
         };
         // SQLite is blocking; keep it off the async workers.
@@ -722,6 +723,10 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 cost_microdollars: None,
+                stop_reason: None,
+                error_message: None,
+                thinking_requested: None,
+                message_count: None,
             },
             price,
         }

@@ -183,7 +183,12 @@
               </td>
               <td>{r.model}</td>
               <td class="mono">{r.api_type}</td>
-              <td><Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} /></td>
+              <td class="status-cell">
+                <Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} />
+                {#if r.stop_reason}
+                  <span class="stop-badge stop-badge--{r.stop_reason}">{r.stop_reason}</span>
+                {/if}
+              </td>
               <td class="mono">{r.connection_id ?? m.common_none()}</td>
               <td class="mono">{fmtDuration(r.duration_ms)}</td>
               <td class="mono">{fmtTokens(r)}</td>
@@ -225,6 +230,28 @@
             <dt>{m.request_tokens()}</dt><dd class="mono">{fmtTokens(d)}</dd>
             <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>
           </dl>
+
+          {#if d.stop_reason || d.error_message || d.thinking_requested != null || d.message_count != null}
+            <h3 class="drawer-subtitle">{m.request_metadata()}</h3>
+            <dl class="info-grid">
+              {#if d.stop_reason}
+                <dt>{m.request_stop_reason()}</dt>
+                <dd><span class="stop-badge stop-badge--{d.stop_reason}">{d.stop_reason}</span></dd>
+              {/if}
+              {#if d.error_message}
+                <dt>{m.request_error_message()}</dt>
+                <dd class="mono error-text">{d.error_message}</dd>
+              {/if}
+              {#if d.thinking_requested != null}
+                <dt>{m.request_thinking()}</dt>
+                <dd>{d.thinking_requested ? 'yes' : 'no'}</dd>
+              {/if}
+              {#if d.message_count != null}
+                <dt>{m.request_message_count()}</dt>
+                <dd>{d.message_count}</dd>
+              {/if}
+            </dl>
+          {/if}
 
           <h3 class="drawer-subtitle">{m.request_decision()}</h3>
           {#if d.decision}
@@ -415,5 +442,44 @@
   .hint {
     font-size: 0.8125rem;
     color: var(--text-3);
+  }
+
+  .status-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+  }
+
+  .stop-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    background: var(--bg-muted, #e5e7eb);
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  .stop-badge--end_turn {
+    background: #d1fae5;
+    color: #065f46;
+  }
+
+  .stop-badge--max_tokens {
+    background: #fed7aa;
+    color: #92400e;
+  }
+
+  .stop-badge--tool_use {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .error-text {
+    color: var(--color-error, #dc2626);
+    font-size: 0.8125rem;
+    word-break: break-all;
   }
 </style>

@@ -41,7 +41,7 @@ pub async fn run_conversation_pipeline(
     // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).
     emit_decision_record(&pipeline, &ctx, &outcome, final_attempt);
 
-    let pending = pending_log(&pipeline, &ctx, outcome.is_ok(), final_attempt);
+    let pending = pending_log(&pipeline, &ctx, &outcome, final_attempt, &operation);
     let mut response = match outcome {
         Ok(resp) => resp,
         Err(e) => error_response(&e),
@@ -99,8 +99,9 @@ pub struct PendingLog {
 fn pending_log(
     pipeline: &PipelineState,
     ctx: &PipelineCtx,
-    ok: bool,
+    outcome: &Result<Response, VkdgError>,
     attempt: u32,
+    operation: &Operation,
 ) -> Option<PendingLog> {
     use vkdg_admin::handlers::requests::{
         DecisionInfo, ExcludedInfo, RequestRecord, STATUS_PENDING,
@@ -108,6 +109,7 @@ fn pending_log(
     use vkdg_core::ApiType;
 
     let log = pipeline.request_log.as_ref()?;
+    let ok = outcome.is_ok();
     // A successful response is only headers so far; the body decides the rest.
     let status = if ok { STATUS_PENDING } else { "failed" }.to_string();
     // Derive started_at_ms from the first state transition (Received timestamp).
@@ -124,6 +126,20 @@ fn pending_log(
         ApiType::VkdgNative => "vkdg",
     }
     .to_string();
+
+    let (thinking_requested, message_count) = match operation {
+        Operation::Conversation(req) => (
+            Some(req.thinking.is_some()),
+            Some(u32::try_from(req.messages.len()).unwrap_or(u32::MAX)),
+        ),
+        _ => (None, None),
+    };
+    let error_message = if ok {
+        None
+    } else {
+        outcome.as_ref().err().map(|e| e.to_string())
+    };
+
     Some(PendingLog {
         price: if ok { ctx.price.clone() } else { None },
         log: Arc::clone(log),
@@ -151,6 +167,10 @@ fn pending_log(
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message,
+            thinking_requested,
+            message_count,
         },
     })
 }

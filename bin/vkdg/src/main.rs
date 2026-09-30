@@ -404,7 +404,7 @@ async fn serve(
     // Limits and observe always come from the YAML if present; only connections
     // and routes move to the store.
     let seeded_snap: Option<ConfigSnapshot> = if gateway_store
-        .is_empty()
+        .needs_seed()
         .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?
     {
         if let Some(path) = &config_path {
@@ -418,6 +418,9 @@ async fn serve(
             gateway_store
                 .set_routes(&snap.gateway.routes)
                 .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .mark_seeded()
+                .map_err(|e| anyhow::anyhow!("gateway store mark_seeded: {e}"))?;
             tracing::info!(path = %path, version = snap.version, "seeded gateway store from config file");
             Some(snap)
         } else {

@@ -45,12 +45,38 @@ impl GatewayStore {
              CREATE TABLE IF NOT EXISTS routes (
                  id       TEXT PRIMARY KEY NOT NULL,
                  def_json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 key   TEXT PRIMARY KEY NOT NULL,
+                 value TEXT NOT NULL
              );",
         )
         .map_err(|e| store_err("init", &e))?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Mark the store as seeded so restarts with an empty table don't re-seed.
+    pub fn mark_seeded(&self) -> Result<()> {
+        self.lock()
+            .execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('seeded', '1')",
+                [],
+            )
+            .map_err(|e| store_err("mark_seeded", &e))?;
+        Ok(())
+    }
+
+    /// True only if the store has never been seeded (first boot).
+    pub fn needs_seed(&self) -> Result<bool> {
+        let conn = self.lock();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM meta WHERE key = 'seeded'", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| store_err("needs_seed", &e))?;
+        Ok(count == 0)
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────

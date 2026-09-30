@@ -331,6 +331,15 @@ pub async fn delete_connection(
         )
         .into_response();
     }
+    // Remove any routes that exclusively targeted this connection to avoid a
+    // broken snapshot where a route references a non-existent connection.
+    if let Ok((_, routes)) = store.load() {
+        for route in &routes {
+            if route.targets == vec![id.clone()] {
+                let _ = store.delete_route(&route.id);
+            }
+        }
+    }
     if let Err(e) = rebuild_and_push(&state) {
         return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
     }

@@ -1,4 +1,5 @@
 pub mod combos;
+pub mod config;
 pub mod connections;
 pub mod keys;
 pub mod oauth;

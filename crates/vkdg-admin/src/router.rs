@@ -173,5 +173,9 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/v1/accounts/{id}",
             delete(crate::handlers::oauth::delete_account),
         )
+        .route(
+            "/admin/v1/config/export",
+            get(crate::handlers::config::export_config),
+        )
         .with_state(state)
 }

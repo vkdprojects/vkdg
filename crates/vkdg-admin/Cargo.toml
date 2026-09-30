@@ -19,6 +19,7 @@ uuid             = { workspace = true }
 chrono           = { workspace = true }
 vkdg-combos     = { workspace = true }
 parking_lot      = { workspace = true }
+serde_yaml       = { workspace = true }
 vkdg-provider-sdk = { workspace = true }
 vkdg-governance  = { workspace = true }
 rusqlite         = { workspace = true }

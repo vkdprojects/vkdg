@@ -171,6 +171,12 @@ fn pending_log(
             error_message,
             thinking_requested,
             message_count,
+            state_transitions: Some(
+                ctx.transitions
+                    .iter()
+                    .map(|(s, t)| (format!("{s:?}"), t.timestamp_millis()))
+                    .collect(),
+            ),
         },
     })
 }

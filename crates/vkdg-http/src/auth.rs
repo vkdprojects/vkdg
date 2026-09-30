@@ -727,6 +727,7 @@ mod tests {
                 error_message: None,
                 thinking_requested: None,
                 message_count: None,
+                state_transitions: None,
             },
             price,
         }

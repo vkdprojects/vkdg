@@ -253,6 +253,39 @@
             </dl>
           {/if}
 
+          {#if d.state_transitions && d.state_transitions.length > 0}
+            {@const transitions = d.state_transitions}
+            <h3 class="drawer-subtitle">Pipeline timeline</h3>
+            <ol class="timeline" aria-label="Pipeline phase timestamps">
+              {#each transitions as [phase, ts], i (phase)}
+                {@const prevTs = i === 0 ? null : transitions[i - 1][1]}
+                {@const deltaMs = prevTs == null ? null : ts - prevTs}
+                {@const isUpstreamOpen = phase === 'UpstreamOpen'}
+                {@const isCommitted = phase === 'Committed'}
+                {@const isTtfb = isCommitted && i > 0 && transitions.findIndex(([p]) => p === 'UpstreamOpen') !== -1}
+                {@const upstreamOpenTs = isTtfb ? (transitions.find(([p]) => p === 'UpstreamOpen')?.[1] ?? null) : null}
+                {@const ttfbMs = isTtfb && upstreamOpenTs != null ? ts - upstreamOpenTs : null}
+                {@const isReceived = phase === 'Received'}
+                {@const lastUpstreamOpenIdx = transitions.findLastIndex(([p]) => p === 'UpstreamOpen')}
+                {@const gatewayMs = isUpstreamOpen && i > 0 ? ts - transitions[0][1] : null}
+                <li class="timeline-item" class:timeline-ttfb={isTtfb} class:timeline-overhead={isUpstreamOpen}>
+                  <span class="timeline-phase">{phase}</span>
+                  <span class="timeline-ts mono">{new Date(ts).toISOString().slice(11, 23)}</span>
+                  {#if deltaMs != null}
+                    <span class="timeline-delta">+{deltaMs}ms</span>
+                  {/if}
+                  {#if gatewayMs != null}
+                    <span class="timeline-label timeline-label--overhead">gateway overhead: {gatewayMs}ms</span>
+                  {/if}
+                  {#if ttfbMs != null}
+                    <span class="timeline-label timeline-label--ttfb">TTFB: {ttfbMs}ms</span>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {/if}
+
+
           <h3 class="drawer-subtitle">{m.request_decision()}</h3>
           {#if d.decision}
             <dl class="info-grid">
@@ -481,5 +514,74 @@
     color: var(--color-error, #dc2626);
     font-size: 0.8125rem;
     word-break: break-all;
+  }
+
+  .timeline {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-left: 2px solid var(--border);
+    padding-left: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .timeline-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.8125rem;
+    color: var(--text-2);
+  }
+
+  .timeline-item.timeline-ttfb {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  .timeline-item.timeline-overhead {
+    color: var(--text-1);
+    font-weight: 500;
+  }
+
+  .timeline-phase {
+    font-family: var(--font-mono, monospace);
+    font-size: 0.75rem;
+    color: var(--text-3);
+    min-width: 6.5rem;
+  }
+
+  .timeline-ts {
+    font-size: 0.75rem;
+    color: var(--text-3);
+  }
+
+  .timeline-delta {
+    font-size: 0.75rem;
+    background: var(--bg-muted, #f3f4f6);
+    color: var(--text-2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: var(--font-mono, monospace);
+  }
+
+  .timeline-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    white-space: nowrap;
+  }
+
+  .timeline-label--ttfb {
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .timeline-label--overhead {
+    background: #fef9c3;
+    color: #854d0e;
   }
 </style>

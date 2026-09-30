@@ -62,6 +62,10 @@ pub struct RequestRecord {
     /// Number of messages in the conversation (proxy for context depth).
     #[serde(default)]
     pub message_count: Option<u32>,
+    /// Pipeline phase timestamps: [(`phase_name`, `unix_ms`), ...].
+    /// Populated at request start; absent when the record was written by an older build.
+    #[serde(default)]
+    pub state_transitions: Option<Vec<(String, i64)>>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -349,6 +353,7 @@ mod tests {
             error_message: None,
             thinking_requested: None,
             message_count: None,
+            state_transitions: None,
         });
         state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
@@ -367,6 +372,7 @@ mod tests {
             error_message: None,
             thinking_requested: None,
             message_count: None,
+            state_transitions: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -404,6 +410,7 @@ mod tests {
             error_message: None,
             thinking_requested: None,
             message_count: None,
+            state_transitions: None,
         }
     }
 

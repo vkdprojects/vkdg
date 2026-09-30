@@ -234,6 +234,8 @@ export interface RequestSummary {
   thinking_requested?: boolean | null;
   /** Number of messages in the conversation. */
   message_count?: number | null;
+  /** Pipeline phase timestamps: [[phase_name, unix_ms], ...]. Absent on older records. */
+  state_transitions?: [string, number][] | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';

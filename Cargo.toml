@@ -203,6 +203,10 @@ default_trait_access = "allow"
 
 [profile.dev]
 opt-level = 1
+# macOS: emits .dSYM separately instead of embedding debug info in .rlib.
+# Reduces target/debug by ~20-30%. Silently ignored on Windows/Linux.
+# Backtraces and rust-analyzer work unchanged.
+split-debuginfo = "unpacked"
 
 [profile.release]
 opt-level = 3

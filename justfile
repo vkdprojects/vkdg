@@ -177,6 +177,19 @@ clean:
     rm -rf apps/console/build dist
     @echo "Cleaned."
 
+# Remove old incremental artefacts (safe — recent builds are untouched).
+# Requires: cargo install cargo-sweep
+clean-old:
+    cargo sweep -t 14
+    cargo sweep -s
+    @echo "Removed artefacts older than 14 days and from old toolchain versions."
+
+# Remove only the Linux/musl cross-compile target (frees 10-20 GB).
+# The next `just image-dev` or `just build-linux-amd64` rebuilds it (~3 min).
+clean-linux:
+    rm -rf target/x86_64-unknown-linux-musl target/aarch64-unknown-linux-musl
+    @echo "Linux cross-compile targets removed."
+
 # Browser end-to-end tests against the real binary with the console embedded.
 e2e:
     cd apps/console && bun run build && bun run e2e

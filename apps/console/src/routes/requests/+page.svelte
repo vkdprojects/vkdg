@@ -231,7 +231,7 @@
             <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>
           </dl>
 
-          {#if d.stop_reason || d.error_message || d.thinking_requested != null || d.message_count != null}
+          {#if d.stop_reason || d.error_message || d.thinking_requested != null || d.message_count != null || d.cache_read_tokens != null || d.cache_write_tokens != null}
             <h3 class="drawer-subtitle">{m.request_metadata()}</h3>
             <dl class="info-grid">
               {#if d.stop_reason}
@@ -249,6 +249,14 @@
               {#if d.message_count != null}
                 <dt>{m.request_message_count()}</dt>
                 <dd>{d.message_count}</dd>
+              {/if}
+              {#if d.cache_read_tokens != null}
+                <dt>{m.request_cache_read()}</dt>
+                <dd class="mono">{#if (d.cache_read_tokens ?? 0) > 0}<span class="cache-badge cache-badge--hit">{d.cache_read_tokens.toLocaleString()}</span>{:else}–{/if}</dd>
+              {/if}
+              {#if d.cache_write_tokens != null}
+                <dt>{m.request_cache_write()}</dt>
+                <dd class="mono">{d.cache_write_tokens.toLocaleString()}</dd>
               {/if}
             </dl>
           {/if}
@@ -510,6 +518,20 @@
     color: #1e40af;
   }
 
+
+  .cache-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    white-space: nowrap;
+  }
+
+  .cache-badge--hit {
+    background: #d1fae5;
+    color: #065f46;
+  }
   .error-text {
     color: var(--color-error, #dc2626);
     font-size: 0.8125rem;

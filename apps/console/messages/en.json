@@ -285,6 +285,8 @@
   "request_error_message": "Error",
   "request_thinking": "Thinking",
   "request_message_count": "Messages",
+  "request_cache_read": "Cache read tokens",
+  "request_cache_write": "Cache write tokens",
   "acct_refresh_token": "Refresh token",
   "key_no_limit": "No limit configured",
   "setup_progress_label": "Setup progress",

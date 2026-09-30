@@ -270,6 +270,8 @@
   "request_error_message": "Erro",
   "request_thinking": "Raciocínio",
   "request_message_count": "Mensagens",
+  "request_cache_read": "Tokens de cache lido",
+  "request_cache_write": "Tokens de cache escrito",
   "acct_refresh_token": "Token de atualização",
   "key_no_limit": "Sem limite configurado",
   "setup_progress_label": "Progresso da configuração",

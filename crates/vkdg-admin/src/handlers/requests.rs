@@ -66,6 +66,12 @@ pub struct RequestRecord {
     /// Populated at request start; absent when the record was written by an older build.
     #[serde(default)]
     pub state_transitions: Option<Vec<(String, i64)>>,
+    /// Prompt cache tokens: read from and written to the provider's cache.
+    /// Absent when the provider reported no cache activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -171,6 +177,12 @@ impl RequestLog {
             r.input_tokens = Some(tokens.input);
             r.output_tokens = Some(tokens.output);
             r.cost_microdollars = price.map(|p| p.cost_microdollars(tokens));
+        }
+        if tokens.cache_read > 0 {
+            r.cache_read_tokens = Some(tokens.cache_read);
+        }
+        if tokens.cache_write > 0 {
+            r.cache_write_tokens = Some(tokens.cache_write);
         }
         if let Some(sr) = stop_reason {
             r.stop_reason = Some(sr);
@@ -354,6 +366,8 @@ mod tests {
             thinking_requested: None,
             message_count: None,
             state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         });
         state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
@@ -373,6 +387,8 @@ mod tests {
             thinking_requested: None,
             message_count: None,
             state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -411,6 +427,8 @@ mod tests {
             thinking_requested: None,
             message_count: None,
             state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 

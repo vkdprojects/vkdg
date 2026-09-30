@@ -236,6 +236,9 @@ export interface RequestSummary {
   message_count?: number | null;
   /** Pipeline phase timestamps: [[phase_name, unix_ms], ...]. Absent on older records. */
   state_transitions?: [string, number][] | null;
+  /** Prompt-cache tokens read from / written to the provider cache. */
+  cache_read_tokens?: number | null;
+  cache_write_tokens?: number | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';

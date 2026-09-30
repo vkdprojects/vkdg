@@ -171,6 +171,8 @@ fn pending_log(
             error_message,
             thinking_requested,
             message_count,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
             state_transitions: Some(
                 ctx.transitions
                     .iter()

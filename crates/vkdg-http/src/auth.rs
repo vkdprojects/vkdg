@@ -728,6 +728,8 @@ mod tests {
                 thinking_requested: None,
                 message_count: None,
                 state_transitions: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
             },
             price,
         }

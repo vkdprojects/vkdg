@@ -182,12 +182,25 @@ pub fn build_conversation_state(
     let mut turns = collect_turns(conv);
 
     if let Some(system) = conv.system.as_deref().filter(|s| !s.is_empty()) {
-        if let Some(first_user) = turns.iter_mut().find(|t| !t.assistant) {
-            first_user.text.insert(0, system.to_owned());
-        } else {
-            let mut t = Turn::new(false);
-            t.text.push(system.to_owned());
-            turns.insert(0, t);
+        // Filter out internal client headers injected by coding agents (omp, Claude Code).
+        // The billing header (x-anthropic-billing-header: cc_version=...) arrives as a text
+        // block in the system array. Kiro has no separate system field so it gets prepended
+        // into the first user turn — if not removed, the model sees it as user content and
+        // incorrectly treats it as a pasted system prompt injection.
+        let clean: String = system
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("x-anthropic-billing-header:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let clean = clean.trim();
+        if !clean.is_empty() {
+            if let Some(first_user) = turns.iter_mut().find(|t| !t.assistant) {
+                first_user.text.insert(0, clean.to_owned());
+            } else {
+                let mut t = Turn::new(false);
+                t.text.push(clean.to_owned());
+                turns.insert(0, t);
+            }
         }
     }
 

@@ -52,6 +52,19 @@ impl GatewayStore {
              );",
         )
         .map_err(|e| store_err("init", &e))?;
+        // Migration: if connections already exist but meta.seeded is absent
+        // (upgrade from a version without the meta table), mark as seeded now
+        // so the gateway doesn't re-import config.yaml and wipe live data.
+        let conn_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM connections", [], |r| r.get(0))
+            .map_err(|e| store_err("init migration check", &e))?;
+        if conn_count > 0 {
+            conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES ('seeded', '1')",
+                [],
+            )
+            .map_err(|e| store_err("init migration mark_seeded", &e))?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })

@@ -314,15 +314,35 @@
             <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
           </div>
         {:else if step === 'pkce' && flow?.flow === 'authorization_code_pkce'}
-          <p class="step-intro">{m.acct_pkce_step()}</p>
-          <a class="verify-link" href={flow.authorize_url} target="_blank" rel="noopener noreferrer">
-            <ExternalLink size={14} aria-hidden="true" />
-            {m.acct_open_authorize()}
-          </a>
+          {@const authorizeUrl = (flow as { authorize_url: string }).authorize_url}
+          <div class="pkce-section">
+            <p class="step-intro">{m.acct_pkce_step()}</p>
+            <Button
+              onclick={() => window.open(authorizeUrl, '_blank', 'noopener,noreferrer')}
+            >
+              <ExternalLink size={16} aria-hidden="true" />
+              {m.acct_open_authorize()}
+            </Button>
+            <div class="pkce-url-row">
+              <code class="pkce-url" title={authorizeUrl}>{authorizeUrl.slice(0, 60)}…</code>
+              <CopyButton text={authorizeUrl} />
+            </div>
+            <p class="pkce-waiting-hint">
+              <Spinner size="sm" />
+              {m.acct_waiting()}
+            </p>
+          </div>
           <form onsubmit={submitCode} class="fields">
             <div class="field">
               <label for="pkce-code">{m.acct_code_label()}</label>
-              <input id="pkce-code" type="text" autocomplete="off" required bind:value={pkceCode} />
+              <input
+                id="pkce-code"
+                type="text"
+                autocomplete="off"
+                required
+                placeholder="Paste the code or full callback URL"
+                bind:value={pkceCode}
+              />
             </div>
             <div class="footer">
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>

@@ -30,7 +30,11 @@ use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
 use crate::endpoint::EndpointKind;
 
 /// Identifies this gateway upstream.
-const USER_AGENT: &str = "vkdg/0.1.0";
+/// User-agent string sent to the Kiro upstream.
+/// Matches the Kiro IDE binary to avoid potential throttling of unknown clients.
+/// Source: kiro-account-manager kiroApi.ts (confirmed against live traffic).
+const USER_AGENT: &str =
+    "aws-sdk-js/1.0.34 KiroIDE-0.12.155 OS/macOS/15.0 lang/js pm/npm platform/darwin";
 
 pub struct KiroAdapter;
 

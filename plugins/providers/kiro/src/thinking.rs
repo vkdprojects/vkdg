@@ -7,6 +7,7 @@
 //!    `thinking:{type:"adaptive"}` (or `reasoning.effort` for GPT-5.6 models).
 //!    Gated on exact model allowlists — sending it to `claude-sonnet-4.5` causes
 //!    a Bedrock 400 even though that model supports thinking on the direct API.
+//!    Source: kiro-account-manager `translator.ts` + `proxyServer.ts` (schemaPath discovery).
 //! 2. **`<thinking_mode>enabled</thinking_mode><max_thinking_length>N</max_thinking_length>`**
 //!    prepended to the user message, which makes Claude emit reasoning inline as
 //!    `<thinking>…</thinking>` blocks instead of separate `reasoningContentEvent`
@@ -14,7 +15,16 @@
 
 use vkdg_operations::ThinkingRequest;
 
-const ADAPTIVE_MODELS: &[&str] = &["claude-opus-5", "claude-sonnet-5"];
+/// Models that accept `additionalModelRequestFields.output_config.effort` +
+/// `thinking.type=adaptive`. Derived from kiro-account-manager `proxyServer.ts`
+/// (schema discovery) and kiro-proxy-anthropic. claude-sonnet-4.5 causes a 400.
+const ADAPTIVE_MODELS: &[&str] = &[
+    "claude-sonnet-4.6",
+    "claude-opus-4.7",
+    "claude-opus-4.8",
+    "claude-sonnet-5",
+    "claude-opus-5",
+];
 const NATIVE_REASONING_MODELS: &[&str] = &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const KIRO_EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 

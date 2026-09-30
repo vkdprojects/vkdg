@@ -129,6 +129,9 @@ impl KiroEventDecoder {
             return;
         }
         self.terminated = true;
+        // Flush any partial thinking content accumulated in thinking_pending
+        // before closing the stream — mirrors OmniRoute's flushPendingThinking.
+        self.flush_thinking(out);
         self.flush_buffered_tool_inputs(out);
         if let Some((input_tokens, output_tokens)) = self.usage() {
             out.push(ConversationEvent::Usage {

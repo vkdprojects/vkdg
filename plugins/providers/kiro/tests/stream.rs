@@ -526,3 +526,30 @@ fn inline_thinking_tag_split_across_frames() {
         "answer in content: {content:?}"
     );
 }
+
+// Plausible wrong impl: finish() doesn't call flush_thinking(), so a partial
+// <thinking> tag buffered in thinking_pending is silently dropped at end of
+// stream, producing an incomplete reasoning delta or empty response.
+#[test]
+fn finish_flushes_partial_thinking_pending() {
+    // Stream that ends while thinking_pending still holds a partial closing tag
+    // ("</thinking" without ">"). With the fix, the partial content must be
+    // emitted; without it, it is silently dropped.
+    let bytes = event(
+        "assistantResponseEvent",
+        &json!({ "content": "<thinking>partial</think" }),
+    );
+    // No closing "ing>" frame — stream ends abruptly here.
+    let events = decode(&bytes, 128);
+
+    // At least a ReasoningDelta or OutputDelta must carry the word "partial".
+    let has_partial = events.iter().any(|e| match e {
+        ConversationEvent::ReasoningDelta { delta, .. } => delta.contains("partial"),
+        ConversationEvent::OutputDelta { delta, .. } => delta.contains("partial"),
+        _ => false,
+    });
+    assert!(
+        has_partial,
+        "partial thinking content must not be silently dropped on stream end; events={events:?}"
+    );
+}

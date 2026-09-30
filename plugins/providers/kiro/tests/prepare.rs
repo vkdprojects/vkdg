@@ -306,3 +306,102 @@ fn a_pinned_endpoint_selects_the_host_and_keeps_the_credential_rules() {
         "an API key must never send profileArn: AWS answers 403"
     );
 }
+
+// ── Progressive aging ─────────────────────────────────────────────────────────
+
+/// Build an Operation with `n` alternating user/assistant messages.
+/// `overrides[i]` replaces the text of message `i` (0-indexed) when present.
+fn multi_turn_op(n: usize, overrides: &[(usize, &str)]) -> Operation {
+    let messages: Vec<Message> = (0..n)
+        .map(|i| {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            let text = overrides
+                .iter()
+                .find(|(idx, _)| *idx == i)
+                .map_or_else(|| format!("msg{i}"), |(_, t)| (*t).to_string());
+            Message {
+                role,
+                content: MessageContent::Text(text),
+            }
+        })
+        .collect();
+    Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".to_string(),
+        messages,
+        tools: vec![],
+        max_tokens: Some(64),
+        temperature: None,
+        stream: true,
+        system: None,
+        required_capabilities: CapabilitySet::default(),
+        thinking: None,
+        ..Default::default()
+    })
+}
+
+/// Refutes: compressing history turns that are close to the active turn.
+/// A turn at distance ≤ 3 from the end of history must be sent verbatim even
+/// when its text exceeds the distant-aging limit (120 chars).
+#[test]
+fn recent_turns_are_verbatim() {
+    // 11 messages → 10 history turns after popping current user turn.
+    // msg8 (i=8, user) → distance = 10-1-8 = 1  (≤3, verbatim).
+    let long_text = "B".repeat(200);
+    let op = multi_turn_op(11, &[(8, &long_text)]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let content = history[8]["userInputMessage"]["content"]
+        .as_str()
+        .expect("string content at index 8");
+    assert_eq!(
+        content, long_text,
+        "turn at distance 1 must not be compressed (got {content:?})"
+    );
+}
+
+/// Refutes: sending old history turns in full, which wastes tokens and defeats
+/// the prompt-cache on every subsequent request.
+/// A turn at distance ≥ 8 must have its text truncated to 120 chars.
+#[test]
+fn old_turns_are_compressed() {
+    // 11 messages → 10 history turns after popping current user turn.
+    // msg0 (i=0, user) → distance = 10-1-0 = 9  (≥8, 120-char limit).
+    let long_text = "A".repeat(200);
+    let op = multi_turn_op(11, &[(0, &long_text)]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let content = history[0]["userInputMessage"]["content"]
+        .as_str()
+        .expect("string content at index 0");
+    assert!(
+        content.len() <= 124, // 120 chars + "…" (3 UTF-8 bytes) + a little margin
+        "turn at distance 9 must be compressed to ≤120 chars; got {} chars: {content:?}",
+        content.len()
+    );
+    assert!(
+        !content.contains(&long_text[..121]),
+        "compressed turn must not contain the full original text"
+    );
+}

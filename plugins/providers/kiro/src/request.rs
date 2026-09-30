@@ -30,6 +30,14 @@ const TOOL_NAME_MAX: usize = 64;
 /// 50 k+ char file contents from being resent on every turn of the conversation.
 const TOOL_RESULT_HISTORY_MAX: usize = 2_000;
 
+/// Max chars for text / tool-result content in mid-range history (distance 4–7 from end).
+const AGING_MID_TEXT_MAX: usize = 500;
+const AGING_MID_TOOL_MAX: usize = 500;
+
+/// Max chars for text / tool-result content in distant history (distance 8+ from end).
+const AGING_FAR_TEXT_MAX: usize = 120;
+const AGING_FAR_TOOL_MAX: usize = 50;
+
 /// JSON-Schema keywords Kiro answers with 400 "Improperly formed request",
 /// wherever they appear in a tool schema.
 const STRIPPED_SCHEMA_KEYS: &[&str] = &[
@@ -205,10 +213,14 @@ pub fn build_conversation_state(
             .rev()
             .find_map(|(i, t)| if t.assistant { None } else { Some(i) });
     let has_history_user = last_user_idx.is_some();
+    let history_len = turns.len();
     let history: Vec<HistoryItem> = turns
         .into_iter()
         .enumerate()
-        .map(|(i, turn)| history_item_with_cache(turn, Some(i) == last_user_idx))
+        .map(|(i, turn)| {
+            let distance_from_end = history_len.saturating_sub(i + 1);
+            history_item_aged(turn, Some(i) == last_user_idx, distance_from_end)
+        })
         .collect();
 
     let mut current_text = String::new();
@@ -378,6 +390,79 @@ fn history_item_with_cache(turn: Turn, place_cache_point: bool) -> HistoryItem {
                         .map(|(id, content)| {
                             tool_result_value(&(id.clone(), truncate_history_content(content)))
                         })
+                        .collect(),
+                },
+            },
+        }
+    }
+}
+
+/// Truncate `content` to at most `max` bytes, appending "…" when cut.
+///
+/// Stays on a UTF-8 char boundary so the result is always valid UTF-8.
+fn truncate_aged(content: &str, max: usize) -> String {
+    if content.len() <= max {
+        return content.to_owned();
+    }
+    // Walk backward from `max` to find the last char boundary.
+    let end = (0..=max)
+        .rev()
+        .find(|&i| content.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}…", &content[..end])
+}
+
+/// Produce a history item with content compressed according to how far the turn
+/// is from the end of the conversation.
+///
+/// | distance_from_end | text limit | tool-result limit |
+/// |-------------------|------------|-------------------|
+/// | 0–3 (recent)      | 2 000 (verbatim, via history_item_with_cache) | 2 000 |
+/// | 4–7 (mid)         | 500 chars  | 500 chars         |
+/// | 8+  (distant)     | 120 chars (first line) | 50 chars |
+fn history_item_aged(turn: Turn, place_cache_point: bool, distance_from_end: usize) -> HistoryItem {
+    if distance_from_end <= 3 {
+        return history_item_with_cache(turn, place_cache_point);
+    }
+
+    let (text_max, tool_max, first_line_only) = if distance_from_end <= 7 {
+        (AGING_MID_TEXT_MAX, AGING_MID_TOOL_MAX, false)
+    } else {
+        (AGING_FAR_TEXT_MAX, AGING_FAR_TOOL_MAX, true)
+    };
+
+    let raw = turn.joined_text();
+    let content = if first_line_only {
+        let first_line = raw.lines().next().unwrap_or("");
+        truncate_aged(first_line, text_max)
+    } else {
+        truncate_aged(&raw, text_max)
+    };
+
+    if turn.assistant {
+        HistoryItem::Assistant {
+            assistant_response_message: AssistantMessage {
+                content,
+                tool_uses: turn.tool_uses,
+            },
+        }
+    } else {
+        HistoryItem::User {
+            user_input_message: UserInput {
+                content,
+                model_id: None,
+                origin: None,
+                cache_point: if place_cache_point {
+                    Some(CachePoint { kind: "default" })
+                } else {
+                    None
+                },
+                context: MessageContext {
+                    tools: Vec::new(),
+                    tool_results: turn
+                        .tool_results
+                        .iter()
+                        .map(|(id, c)| tool_result_value(&(id.clone(), truncate_aged(c, tool_max))))
                         .collect(),
                 },
             },

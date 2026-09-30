@@ -4517,6 +4517,7 @@ dependencies = [
  "vkdg-operations",
  "vkdg-plugin-host",
  "vkdg-provider-sdk",
+ "vkdg-routing",
 ]
 
 [[package]]
@@ -4594,7 +4595,10 @@ name = "vkdg-config"
 version = "0.1.0"
 dependencies = [
  "notify",
+ "parking_lot",
+ "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.21",

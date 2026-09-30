@@ -324,6 +324,8 @@ mod tests {
             catalog: None,
             logins: None,
             connection_tester: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 

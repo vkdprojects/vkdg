@@ -9,6 +9,7 @@ vkdg-core        = { workspace = true }
 vkdg-connections = { workspace = true }
 vkdg-plugin-host = { workspace = true }
 vkdg-config      = { workspace = true }
+vkdg-routing     = { workspace = true }
 axum             = { workspace = true }
 tokio            = { workspace = true }
 serde            = { workspace = true }

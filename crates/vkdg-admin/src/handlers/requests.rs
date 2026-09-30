@@ -281,6 +281,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 

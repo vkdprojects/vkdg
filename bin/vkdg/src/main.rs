@@ -8,7 +8,7 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::{Parser, Subcommand};
-use vkdg_config::{load_and_validate, ConfigSnapshot};
+use vkdg_config::{load_and_validate, ConfigSnapshot, GatewayStore};
 use vkdg_connections::{
     Account, AccountStore, AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager,
     ProviderKind,
@@ -376,7 +376,13 @@ async fn serve(
     };
     let credentials = Arc::new(build_credentials(account_store.as_ref(), &registry));
 
-    let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
+    // ── GatewayStore + config bootstrap ───────────────────────────────────────
+    // Open (or create) the store always; it lives next to accounts.db.
+    let gateway_store = Arc::new(
+        GatewayStore::open(&AccountStore::default_path().with_file_name("gateway.db"))
+            .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?,
+    );
+
     // Next to accounts.db and keys.db, so history survives a restart or deploy.
     let request_log_path = AccountStore::default_path().with_file_name("requests.db");
     let request_log = match vkdg_admin::handlers::requests::RequestLog::open(
@@ -393,38 +399,89 @@ async fn serve(
     // Auth plugins, loaded once for both builders so a gateway started without
     // a config file has them too; plugin reloads swap this same registry.
     let hooks = Arc::new(build_hook_registry(&PluginStore::from_env()));
-    let mut pipeline = if let Some(path) = &config_path {
-        match load_and_validate(path, 1) {
-            Ok(snap) => {
-                tracing::info!(path = %path, version = snap.version, "loaded config from file");
-                // Read once at startup: the body cap sizes the listener, not a route.
-                if let Some(limit) = snap.limits.max_body_bytes {
-                    server_config.max_body_bytes = limit;
-                }
-                let mut pipeline = build_pipeline_from_snapshot(
-                    &snap,
-                    max_concurrent,
-                    Arc::clone(&credentials),
-                    Arc::clone(&registry),
-                );
-                pipeline.hooks = Arc::clone(&hooks);
-                // Refuse to start on a route naming a hook that is not installed,
-                // exactly as a reload with one is refused.
-                unknown_hooks(&snap, &pipeline.hooks).map_err(anyhow::Error::msg)?;
-                unknown_providers(&snap, &pipeline.provider_registry)
-                    .map_err(anyhow::Error::msg)?;
-                // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
-                let (tx, _rx) = vkdg_config::config_channel(snap);
-                admin_config_rx = Some(tx.subscribe());
-                spawn_config_applier(tx.subscribe(), &pipeline);
-                drop(vkdg_config::watch(path.clone(), tx, 1));
-                Some(pipeline)
-            }
-            // The operator asked for this file. Serving a different gateway (env
-            // routes, maybe an ANTHROPIC_API_KEY passthrough) would hide the
-            // mistake, so refuse to start, as `vkdg config check` would.
-            Err(e) => anyhow::bail!("config file {path} is invalid: {e}"),
+
+    // Build a ConfigSnapshot from the store (preferred) or the YAML file (seed).
+    // Limits and observe always come from the YAML if present; only connections
+    // and routes move to the store.
+    let seeded_snap: Option<ConfigSnapshot> = if gateway_store
+        .is_empty()
+        .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?
+    {
+        if let Some(path) = &config_path {
+            let snap = load_and_validate(path, 1)
+                .map_err(|e| anyhow::anyhow!("config file {path} is invalid: {e}"))?;
+            unknown_hooks(&snap, &hooks).map_err(anyhow::Error::msg)?;
+            unknown_providers(&snap, &registry).map_err(anyhow::Error::msg)?;
+            gateway_store
+                .set_connections(&snap.gateway.connections)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .set_routes(&snap.gateway.routes)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            tracing::info!(path = %path, version = snap.version, "seeded gateway store from config file");
+            Some(snap)
+        } else {
+            None
         }
+    } else {
+        // Store has data — build snapshot from it, carrying limits/observe from
+        // the YAML file if one was given (connections/routes come from the store).
+        let (conn_defs, route_defs) = gateway_store
+            .load()
+            .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?;
+        let base_cfg = config_path.as_deref().and_then(|path| {
+            load_and_validate(path, 1)
+                .ok()
+                .map(|s| (*s.gateway).clone())
+        });
+        let mut gateway = base_cfg.unwrap_or_else(|| vkdg_config::schema::GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![],
+            routes: vec![],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        });
+        gateway.connections = conn_defs;
+        gateway.routes = route_defs;
+        let snap = ConfigSnapshot::build(1, gateway)
+            .map_err(|e| anyhow::anyhow!("gateway store invalid: {e}"))?;
+        tracing::info!(
+            connections = snap.connections.len(),
+            routes = snap.routes.len(),
+            "loaded gateway config from store"
+        );
+        Some(snap)
+    };
+
+    // Build the watch channel from the snapshot, or an empty one for env-only mode.
+    let (config_tx, config_rx) = if let Some(snap) = &seeded_snap {
+        let (tx, rx) = vkdg_config::config_channel(snap.clone());
+        (Some(tx), rx)
+    } else {
+        let (tx, rx) = vkdg_config::config_channel(ConfigSnapshot::default_empty());
+        (Some(tx), rx)
+    };
+    // Hot-reload: keep watching the file for external edits even after seeding.
+    if let Some(path) = &config_path {
+        if let Some(tx) = &config_tx {
+            drop(vkdg_config::watch(path.clone(), tx.clone(), 1));
+        }
+    }
+
+    let mut pipeline = if let Some(snap) = &seeded_snap {
+        if let Some(limit) = snap.limits.max_body_bytes {
+            server_config.max_body_bytes = limit;
+        }
+        let mut p = build_pipeline_from_snapshot(
+            snap,
+            max_concurrent,
+            Arc::clone(&credentials),
+            Arc::clone(&registry),
+        );
+        p.hooks = Arc::clone(&hooks);
+        spawn_config_applier(config_rx.clone(), &p);
+        Some(p)
     } else {
         build_pipeline_from_env(
             max_concurrent,
@@ -432,7 +489,7 @@ async fn serve(
             Arc::clone(&registry),
         )
     };
-    // Share request_log Arc between pipeline and admin API.
+    // Share request_log Arc and hooks between pipeline and admin API.
     if let Some(p) = &mut pipeline {
         p.request_log = Some(Arc::clone(&request_log));
         p.hooks = Arc::clone(&hooks);
@@ -536,10 +593,6 @@ async fn serve(
         let t = uuid::Uuid::new_v4().to_string();
         (t.clone(), Some(t))
     };
-    let config_rx = admin_config_rx.unwrap_or_else(|| {
-        let (_tx, rx) = vkdg_config::config_channel(vkdg_config::ConfigSnapshot::default_empty());
-        rx
-    });
     let admin_state = vkdg_admin::AdminState {
         sessions: vkdg_admin::session::SessionStore::with_password_file(
             bootstrap_token,
@@ -561,6 +614,8 @@ async fn serve(
             )
         }),
         connection_tester,
+        gateway_store: Some(Arc::clone(&gateway_store)),
+        config_tx,
     };
     // Console SPA served as fallback on the admin port (9090).
     // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.

@@ -800,6 +800,8 @@ mod tests {
                 Arc::clone(&store),
                 None,
             )),
+            gateway_store: None,
+            config_tx: None,
         };
         (state, store)
     }
@@ -1073,6 +1075,8 @@ mod tests {
                 Arc::clone(&store),
                 None,
             )),
+            gateway_store: None,
+            config_tx: None,
         };
         (state, store)
     }

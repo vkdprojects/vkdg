@@ -9,7 +9,9 @@ use axum::{
     Json,
 };
 use http::{HeaderMap, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use vkdg_config::schema::{AuthDef, ConnectionDef};
 
 #[derive(Serialize)]
 pub struct ConnectionSummary {
@@ -138,6 +140,203 @@ pub async fn test_connection(
     Json(result).into_response()
 }
 
+// ── CRUD body types ────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateConnectionBody {
+    pub id: String,
+    pub provider: String,
+    pub base_url: Option<String>,
+    pub endpoint: Option<String>,
+    pub auth: AuthDef,
+    pub models: Vec<String>,
+    pub max_concurrent: Option<u32>,
+    pub weight: Option<u32>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl CreateConnectionBody {
+    fn into_def(self, id: String) -> ConnectionDef {
+        ConnectionDef {
+            id,
+            provider: self.provider,
+            base_url: self.base_url,
+            endpoint: self.endpoint,
+            auth: self.auth,
+            models: self.models,
+            max_concurrent: self.max_concurrent,
+            weight: self.weight,
+            tags: self.tags,
+        }
+    }
+}
+
+/// Rebuild snapshot from store data, preserving limits/observe, and push.
+pub fn rebuild_and_push(
+    state: &AdminState,
+) -> Result<Arc<vkdg_config::ConfigSnapshot>, AdminError> {
+    let store = state
+        .gateway_store
+        .as_ref()
+        .ok_or_else(|| AdminError::new("no_store", "gateway store not available"))?;
+    let (conn_defs, route_defs) = store
+        .load()
+        .map_err(|e| AdminError::new("store_error", e.to_string()))?;
+    let current = state.config_rx.borrow().clone();
+    let mut gateway = (*current.gateway).clone();
+    gateway.connections = conn_defs;
+    gateway.routes = route_defs;
+    let new_version = current.version + 1;
+    let snap = vkdg_config::ConfigSnapshot::build(new_version, gateway)
+        .map_err(|e| AdminError::new("config_invalid", e.to_string()))?;
+    let snap = Arc::new(snap);
+    if let Some(tx) = &state.config_tx {
+        let _ = tx.send(snap.clone());
+    }
+    Ok(snap)
+}
+
+pub async fn create_connection(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateConnectionBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    if body.id.trim().is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "id must not be empty"),
+        )
+        .into_response();
+    }
+    if body.models.is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "models must not be empty"),
+        )
+        .into_response();
+    }
+    let id = body.id.clone();
+    let def = body.into_def(id.clone());
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    if let Err(e) = store.upsert_connection(&def) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    match rebuild_and_push(&state) {
+        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(snap) => {
+            let conn = snap.connections.iter().find(|c| c.id.0 == def.id);
+            match conn {
+                None => AdminErrorResponse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    AdminError::new("not_found", "connection missing after upsert"),
+                )
+                .into_response(),
+                Some(c) => (StatusCode::CREATED, Json(summarize(&state, c).await)).into_response(),
+            }
+        }
+    }
+}
+
+pub async fn update_connection(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<CreateConnectionBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    if body.models.is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "models must not be empty"),
+        )
+        .into_response();
+    }
+    // 404 if not in current snapshot
+    {
+        let snapshot = state.config_rx.borrow().clone();
+        if !snapshot.connections.iter().any(|c| c.id.0 == id) {
+            return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
+                .into_response();
+        }
+    }
+    let def = body.into_def(id.clone());
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    if let Err(e) = store.upsert_connection(&def) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    match rebuild_and_push(&state) {
+        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(snap) => {
+            let conn = snap.connections.iter().find(|c| c.id.0 == id);
+            match conn {
+                None => AdminErrorResponse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    AdminError::new("not_found", "connection missing after upsert"),
+                )
+                .into_response(),
+                Some(c) => Json(summarize(&state, c).await).into_response(),
+            }
+        }
+    }
+}
+
+pub async fn delete_connection(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    if let Err(e) = store.delete_connection(&id) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    if let Err(e) = rebuild_and_push(&state) {
+        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +360,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 
@@ -211,6 +412,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -286,6 +489,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -359,6 +564,8 @@ mod tests {
             connection_tester: None,
             catalog: Some(catalog),
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -375,5 +582,128 @@ mod tests {
         assert_eq!(item["active_requests"], 1, "{v}");
         assert!(item["cooldown_until"].is_string(), "{v}");
         drop(guard);
+    }
+
+    fn make_state_with_store() -> (
+        AdminState,
+        tokio::sync::watch::Sender<std::sync::Arc<vkdg_config::ConfigSnapshot>>,
+    ) {
+        use vkdg_config::GatewayStore;
+        let snap = vkdg_config::ConfigSnapshot::default_empty();
+        let (tx, rx) = tokio::sync::watch::channel(std::sync::Arc::new(snap));
+        let store = Arc::new(GatewayStore::in_memory().unwrap());
+        let state = AdminState {
+            sessions: crate::session::SessionStore::new("tok".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: crate::handlers::requests::RequestLog::new(),
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
+            catalog: None,
+            logins: None,
+            gateway_store: Some(store),
+            config_tx: Some(tx.clone()),
+        };
+        (state, tx)
+    }
+
+    fn authed_headers(state: &AdminState) -> HeaderMap {
+        let session = state.sessions.bootstrap_login().unwrap();
+        let mut h = HeaderMap::new();
+        h.insert(
+            http::header::COOKIE,
+            http::HeaderValue::from_str(&format!("vkdg_session={}", session.session_id)).unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn create_connection_returns_201() {
+        let (state, _tx) = make_state_with_store();
+        let headers = authed_headers(&state);
+        let body = CreateConnectionBody {
+            id: "new-conn".into(),
+            provider: "anthropic".into(),
+            base_url: None,
+            endpoint: None,
+            auth: vkdg_config::schema::AuthDef::ApiKey {
+                env_var: "ANTHROPIC_API_KEY".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: None,
+            weight: None,
+            tags: vec![],
+        };
+        let resp = create_connection(State(state), headers, Json(body)).await;
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["id"], "new-conn");
+        assert_eq!(val["provider"], "anthropic");
+    }
+
+    #[tokio::test]
+    async fn delete_connection_returns_204() {
+        use vkdg_config::{schema::AuthDef as AD, ConfigSnapshot, ConnectionDef, GatewayConfig};
+        let cfg = GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![ConnectionDef {
+                id: "del-me".into(),
+                provider: "anthropic".into(),
+                auth: AD::ApiKey {
+                    env_var: "KEY".into(),
+                },
+                models: vec!["*".into()],
+                max_concurrent: None,
+                weight: None,
+                base_url: None,
+                tags: vec![],
+                endpoint: None,
+            }],
+            routes: vec![],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        };
+        let snap = ConfigSnapshot::build(1, cfg).unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(Arc::new(snap));
+        let store = Arc::new(vkdg_config::GatewayStore::in_memory().unwrap());
+        // seed store so delete has something to remove
+        store
+            .upsert_connection(&ConnectionDef {
+                id: "del-me".into(),
+                provider: "anthropic".into(),
+                auth: AD::ApiKey {
+                    env_var: "KEY".into(),
+                },
+                models: vec!["*".into()],
+                max_concurrent: None,
+                weight: None,
+                base_url: None,
+                tags: vec![],
+                endpoint: None,
+            })
+            .unwrap();
+        let state = AdminState {
+            sessions: crate::session::SessionStore::new("tok".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: crate::handlers::requests::RequestLog::new(),
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
+            catalog: None,
+            logins: None,
+            gateway_store: Some(store),
+            config_tx: Some(tx),
+        };
+        let headers = authed_headers(&state);
+        let resp = delete_connection(State(state), headers, Path("del-me".into())).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 }

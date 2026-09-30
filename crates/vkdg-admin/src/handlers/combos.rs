@@ -264,6 +264,8 @@ mod tests {
             connection_tester: None,
             catalog: Some(catalog),
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 

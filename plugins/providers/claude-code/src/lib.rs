@@ -167,6 +167,7 @@ impl OAuthProvider for ClaudeCodeAdapter {
             let mut url = reqwest::Url::parse(CLAUDE_AUTHORIZE_URL)
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
             url.query_pairs_mut()
+                .append_pair("code", "true")
                 .append_pair("client_id", &client_id)
                 .append_pair("response_type", "code")
                 .append_pair("redirect_uri", CLAUDE_REDIRECT_URI)

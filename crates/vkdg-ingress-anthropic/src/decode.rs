@@ -16,6 +16,25 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
             message: e.to_string(),
         })?;
 
+    // omp and other clients encode reasoning effort as a suffix on the model
+    // name: `claude-sonnet-4.6:max`, `claude-opus-5:high`, `...:off`.
+    // Strip it and carry it as ThinkingRequest.effort so the provider adapter
+    // can activate the right reasoning mode without changing the model id.
+    const KNOWN_EFFORTS: &[&str] = &["off", "min", "low", "medium", "high", "xhigh", "max"];
+    let (base_model, effort_suffix) = {
+        let m = &req.model;
+        if let Some(pos) = m.rfind(':') {
+            let suffix = &m[pos + 1..];
+            if KNOWN_EFFORTS.contains(&suffix) {
+                (m[..pos].to_owned(), Some(suffix.to_owned()))
+            } else {
+                (m.clone(), None)
+            }
+        } else {
+            (m.clone(), None)
+        }
+    };
+
     let messages: Vec<Message> = req
         .messages
         .into_iter()
@@ -55,8 +74,36 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         })
         .collect();
 
+    // Merge thinking from the wire field and from the model suffix.
+    // Suffix wins for effort; wire field wins for budget_tokens.
+    let thinking = match (
+        req.thinking.filter(|t| t.kind != "disabled"),
+        effort_suffix.as_deref(),
+    ) {
+        (_, Some("off")) => None,
+        (Some(t), Some(e)) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: t.budget_tokens,
+            effort: Some(e.to_owned()),
+        }),
+        (Some(t), None) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: t.budget_tokens,
+            // `{type:"adaptive"}` without explicit effort → use "max" so the
+            // provider can activate the highest available reasoning mode.
+            effort: if t.budget_tokens.is_none() && t.kind == "adaptive" {
+                Some("max".to_owned())
+            } else {
+                None
+            },
+        }),
+        (None, Some(e)) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: None,
+            effort: Some(e.to_owned()),
+        }),
+        (None, None) => None,
+    };
+
     let operation = Operation::Conversation(ConversationRequest {
-        model: req.model.clone(),
+        model: base_model.clone(),
         messages,
         tools,
         max_tokens: req.max_tokens,
@@ -64,15 +111,10 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         stream: req.stream.unwrap_or(false),
         system: req.system.map(system_text),
         required_capabilities: CapabilitySet::default(),
-        thinking: req.thinking.filter(|t| t.kind != "disabled").map(|t| {
-            vkdg_operations::ThinkingRequest {
-                budget_tokens: t.budget_tokens,
-                effort: None,
-            }
-        }),
+        thinking,
     });
 
-    Ok((req.model, operation))
+    Ok((base_model, operation))
 }
 /// Flatten `system` to text. Block arrays keep their order, joined by a blank
 /// line; non-text blocks carry no system text and are skipped.

@@ -104,7 +104,7 @@ impl OAuthProvider for ClaudeCodeAdapter {
             fields: vec![LoginField {
                 id: "code".into(),
                 label: "Authorization code".into(),
-                required: true,
+                required: false,
                 secret: false,
                 default: None,
                 placeholder: Some("Paste the code from your browser".into()),

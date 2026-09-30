@@ -45,6 +45,12 @@ pub trait ConversationStreamDecoder: Send {
     fn finish(&mut self) -> Vec<ConversationEvent> {
         Vec::new()
     }
+
+    /// Kiro-specific: percentage of context window used, if the provider reported it.
+    /// Default is `None` (most providers do not report this).
+    fn context_usage_pct(&self) -> Option<f64> {
+        None
+    }
 }
 
 /// Every provider adapter must implement this trait.

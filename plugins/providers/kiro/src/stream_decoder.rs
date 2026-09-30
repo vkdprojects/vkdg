@@ -39,4 +39,8 @@ impl ConversationStreamDecoder for KiroStreamDecoder {
         }
         out
     }
+
+    fn context_usage_pct(&self) -> Option<f64> {
+        self.events.context_usage_pct()
+    }
 }

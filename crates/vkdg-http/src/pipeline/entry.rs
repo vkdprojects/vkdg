@@ -173,6 +173,7 @@ fn pending_log(
             message_count,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            context_usage_pct: None,
             state_transitions: Some(
                 ctx.transitions
                     .iter()

@@ -26,6 +26,10 @@ const TOOL_DESCRIPTION_MAX: usize = 10_000;
 /// Kiro rejects tool names longer than this.
 const TOOL_NAME_MAX: usize = 64;
 
+/// Tool result content in history turns is truncated to this length to prevent
+/// 50 k+ char file contents from being resent on every turn of the conversation.
+const TOOL_RESULT_HISTORY_MAX: usize = 2_000;
+
 /// JSON-Schema keywords Kiro answers with 400 "Improperly formed request",
 /// wherever they appear in a tool schema.
 const STRIPPED_SCHEMA_KEYS: &[&str] = &[
@@ -329,6 +333,23 @@ fn demote_orphan_results(turns: &mut [Turn]) {
     }
 }
 
+/// Truncate a tool result's content for history turns.
+///
+/// Long results (file reads, grep output) can exceed 50 k chars. Resending that
+/// on every subsequent turn wastes tokens and defeats the upstream prompt cache.
+/// The current turn is always sent in full; only history turns are truncated.
+fn truncate_history_content(content: &str) -> String {
+    if content.len() <= TOOL_RESULT_HISTORY_MAX {
+        content.to_owned()
+    } else {
+        let total = content.len();
+        let mut s = content[..TOOL_RESULT_HISTORY_MAX].to_owned();
+        use std::fmt::Write as _;
+        let _ = write!(s, "...[truncated, {total} chars total]");
+        s
+    }
+}
+
 fn history_item_with_cache(turn: Turn, place_cache_point: bool) -> HistoryItem {
     let content = turn.joined_text();
     if turn.assistant {
@@ -351,7 +372,13 @@ fn history_item_with_cache(turn: Turn, place_cache_point: bool) -> HistoryItem {
                 },
                 context: MessageContext {
                     tools: Vec::new(),
-                    tool_results: turn.tool_results.iter().map(tool_result_value).collect(),
+                    tool_results: turn
+                        .tool_results
+                        .iter()
+                        .map(|(id, content)| {
+                            tool_result_value(&(id.clone(), truncate_history_content(content)))
+                        })
+                        .collect(),
                 },
             },
         }

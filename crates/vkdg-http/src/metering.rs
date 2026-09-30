@@ -49,6 +49,8 @@ pub struct UsageMeter {
     usage: TokenUsage,
     /// Stop reason from the final `message_delta` SSE event.
     stop_reason: Option<String>,
+    /// Kiro context window usage percentage, from `vkdg_context_usage` SSE events.
+    context_usage_pct: Option<f64>,
 }
 
 /// Non-streaming bodies larger than this are not metered from their JSON: the
@@ -90,6 +92,11 @@ impl UsageMeter {
         self.stop_reason.clone()
     }
 
+    /// Kiro context window usage; `None` when the provider did not report it.
+    pub fn context_usage_pct(&self) -> Option<f64> {
+        self.context_usage_pct
+    }
+
     fn observe_line(&mut self, line: &[u8]) {
         let Some(data) = line.strip_prefix(b"data:") else {
             return;
@@ -125,6 +132,12 @@ impl UsageMeter {
         {
             if !sr.is_empty() {
                 self.stop_reason = Some(sr.to_owned());
+            }
+        }
+        // VKDG vendor event: Kiro context window usage percentage.
+        if v.get("type").and_then(Value::as_str) == Some("vkdg_context_usage") {
+            if let Some(pct) = v.get("pct").and_then(Value::as_f64) {
+                self.context_usage_pct = Some(pct);
             }
         }
     }

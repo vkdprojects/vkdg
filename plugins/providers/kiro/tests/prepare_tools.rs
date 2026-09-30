@@ -342,3 +342,143 @@ fn no_tools_means_no_tool_context() {
         "no tools key must be sent when the client declared none: {b}"
     );
 }
+
+/// Refutes: sending enormous tool results in history turns, which wastes tokens
+/// and defeats the upstream prompt cache on every subsequent turn.
+/// A result exceeding 2 000 chars in a history turn must be truncated with a
+/// suffix that records the original length; results already within the limit
+/// must pass through verbatim.
+#[test]
+fn history_tool_results_over_2000_chars_are_truncated() {
+    // Build a 5-message conversation so the tool result lands in history, not
+    // in current_turn.  Layout: user → assistant(tool_use) → user(tool_result)
+    // → assistant(text) → user(text).  The last user turn becomes current_turn;
+    // everything before it is history.
+    let long_content = "x".repeat(5_000);
+    let messages = vec![
+        text(Role::User, "Weather in Paris?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_1".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({ "city": "Paris" }),
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: long_content,
+                is_error: false,
+            }]),
+        },
+        text(Role::Assistant, "The weather is fine."),
+        text(Role::User, "Thanks"),
+    ];
+    let b = body(&request(messages, vec![weather_tool()]));
+
+    // Find the history user turn that carried tool results.
+    let history = b["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let history_results = history
+        .iter()
+        .find_map(|h| h["userInputMessage"]["userInputMessageContext"]["toolResults"].as_array())
+        .expect("a history user turn with toolResults");
+
+    let text_val = history_results[0]["content"][0]["text"]
+        .as_str()
+        .expect("content text");
+    assert!(
+        text_val.len() <= 2_000 + "[...truncated, 5000 chars total]".len(),
+        "history tool result must be truncated; got {} chars",
+        text_val.len()
+    );
+    assert!(
+        text_val.contains("...[truncated, 5000 chars total]"),
+        "truncated result must carry the original-length suffix; got: {text_val:.80}"
+    );
+    // Short results must pass through unchanged.
+    let short_content = "18C and sunny".to_owned();
+    let messages2 = vec![
+        text(Role::User, "Weather?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_2".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({ "city": "Paris" }),
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_2".into(),
+                content: short_content.clone(),
+                is_error: false,
+            }]),
+        },
+        text(Role::Assistant, "Got it."),
+        text(Role::User, "Thanks"),
+    ];
+    let b2 = body(&request(messages2, vec![weather_tool()]));
+    let history2 = b2["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let history_results2 = history2
+        .iter()
+        .find_map(|h| h["userInputMessage"]["userInputMessageContext"]["toolResults"].as_array())
+        .expect("a history user turn with toolResults");
+    assert_eq!(
+        history_results2[0]["content"][0]["text"].as_str().unwrap(),
+        short_content,
+        "short tool result must not be modified"
+    );
+}
+
+/// Refutes: truncating the current turn's tool results. Only history turns are
+/// truncated; the live result a model just produced must travel in full so the
+/// next model call can act on it.
+#[test]
+fn current_turn_tool_results_are_never_truncated() {
+    // 3-message conversation: last user turn is current_turn, not history.
+    let long_content = "y".repeat(5_000);
+    let messages = vec![
+        text(Role::User, "Read a file?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_1".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({}),
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: long_content,
+                is_error: false,
+            }]),
+        },
+    ];
+    let b = body(&request(messages, vec![weather_tool()]));
+
+    let current_results = current(&b)["userInputMessageContext"]["toolResults"]
+        .as_array()
+        .expect("current turn must have toolResults");
+    let text_val = current_results[0]["content"][0]["text"]
+        .as_str()
+        .expect("content text");
+    assert_eq!(
+        text_val.len(),
+        5_000,
+        "current turn tool result must not be truncated; got {} chars",
+        text_val.len()
+    );
+    assert!(
+        !text_val.contains("truncated"),
+        "current turn result must not carry a truncation suffix"
+    );
+}

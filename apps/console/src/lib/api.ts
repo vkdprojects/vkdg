@@ -239,6 +239,8 @@ export interface RequestSummary {
   /** Prompt-cache tokens read from / written to the provider cache. */
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
+  /** Kiro context window usage (0–100+%). Only present for Kiro-backed requests. */
+  context_usage_pct?: number | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';

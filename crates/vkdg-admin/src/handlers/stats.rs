@@ -284,6 +284,7 @@ mod tests {
             state_transitions: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            context_usage_pct: None,
         }
     }
 

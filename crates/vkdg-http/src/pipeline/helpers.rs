@@ -229,7 +229,14 @@ pub(super) fn decode_stream_to_sse(
                             return Some((Ok(Bytes::from(encoded)), Some(state)));
                         }
                     }
-                    let tail = state.encoder.finish();
+                    let mut tail = state.encoder.finish();
+                    // Append a vendor-specific SSE event with the Kiro context window
+                    // usage percentage so the metering layer can store it in the log.
+                    if let Some(pct) = state.decoder.context_usage_pct() {
+                        let evt =
+                            format!("data: {{\"type\":\"vkdg_context_usage\",\"pct\":{pct}}}\n\n");
+                        tail.extend_from_slice(evt.as_bytes());
+                    }
                     return (!tail.is_empty()).then(|| (Ok(Bytes::from(tail)), None));
                 }
             }

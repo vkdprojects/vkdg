@@ -72,6 +72,10 @@ pub struct RequestRecord {
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<u64>,
+    /// Kiro context window usage as a percentage (0–100+). Only set when the
+    /// Kiro provider reported a `contextUsageEvent`. Absent for all other providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage_pct: Option<f64>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -161,6 +165,7 @@ impl RequestLog {
         body_ended: bool,
         price: Option<&vkdg_core::pricing::ModelPrice>,
         stop_reason: Option<String>,
+        context_usage_pct: Option<f64>,
     ) {
         let conn = self.conn.lock();
         let Ok(json) = conn.query_row(
@@ -186,6 +191,9 @@ impl RequestLog {
         }
         if let Some(sr) = stop_reason {
             r.stop_reason = Some(sr);
+        }
+        if let Some(pct) = context_usage_pct {
+            r.context_usage_pct = Some(pct);
         }
         if r.status == STATUS_PENDING {
             r.status = if body_ended { "completed" } else { "cancelled" }.into();
@@ -368,6 +376,7 @@ mod tests {
             state_transitions: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            context_usage_pct: None,
         });
         state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
@@ -389,6 +398,7 @@ mod tests {
             state_transitions: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            context_usage_pct: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -429,6 +439,7 @@ mod tests {
             state_transitions: None,
             cache_read_tokens: None,
             cache_write_tokens: None,
+            context_usage_pct: None,
         }
     }
 
@@ -475,10 +486,10 @@ mod tests {
             ..BilledTokens::default()
         };
         let price = ModelPrice::new("m", 3_000_000, 15_000_000);
-        log.finish("streamed", t(11, 4), true, Some(&price), None);
-        log.finish("dropped", t(11, 1), false, None, None);
-        log.finish("failed", t(0, 0), true, Some(&price), None);
-        log.finish("unknown", t(1, 1), true, None, None);
+        log.finish("streamed", t(11, 4), true, Some(&price), None, None);
+        log.finish("dropped", t(11, 1), false, None, None, None);
+        log.finish("failed", t(0, 0), true, Some(&price), None, None);
+        log.finish("unknown", t(1, 1), true, None, None, None);
 
         let r = log.get("streamed").unwrap();
         assert_eq!(r.status, "completed");

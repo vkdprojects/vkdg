@@ -38,6 +38,14 @@ impl KiroEventDecoder {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Returns `Some(pct)` if Kiro reported a context-usage percentage; `None` otherwise.
+    pub fn context_usage_pct(&self) -> Option<f64> {
+        if self.context_usage_pct > 0.0 {
+            Some(self.context_usage_pct)
+        } else {
+            None
+        }
+    }
 
     pub fn on_frame(&mut self, frame: &Frame, out: &mut Vec<ConversationEvent>) {
         if self.terminated {

@@ -231,7 +231,7 @@
             <dt>{m.request_cost()}</dt><dd class="mono">{fmtCost(d.cost_microdollars)}</dd>
           </dl>
 
-          {#if d.stop_reason || d.error_message || d.thinking_requested != null || d.message_count != null || d.cache_read_tokens != null || d.cache_write_tokens != null}
+          {#if d.stop_reason || d.error_message || d.thinking_requested != null || d.message_count != null || d.cache_read_tokens != null || d.cache_write_tokens != null || d.context_usage_pct != null}
             <h3 class="drawer-subtitle">{m.request_metadata()}</h3>
             <dl class="info-grid">
               {#if d.stop_reason}
@@ -257,6 +257,16 @@
               {#if d.cache_write_tokens != null}
                 <dt>{m.request_cache_write()}</dt>
                 <dd class="mono">{d.cache_write_tokens.toLocaleString()}</dd>
+              {/if}
+              {#if d.context_usage_pct != null}
+                {@const pct = d.context_usage_pct}
+                <dt>Context usage</dt>
+                <dd class="mono">
+                  <span class="ctx-bar" title="{pct.toFixed(1)}% of context window">
+                    <span class="ctx-bar__fill" style="width: {Math.min(pct, 100).toFixed(1)}%"></span>
+                  </span>
+                  {pct.toFixed(1)}%
+                </dd>
               {/if}
             </dl>
           {/if}
@@ -531,6 +541,25 @@
   .cache-badge--hit {
     background: #d1fae5;
     color: #065f46;
+  }
+
+  .ctx-bar {
+    display: inline-block;
+    vertical-align: middle;
+    width: 80px;
+    height: 8px;
+    background: var(--border, #e5e7eb);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-right: 0.375rem;
+  }
+
+  .ctx-bar__fill {
+    display: block;
+    height: 100%;
+    background: #3b82f6;
+    border-radius: 4px;
+    transition: width 0.2s ease;
   }
   .error-text {
     color: var(--color-error, #dc2626);

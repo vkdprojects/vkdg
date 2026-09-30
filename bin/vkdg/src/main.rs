@@ -2152,6 +2152,7 @@ async fn test_connection_smoke(
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     });
 
     // Force routing to this specific connection by temporarily making the

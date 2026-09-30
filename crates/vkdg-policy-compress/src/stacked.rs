@@ -113,6 +113,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         };
         // With a small message, savings may be 0 — just verify it doesn't panic
         let result = c.compress(req, 10000);

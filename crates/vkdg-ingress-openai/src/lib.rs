@@ -20,6 +20,7 @@ use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_http::AppState;
 use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
+use vkdg_operations::Operation;
 
 // ── OpenAI error wire types ───────────────────────────────────────────────────
 
@@ -106,13 +107,24 @@ pub async fn handle_chat_completions(State(state): State<AppState>, req: Request
     };
 
     // 2. Decode OpenAI JSON → (model, Operation).
-    let (model, operation) = match decode_request(&bytes) {
+    let (model, mut operation) = match decode_request(&bytes) {
         Ok(v) => v,
         Err(e) => return vkdg_error_to_oai_response(&e),
     };
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // 2b. Propagate stable session id into conversation operations.
+    if let Operation::Conversation(conv) = &mut operation {
+        if let Some(sid) = headers
+            .get("x-claude-code-session-id")
+            .or_else(|| headers.get("x-session-id"))
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+        {
+            conv.session_id = Some(sid.to_owned());
+        }
+    }
     // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
     // bug, so refuse rather than serve an unidentified caller.
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
@@ -234,7 +246,7 @@ pub async fn handle_responses(State(state): State<AppState>, req: Request) -> Re
     };
 
     // 2. Decode Responses API JSON → (model, Operation).
-    let (model, operation) = match decode_responses_request(&bytes) {
+    let (model, mut operation) = match decode_responses_request(&bytes) {
         Ok(v) => v,
         Err(e) => return vkdg_error_to_oai_response(&e),
     };
@@ -256,6 +268,17 @@ pub async fn handle_responses(State(state): State<AppState>, req: Request) -> Re
 
     // 3. Build request envelope with per-request override headers.
     let headers = &parts.headers;
+    // 2b. Propagate stable session id into conversation operations.
+    if let Operation::Conversation(conv) = &mut operation {
+        if let Some(sid) = headers
+            .get("x-claude-code-session-id")
+            .or_else(|| headers.get("x-session-id"))
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+        {
+            conv.session_id = Some(sid.to_owned());
+        }
+    }
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {
         tracing::error!("data-plane route mounted without require_api_key");
         return vkdg_error_to_oai_response(&VkdgError::Unauthenticated);

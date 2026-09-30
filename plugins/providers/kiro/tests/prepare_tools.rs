@@ -79,6 +79,7 @@ fn request(messages: Vec<Message>, tools: Vec<Tool>) -> Operation {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     })
 }
 

@@ -15,6 +15,7 @@ use vkdg_core::pipeline::PipelineCtx;
 use vkdg_core::{ApiType, ClientId, RequestEnvelope, RequestId, TenantId, VkdgError};
 use vkdg_http::AppState;
 use vkdg_http::{extract_vkdg_overrides, pipeline::run_conversation_pipeline};
+use vkdg_operations::Operation;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -35,13 +36,25 @@ pub async fn handle_messages(State(state): State<AppState>, req: Request) -> Res
     };
 
     // 2. Decode Anthropic JSON → (model, Operation).
-    let (model, operation) = match decode_request(&bytes) {
+    let (model, mut operation) = match decode_request(&bytes) {
         Ok(v) => v,
         Err(e) => return vkdg_error_to_anthropic_response(&e),
     };
 
-    // 3. Build request envelope with per-request override headers.
+    // 2b. Propagate stable session id into conversation operations.
     let headers = &parts.headers;
+    if let Operation::Conversation(conv) = &mut operation {
+        if let Some(sid) = headers
+            .get("x-claude-code-session-id")
+            .or_else(|| headers.get("x-session-id"))
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+        {
+            conv.session_id = Some(sid.to_owned());
+        }
+    }
+
+    // 3. Build request envelope with per-request override headers.
     // Set by `vkdg_http::require_api_key`; a route mounted without it is a wiring
     // bug, so refuse rather than serve an unidentified caller.
     let Some(identity) = parts.extensions.get::<vkdg_http::ClientIdentity>() else {

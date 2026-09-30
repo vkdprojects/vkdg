@@ -98,7 +98,7 @@ pub struct Tool {
 
 // ── Conversation request ──────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConversationRequest {
     /// Model the client asked for, as written on the wire.
     ///
@@ -117,6 +117,10 @@ pub struct ConversationRequest {
     /// `reasoning_effort`). `None` = the client did not ask.
     #[serde(default)]
     pub thinking: Option<ThinkingRequest>,
+    /// Stable session id propagated from `x-claude-code-session-id` (or
+    /// `x-session-id`). Used by providers that support conversation continuity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A client's reasoning request, kept in the client's own terms: a token

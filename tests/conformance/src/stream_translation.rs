@@ -199,6 +199,7 @@ async fn client_stream(api_type: ApiType) -> String {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     });
 
     let response = run_conversation_pipeline(pipeline, PipelineCtx::new(envelope), op).await;

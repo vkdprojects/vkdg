@@ -33,6 +33,7 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     })
 }
 

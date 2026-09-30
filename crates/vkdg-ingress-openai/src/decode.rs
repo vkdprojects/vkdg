@@ -203,6 +203,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
                 budget_tokens: None,
                 effort: Some(effort),
             }),
+        ..Default::default()
     });
 
     Ok((req.model, operation))
@@ -347,6 +348,7 @@ pub fn decode_responses_request(body: &[u8]) -> Result<(String, Operation), Vkdg
         system,
         required_capabilities: CapabilitySet::default(),
         thinking,
+        ..Default::default()
     });
 
     Ok((req.model, operation))

@@ -112,6 +112,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         system: req.system.map(system_text),
         required_capabilities: CapabilitySet::default(),
         thinking,
+        ..Default::default()
     });
 
     Ok((base_model, operation))

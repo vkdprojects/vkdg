@@ -225,7 +225,11 @@ pub fn build_conversation_state(
     ConversationState {
         chat_trigger_type: "MANUAL",
         agent_task_type: "vibe",
-        conversation_id: Uuid::new_v4().to_string(),
+        conversation_id: conv
+            .session_id
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
         current_message: CurrentMessage {
             user_input_message: UserInput {
                 content: if let Some(prefix) = &thinking_prefix {

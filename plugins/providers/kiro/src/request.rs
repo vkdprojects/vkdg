@@ -188,7 +188,24 @@ pub fn build_conversation_state(
         _ => None,
     };
 
-    let history = turns.into_iter().map(history_item).collect();
+    // Cache the prefix at the last stable user turn in history.
+    // AWS CodeWhisperer caches everything up to the cache_point; the last user
+    // turn in history is the freshest position that does NOT change on the next
+    // request, so the cached prefix grows with the conversation instead of
+    // being invalidated on every turn.
+    // Single-turn (no history): cache_point stays on currentMessage (below).
+    let last_user_idx =
+        turns
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, t)| if t.assistant { None } else { Some(i) });
+    let has_history_user = last_user_idx.is_some();
+    let history: Vec<HistoryItem> = turns
+        .into_iter()
+        .enumerate()
+        .map(|(i, turn)| history_item_with_cache(turn, Some(i) == last_user_idx))
+        .collect();
 
     let mut current_text = String::new();
     if !relocated_docs.is_empty() {
@@ -218,7 +235,13 @@ pub fn build_conversation_state(
                 },
                 model_id: Some(model_id.to_owned()),
                 origin: Some(origin.to_owned()),
-                cache_point: Some(CachePoint { kind: "default" }),
+                // cache_point goes to last history user turn in multi-turn conversations.
+                // In single-turn (no history), it falls back here so AWS can still cache.
+                cache_point: if has_history_user {
+                    None
+                } else {
+                    Some(CachePoint { kind: "default" })
+                },
                 // Tools always ride on the current message, even when only the
                 // history uses them: Kiro needs the schemas to validate earlier
                 // `toolUses`, and rejects `toolResults` without `tools`.
@@ -302,7 +325,7 @@ fn demote_orphan_results(turns: &mut [Turn]) {
     }
 }
 
-fn history_item(turn: Turn) -> HistoryItem {
+fn history_item_with_cache(turn: Turn, place_cache_point: bool) -> HistoryItem {
     let content = turn.joined_text();
     if turn.assistant {
         HistoryItem::Assistant {
@@ -317,7 +340,11 @@ fn history_item(turn: Turn) -> HistoryItem {
                 content,
                 model_id: None,
                 origin: None,
-                cache_point: None,
+                cache_point: if place_cache_point {
+                    Some(CachePoint { kind: "default" })
+                } else {
+                    None
+                },
                 context: MessageContext {
                     tools: Vec::new(),
                     tool_results: turn.tool_results.iter().map(tool_result_value).collect(),

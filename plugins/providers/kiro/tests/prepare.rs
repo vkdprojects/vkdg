@@ -193,6 +193,8 @@ fn host_and_region_follow_the_account() {
 
 /// Refutes: quietly opting users into service improvement, and skipping the prompt
 /// cache that every multi-turn conversation benefits from.
+/// `cache_point` is now placed on the last user turn in history (not `currentMessage`),
+/// so it caches a stable prefix that is reused on every subsequent turn.
 #[test]
 fn optout_and_cache_point_are_always_sent() {
     let (_, headers, body) = prepared(
@@ -205,9 +207,19 @@ fn optout_and_cache_point_are_always_sent() {
         Some("true"),
         "a gateway cannot consent to training on its users' traffic"
     );
-    assert_eq!(
-        body["conversationState"]["currentMessage"]["userInputMessage"]["cachePoint"]["type"],
-        "default"
+    // Single-turn: no history → cache_point falls back to currentMessage.
+    // In multi-turn, it is placed on the last user turn in history instead.
+    let history = &body["conversationState"]["history"];
+    let current_cache =
+        &body["conversationState"]["currentMessage"]["userInputMessage"]["cachePoint"]["type"];
+    // Either history has a user turn with the cache_point, or it's on current (single-turn).
+    let history_has_cache = history.as_array().is_some_and(|arr| {
+        arr.iter()
+            .any(|item| item["userInputMessage"]["cachePoint"]["type"] == "default")
+    });
+    assert!(
+        history_has_cache || current_cache == "default",
+        "cache_point must appear in history (multi-turn) or currentMessage (single-turn)"
     );
 }
 

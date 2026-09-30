@@ -331,6 +331,7 @@ fn extract_tool_result(content: &MessageContent) -> (String, String) {
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content: result_content,
+                is_error: _,
             } = b
             {
                 return (tool_use_id.clone(), result_content.clone());
@@ -526,6 +527,7 @@ mod tests {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
                 content: "sunny, 22°C".into(),
+                is_error: false,
             }]),
         });
         let body = build_body(&req, &openai_config());

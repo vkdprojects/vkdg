@@ -5,7 +5,7 @@
 use bytes::Bytes;
 use vkdg_core::VkdgError;
 use vkdg_ingress_anthropic::decode_request;
-use vkdg_operations::Operation;
+use vkdg_operations::{MessageContent, Operation, Role};
 
 /// Contract: valid Anthropic request body decodes to Conversation operation.
 /// PASSES.
@@ -82,5 +82,31 @@ async fn decode_empty_body_returns_config_invalid() {
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { ref field, .. }) if field == "body"),
         "empty body must produce ConfigInvalid{{field:\"body\"}}; got {result:?}"
+    );
+}
+
+/// Contract: decode round-trips the full operation structure, not just the model.
+/// WEAK version only checked model string — this also verifies message structure.
+#[tokio::test]
+async fn decode_round_trips_full_operation() {
+    let body = Bytes::from(
+        r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}"#,
+    );
+    let (model, op) = decode_request(&body).expect("valid body must decode");
+    assert_eq!(model, "claude-3-5-sonnet-20241022");
+
+    let Operation::Conversation(req) = op else {
+        panic!("expected Operation::Conversation");
+    };
+    assert_eq!(req.messages.len(), 1, "must have exactly 1 message");
+    assert_eq!(
+        req.messages[0].role,
+        Role::User,
+        "first message role must be User"
+    );
+    assert!(
+        matches!(&req.messages[0].content, MessageContent::Text(t) if t == "hello"),
+        "first message content must be Text(\"hello\"), got: {:?}",
+        req.messages[0].content
     );
 }

@@ -126,6 +126,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
                 let block = ContentBlock::ToolResult {
                     tool_use_id,
                     content: content_text,
+                    is_error: false,
                 };
                 messages.push(Message {
                     role: Role::Tool,
@@ -468,7 +469,7 @@ mod tests {
         };
         assert!(matches!(
             &blocks[0],
-            ContentBlock::ToolResult { tool_use_id, content }
+            ContentBlock::ToolResult { tool_use_id, content, .. }
                 if tool_use_id == "call_123" && content == "42"
         ));
     }

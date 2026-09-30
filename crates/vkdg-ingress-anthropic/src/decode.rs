@@ -170,8 +170,19 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
             Some(ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                is_error: b.is_error.unwrap_or(false),
             })
         }
+        "thinking" => Some(ContentBlock::Thinking {
+            thinking: b.thinking.or(b.text).unwrap_or_default(),
+            signature: b.signature,
+        }),
+        "redacted_thinking" => Some(ContentBlock::RedactedThinking {
+            data: b
+                .data
+                .or(b.text)
+                .unwrap_or_else(|| b.input.as_ref().map(|v| v.to_string()).unwrap_or_default()),
+        }),
         _ => None,
     }
 }
@@ -300,5 +311,140 @@ mod tests {
         });
         let resp = call_handler(state, padded_body(5 * 1024 * 1024)).await;
         assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    // Plausible wrong impl: `_ => None` arm in anthropic_block_to_content silently
+    // drops thinking blocks, producing an empty assistant message instead of
+    // preserving the reasoning trace.
+    #[test]
+    fn thinking_block_in_history_is_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "I need to...", "signature": "abc123"}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode thinking block");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks, got {:?}", msg.content)
+        };
+        assert_eq!(blocks.len(), 1, "thinking block must not be dropped");
+        match &blocks[0] {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "I need to...");
+                assert_eq!(signature.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected Thinking block, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: `_ => None` silently drops redacted_thinking blocks,
+    // losing the sealed reasoning trace from multi-turn conversation history.
+    #[test]
+    fn redacted_thinking_block_is_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "redacted_thinking", "data": "<redacted>"}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode redacted_thinking block");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks, got {:?}", msg.content)
+        };
+        assert_eq!(
+            blocks.len(),
+            1,
+            "redacted_thinking block must not be dropped"
+        );
+        match &blocks[0] {
+            ContentBlock::RedactedThinking { data } => {
+                assert_eq!(data, "<redacted>");
+            }
+            other => panic!("expected RedactedThinking block, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: tool_result is_error flag dropped during decode,
+    // causing downstream adapters to treat errors as successful tool outputs.
+    #[test]
+    fn tool_result_is_error_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "fn", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "error text", "is_error": true}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode is_error tool_result");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks")
+        };
+        match &blocks[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert!(*is_error, "is_error must be true");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: `{type:"adaptive"}` without budget_tokens left with
+    // effort=None, making the provider skip reasoning entirely instead of using
+    // the highest available mode.
+    #[test]
+    fn adaptive_thinking_maps_to_max_effort() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "thinking": {"type": "adaptive"},
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode adaptive thinking");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let thinking = req.thinking.expect("thinking must be Some for adaptive");
+        assert_eq!(
+            thinking.effort.as_deref(),
+            Some("max"),
+            "adaptive without budget_tokens must map to effort=max"
+        );
+        assert!(
+            thinking.budget_tokens.is_none(),
+            "adaptive must not set budget_tokens"
+        );
     }
 }

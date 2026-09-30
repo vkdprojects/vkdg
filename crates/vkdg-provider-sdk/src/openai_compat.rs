@@ -233,6 +233,7 @@ fn tool_result(content: &MessageContent) -> (String, String) {
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content: text,
+                is_error: _,
             } = b
             {
                 return (tool_use_id.clone(), text.clone());

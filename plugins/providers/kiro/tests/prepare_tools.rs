@@ -242,6 +242,7 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C and sunny".into(),
+                is_error: false,
             }]),
         },
     ];
@@ -291,6 +292,7 @@ fn a_result_only_turn_still_carries_the_tools() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C".into(),
+                is_error: false,
             }]),
         },
     ];
@@ -308,6 +310,7 @@ fn orphan_tool_results_become_text_instead_of_a_rejected_request() {
         content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
             tool_use_id: "tu_gone".into(),
             content: "stale output".into(),
+            is_error: false,
         }]),
     }];
     let b = body(&request(messages, vec![weather_tool()]));

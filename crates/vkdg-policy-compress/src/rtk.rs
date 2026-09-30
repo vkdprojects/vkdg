@@ -55,7 +55,8 @@ impl Compressor for RtkCompressor {
                             .saturating_div(4),
                         ContentBlock::Image { .. }
                         | ContentBlock::ToolUse { .. }
-                        | ContentBlock::Thinking { .. } => 20,
+                        | ContentBlock::Thinking { .. }
+                        | ContentBlock::RedactedThinking { .. } => 20,
                     })
                     .sum(),
             })
@@ -125,6 +126,7 @@ mod tests {
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
                     content: content.into(),
+                    is_error: false,
                 }]),
             }],
             tools: vec![],

@@ -798,3 +798,43 @@ fn context_relay_noop_on_non_conversation_operation() {
         "non-conversation operation must be unchanged"
     );
 }
+
+/// Plausible wrong impl: a stream with zero content deltas (only `message_start` +
+/// `message_delta` with `stop_reason`) produces an empty body or panics instead of
+/// forwarding the SSE stream with a valid `stop_reason` event.
+/// Verifies the pipeline does not crash on an empty content stream.
+#[tokio::test]
+async fn empty_stream_returns_valid_stop_reason() {
+    std::env::set_var("VKDG_SMOKE_KEY", "test-token");
+
+    let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicStreamEmpty).await;
+    let pipeline = make_pipeline(fake.base_url.clone(), 10);
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
+
+    let response = run_conversation_pipeline(pipeline, ctx, op).await;
+    let status = response.status();
+    let ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    assert_eq!(status, 200, "empty stream must return 200, got {status}");
+    assert!(
+        ct.contains("text/event-stream"),
+        "content-type must be text/event-stream for empty stream, got: {ct}"
+    );
+
+    // Drain the body; the stream must be readable without panic and must carry
+    // the `message_delta` with `stop_reason` (forwarded verbatim from the upstream).
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(
+        body_str.contains("end_turn") || body_str.contains("stop_reason"),
+        "empty stream body must contain stop_reason event, got: {body_str}"
+    );
+    assert_eq!(fake.call_count(), 1, "upstream must be called exactly once");
+}

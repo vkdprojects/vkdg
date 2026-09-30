@@ -118,7 +118,8 @@ fn estimated_tokens(messages: &[Message]) -> u32 {
                     ContentBlock::Image { .. }
                     | ContentBlock::ToolUse { .. }
                     | ContentBlock::ToolResult { .. }
-                    | ContentBlock::Thinking { .. } => 50,
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::RedactedThinking { .. } => 50,
                 })
                 .sum(),
         })

@@ -265,6 +265,7 @@ fn extract_tool_result(content: &MessageContent) -> (String, String) {
             if let ContentBlock::ToolResult {
                 tool_use_id,
                 content: c,
+                ..
             } = b
             {
                 return (tool_use_id.clone(), c.clone());

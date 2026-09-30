@@ -44,6 +44,9 @@ pub enum FakeUpstreamBehavior {
     /// Stream raw bytes with an arbitrary content-type: lets a test serve a
     /// non-SSE upstream protocol such as Kiro's AWS `EventStream` framing.
     RawStream { content_type: String, body: Vec<u8> },
+    /// SSE stream with zero content deltas: only `message_start` + `message_delta`(stop) + `[DONE]`.
+    /// Tests that the pipeline produces a valid `stop_reason` response on an empty content stream.
+    AnthropicStreamEmpty,
 }
 
 #[derive(Clone)]
@@ -166,6 +169,30 @@ async fn handle(State(state): State<FakeUpstreamState>) -> impl IntoResponse {
                 .status(StatusCode::OK)
                 .header("content-type", content_type.clone())
                 .body(axum::body::Body::from(body.clone()))
+                .unwrap()
+        }
+        // Empty content stream: message_start + message_delta(stop_reason) + [DONE].
+        // No content_block_start or content_block_delta events.
+        FakeUpstreamBehavior::AnthropicStreamEmpty => {
+            let sse = format!(
+                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+                serde_json::to_string(&json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_empty_01", "type": "message", "role": "assistant",
+                                "content": [], "model": "claude-3-5-sonnet-20241022",
+                                "stop_reason": null, "usage": {"input_tokens": 5, "output_tokens": 0}}
+                })).unwrap(),
+                serde_json::to_string(&json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                    "usage": {"output_tokens": 0}
+                })).unwrap(),
+            );
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .header("cache-control", "no-cache")
+                .body(axum::body::Body::from(sse))
                 .unwrap()
         }
     }

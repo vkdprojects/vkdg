@@ -198,6 +198,7 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            ..
                         } => Some(json!({
                             "type": "function_call_output",
                             "call_id": tool_use_id, "output": content

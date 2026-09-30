@@ -82,6 +82,14 @@ impl ProviderAdapter for AnthropicAdapter {
             http::header::CONTENT_TYPE,
             http::HeaderValue::from_static("application/json"),
         );
+        // Interleaved thinking requires the beta header so Anthropic routes
+        // thinking blocks back alongside text blocks.
+        if req.thinking.is_some() {
+            headers.insert(
+                "anthropic-beta",
+                http::HeaderValue::from_static("interleaved-thinking-2025-05-14"),
+            );
+        }
 
         Ok(PreparedRequest {
             url,
@@ -159,6 +167,15 @@ fn build_body(req: &ConversationRequest) -> Bytes {
             })
             .collect();
         body.insert("tools".into(), Value::Array(tools));
+    }
+    // Adaptive thinking: tell Anthropic to use extended reasoning and cap the
+    // token budget. Both fields are required when the key is present.
+    if let Some(thinking) = &req.thinking {
+        let budget = thinking.budget_tokens.unwrap_or(1024);
+        body.insert(
+            "thinking".into(),
+            json!({"type": "enabled", "budget_tokens": budget}),
+        );
     }
 
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())

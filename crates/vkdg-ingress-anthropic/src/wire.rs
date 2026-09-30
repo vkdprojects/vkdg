@@ -52,8 +52,14 @@ pub struct AnthropicBlock {
     // tool_result block
     pub(crate) tool_use_id: Option<String>,
     pub(crate) content: Option<AnthropicToolResultContent>,
+    pub(crate) is_error: Option<bool>,
     // image block
     pub(crate) source: Option<AnthropicImageSource>,
+    // thinking block
+    pub(crate) thinking: Option<String>,
+    pub(crate) signature: Option<String>,
+    // redacted_thinking block
+    pub(crate) data: Option<String>,
 }
 
 /// The `content` field of a `tool_result` block may be a plain string or

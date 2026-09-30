@@ -263,6 +263,7 @@ fn collect_turns(conv: &ConversationRequest) -> Vec<Turn> {
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            is_error: _,
                         } => turn
                             .tool_results
                             .push((tool_use_id.clone(), content.clone())),

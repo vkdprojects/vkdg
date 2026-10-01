@@ -227,12 +227,31 @@ pub fn build_conversation_state(
             .find_map(|(i, t)| if t.assistant { None } else { Some(i) });
     let has_history_user = last_user_idx.is_some();
     let history_len = turns.len();
+    // When a system prompt was injected, the first user turn carries it.
+    // The aging pipeline MUST NOT truncate that turn: the system prompt can be
+    // 5–20 KB and is critical for the model's identity and instructions.
+    // Only protect it when conv.system is non-empty (i.e. injection happened).
+    let system_injected = conv.system.as_deref().is_some_and(|s| !s.is_empty());
+    let protected_first_user = if system_injected {
+        turns
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| if t.assistant { None } else { Some(i) })
+    } else {
+        None
+    };
     let history: Vec<HistoryItem> = turns
         .into_iter()
         .enumerate()
         .map(|(i, turn)| {
             let distance_from_end = history_len.saturating_sub(i + 1);
-            history_item_aged(turn, Some(i) == last_user_idx, distance_from_end)
+            // Never age the first user turn when it carries the system prompt.
+            let effective_distance = if protected_first_user == Some(i) {
+                0
+            } else {
+                distance_from_end
+            };
+            history_item_aged(turn, Some(i) == last_user_idx, effective_distance)
         })
         .collect();
 

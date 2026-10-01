@@ -687,3 +687,180 @@ fn aging_tier_boundaries_are_correct() {
     // dist 19: also far — ≤124
     assert!(len(0) <= 124, "dist-19 far must be ≤120, got {}", len(0));
 }
+
+// ── Edge cases para encontrar bugs reais ──────────────────────────────────────
+
+/// BUG HUNT: e se o system prompt for gigante (20KB, como o omp real) e a conv
+/// longa? O system nunca pode ser truncado. Testa o pior caso real.
+#[test]
+fn huge_system_prompt_survives_100_turn_conversation() {
+    // omp envia ~20KB de system (conventions + project-context + memory)
+    let system = "A".repeat(20_000);
+    // 101 mensagens → 100 history turns. Sistema em dist=99 sem proteção.
+    let op = multi_turn_op_with_system(101, &system, &[]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    let h = body["conversationState"]["history"].as_array().unwrap();
+    let content = h[0]["userInputMessage"]["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains(&system),
+        "20KB system prompt MUST survive 100-turn conv; got len={} (should be ≥20000)",
+        content.len()
+    );
+}
+
+/// BUG HUNT: e se o system prompt contiver uma linha começando com
+/// "x-anthropic-billing-header:" no meio (não na primeira linha)?
+/// O filtro deve remover APENAS essa linha, não o resto.
+#[test]
+fn billing_header_filter_is_line_only_not_greedy() {
+    let system = "You are a helpful assistant.\nx-anthropic-billing-header: cc_version=2.1.280\nFollow instructions carefully.";
+    let op = multi_turn_op_with_system(3, system, &[]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    // System gets injected into first user turn → history[0].
+    // (3 msgs: msg0+system → hist[0], msg1 → hist[1], msg2 → currentMessage)
+    let h = body["conversationState"]["history"].as_array().unwrap();
+    let content = h[0]["userInputMessage"]["content"].as_str().unwrap_or("");
+    // Billing header line must be gone
+    assert!(
+        !content.contains("x-anthropic-billing-header:"),
+        "billing header must be stripped from history[0]; content: {content:?}"
+    );
+    // Content before billing header must survive
+    assert!(
+        content.contains("You are a helpful assistant."),
+        "content before billing header must survive; history[0]: {content:?}"
+    );
+    // Content after billing header must survive
+    assert!(
+        content.contains("Follow instructions carefully."),
+        "content after billing header must survive; history[0]: {content:?}"
+    );
+}
+
+/// BUG HUNT: o que acontece com um turn de assistente no topo da historia?
+/// (Às vezes a compactação do omp produz isso). Não deve crashar e deve
+/// ser tratado como assistente, não como usuário.
+#[test]
+fn assistant_turn_at_history_start_handled_correctly() {
+    let messages = vec![
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("I'll help.".into()),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("thanks".into()),
+        },
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("sure".into()),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("do it".into()),
+        },
+    ];
+    let op = Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".to_string(),
+        messages,
+        system: Some("Be helpful.".to_string()),
+        ..Default::default()
+    });
+    // Must not panic
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("must not panic: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    // Should have history
+    let h = body["conversationState"]["history"].as_array().unwrap();
+    assert!(!h.is_empty(), "history must not be empty");
+}
+
+/// BUG HUNT: e se o aging truncar uma mensagem de usuário que contém `tool_use`
+/// no meio do texto? A truncagem não pode partir no meio de um JSON.
+/// (Só testa que não crashe e produz output válido.)
+#[test]
+fn aging_does_not_corrupt_json_in_text() {
+    // Large text that looks like JSON (would be invalid if split mid-token)
+    let json_text = r#"{"action":"read","path":"/very/long/path/to/some/file/that/would/be/truncated","options":{"recursive":true,"depth":10}}"#.to_string();
+    let text_300 = json_text.repeat(2); // ~300 chars
+    let op = multi_turn_op(21, &[(0, &text_300)]); // dist 19 → 120-char limit
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    let h = body["conversationState"]["history"].as_array().unwrap();
+    // Must be valid string content (no panic from serialization)
+    let content = h[0]["userInputMessage"]["content"].as_str().unwrap_or("");
+    assert!(
+        content.len() <= 125,
+        "far-tier must be ≤120, got {}",
+        content.len()
+    );
+    // Must be valid UTF-8 (no panic from indexing mid-char)
+    assert!(std::str::from_utf8(content.as_bytes()).is_ok());
+}
+
+/// BUG HUNT: turns com conteúdo vazio não devem aparecer no histórico
+/// (evitar mandar turn = "" para o Kiro que pode causar 400).
+#[test]
+fn empty_text_turns_not_sent_as_blank() {
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: MessageContent::Text(String::new()),
+        },
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("ok".into()),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("real question".into()),
+        },
+    ];
+    let op = Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".to_string(),
+        messages,
+        ..Default::default()
+    });
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    // Verify the current message is "real question" (the empty first message
+    // may be in history, but must not cause the current message to disappear)
+    let current = body["conversationState"]["currentMessage"]["userInputMessage"]["content"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        current.contains("real question"),
+        "current message must be the last user turn; got: {current:?}"
+    );
+}

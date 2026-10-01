@@ -405,3 +405,285 @@ fn old_turns_are_compressed() {
         "compressed turn must not contain the full original text"
     );
 }
+
+// ── Compaction system — full e2e coverage ─────────────────────────────────────
+
+/// Helper: build a multi-turn op WITH a system prompt.
+fn multi_turn_op_with_system(n: usize, system: &str, overrides: &[(usize, &str)]) -> Operation {
+    let messages: Vec<Message> = (0..n)
+        .map(|i| {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            let text = overrides
+                .iter()
+                .find(|(idx, _)| *idx == i)
+                .map_or_else(|| format!("msg{i}"), |(_, t)| (*t).to_string());
+            Message {
+                role,
+                content: MessageContent::Text(text),
+            }
+        })
+        .collect();
+    Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".to_string(),
+        messages,
+        system: Some(system.to_string()),
+        ..Default::default()
+    })
+}
+
+/// Refutes: progressive aging truncating the system prompt injected into the
+/// first user turn, causing the model to lose identity and project context
+/// in long conversations (the "model se perde" bug — 2f93630).
+///
+/// With 51 messages the first user turn sits at distance 50 (far tier, 120-char
+/// limit without the protection). The system prompt is 500 chars — it MUST
+/// arrive intact regardless of conversation length.
+#[test]
+fn system_prompt_never_aged_in_long_conversation() {
+    let system = "S".repeat(500); // 500-char system prompt
+    let op = multi_turn_op_with_system(51, &system, &[]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    // First history item must contain the full system prompt verbatim.
+    let first_content = history[0]["userInputMessage"]["content"]
+        .as_str()
+        .expect("first history item must have string content");
+    assert!(
+        first_content.contains(&system),
+        "system prompt (500 chars) must be fully present in first history turn; got {first_content:?}"
+    );
+}
+
+/// Refutes: aging the system prompt when it arrives as a short (e.g. 50-char)
+/// string — the boundary case where a small system still must not be truncated.
+#[test]
+fn short_system_prompt_not_aged() {
+    let system = "You are a helpful coding assistant. Follow user instructions.";
+    let op = multi_turn_op_with_system(21, system, &[]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let first_content = history[0]["userInputMessage"]["content"]
+        .as_str()
+        .expect("string content");
+    assert!(
+        first_content.contains(system),
+        "short system must be verbatim in first turn; got {first_content:?}"
+    );
+}
+
+/// Refutes: aging ALL turns equally — the mid tier (distance 4–7) must keep
+/// 500 chars, not be compressed to the far-tier 120-char limit.
+#[test]
+fn mid_tier_turns_keep_500_chars() {
+    // 11 messages → 10 history turns. msg2 (i=2, user) → distance = 10-1-2 = 7 (mid tier).
+    let long_text = "M".repeat(600);
+    let op = multi_turn_op(11, &[(2, &long_text)]);
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare must succeed: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body is JSON");
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let content = history[2]["userInputMessage"]["content"]
+        .as_str()
+        .expect("string");
+    assert!(
+        content.len() > 120 && content.len() <= 504, // ~500 + ellipsis
+        "mid-tier (distance 7) must keep 500 chars, got {} chars",
+        content.len()
+    );
+}
+
+/// Refutes: not truncating tool results in history, which are typically large
+/// (file contents, API responses). History tool results must be capped at 2000 chars.
+#[test]
+fn history_tool_results_capped_not_current() {
+    use vkdg_operations::{ContentBlock, MessageContent};
+    // Build a 2-turn conversation: user→tool_result, assistant→text, user (current).
+    // The tool result in history must be truncated; the one in current must not.
+    let big_result = "R".repeat(5000);
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: big_result.clone(),
+                is_error: false,
+            }]),
+        },
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("ok".into()),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("next".into()),
+        },
+    ];
+    let op = Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".to_string(),
+        messages,
+        ..Default::default()
+    });
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("prepare: {e}"));
+    let body: Value = serde_json::from_slice(&req.body).expect("body JSON");
+    // The tool result was in the first turn which is now in history.
+    let history = body["conversationState"]["history"]
+        .as_array()
+        .expect("history");
+    let ctx = &history[0]["userInputMessage"]["userInputMessageContext"];
+    let tool_content = ctx["toolResults"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        tool_content.len() <= 2200,
+        "history tool result must be truncated to ~2000 chars, got {}",
+        tool_content.len()
+    );
+    assert!(
+        !tool_content.contains(&big_result[..2001]),
+        "tool result must be truncated"
+    );
+}
+
+/// Refutes: stable conversationId regression — two requests from the same
+/// session must share a conversationId, two from different sessions must differ.
+#[test]
+fn conversation_id_stable_within_session() {
+    let session = "test-session-abc-123";
+    let make_op = || {
+        Operation::Conversation(ConversationRequest {
+            model: "claude-sonnet-4.5".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            session_id: Some(session.to_string()),
+            ..Default::default()
+        })
+    };
+    let cred = credential(&[("auth_method", "api_key")]);
+    let conn = connection(&["claude-*"]);
+
+    let req1 = KiroAdapter.prepare(&make_op(), &conn, &cred).unwrap();
+    let req2 = KiroAdapter.prepare(&make_op(), &conn, &cred).unwrap();
+    let b1: Value = serde_json::from_slice(&req1.body).unwrap();
+    let b2: Value = serde_json::from_slice(&req2.body).unwrap();
+    let id1 = b1["conversationState"]["conversationId"]
+        .as_str()
+        .unwrap_or("");
+    let id2 = b2["conversationState"]["conversationId"]
+        .as_str()
+        .unwrap_or("");
+    assert!(!id1.is_empty(), "conversationId must not be empty");
+    assert_eq!(id1, id2, "same session_id must produce same conversationId");
+
+    // Different session → different conversationId
+    let make_op2 = || {
+        Operation::Conversation(ConversationRequest {
+            model: "claude-sonnet-4.5".to_string(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            session_id: Some("other-session-xyz".to_string()),
+            ..Default::default()
+        })
+    };
+    let req3 = KiroAdapter.prepare(&make_op2(), &conn, &cred).unwrap();
+    let b3: Value = serde_json::from_slice(&req3.body).unwrap();
+    let id3 = b3["conversationState"]["conversationId"]
+        .as_str()
+        .unwrap_or("");
+    assert_ne!(
+        id1, id3,
+        "different session_ids must produce different conversationIds"
+    );
+}
+
+/// Refutes: aging collapsing the entire conversation to just the most recent
+/// turns, losing important earlier context. Verifies the tier breakdown:
+/// last 4 turns verbatim, 4–7 mid (500 chars), 8+ far (120 chars).
+#[test]
+fn aging_tier_boundaries_are_correct() {
+    // 21 messages → 20 history turns after popping current.
+    // dist 1  → verbatim (index 18)
+    // dist 4  → mid 500 (index 15)
+    // dist 8  → far 120 (index 11)
+    // dist 19 → far 120 (index 0)
+    let big = "X".repeat(600);
+    let op = multi_turn_op(
+        21,
+        &[
+            (18, &big), // dist 1  (verbatim)   — user turn ✓
+            (14, &big), // dist 5  (mid ~500)   — user turn ✓ (15 is assistant)
+            (10, &big), // dist 9  (far ≤120)   — user turn ✓ (11 is assistant)
+            (0, &big),  // dist 19 (far ≤120)   — user turn ✓
+        ],
+    );
+    let req = KiroAdapter
+        .prepare(
+            &op,
+            &connection(&["claude-*"]),
+            &credential(&[("auth_method", "api_key")]),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    let body: Value = serde_json::from_slice(&req.body).unwrap();
+    let h = body["conversationState"]["history"].as_array().unwrap();
+
+    let len = |idx: usize| {
+        h[idx]["userInputMessage"]["content"]
+            .as_str()
+            .map_or(0, |s| s.len())
+    };
+
+    // dist 1: verbatim (600 chars)
+    assert!(
+        len(18) == 600,
+        "dist-1 must be verbatim (600), got {}",
+        len(18)
+    );
+    // dist 5: mid tier — between 121 and 504
+    assert!(
+        len(14) > 120 && len(14) <= 504,
+        "dist-5 mid must be ~500, got {}",
+        len(14)
+    );
+    // dist 9: far tier — ≤124
+    assert!(len(10) <= 124, "dist-9 far must be ≤120, got {}", len(10));
+    // dist 19: also far — ≤124
+    assert!(len(0) <= 124, "dist-19 far must be ≤120, got {}", len(0));
+}

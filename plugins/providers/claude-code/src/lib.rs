@@ -87,28 +87,25 @@ impl ProviderAdapter for ClaudeCodeAdapter {
 /// its binary and that the Anthropic `OAuth` flow is designed to accept from any
 /// `PKCE` public client. Source: `OmniRoute` `open-sse/utils/publicCreds.ts`.
 const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_REDIRECT_URI: &str = "https://platform.claude.com/oauth/code/callback";
+const CLAUDE_REDIRECT_URI_DEFAULT: &str = "https://platform.claude.com/oauth/code/callback";
+
+fn claude_redirect_uri() -> String {
+    std::env::var("VKDG_OAUTH_REDIRECT_URI").unwrap_or_else(|_| CLAUDE_REDIRECT_URI_DEFAULT.into())
+}
 const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const CLAUDE_BOOTSTRAP_URL: &str = "https://api.anthropic.com/api/claude_cli/bootstrap";
 
 impl OAuthProvider for ClaudeCodeAdapter {
     fn login_methods(&self) -> Vec<vkdg_provider_sdk::LoginMethod> {
-        use vkdg_provider_sdk::{LoginField, LoginMethod};
+        use vkdg_provider_sdk::LoginMethod;
         vec![LoginMethod {
             id: "pkce".into(),
             label: "Sign in with Claude".into(),
             flow: vkdg_provider_sdk::OAuthFlow::AuthorizationCodePkce,
-            hint: Some("Opens claude.ai in your browser. Paste the code back here.".into()),
+            hint: Some("Opens a popup to claude.ai — completes automatically.".into()),
             icon_char: Some('C'),
-            fields: vec![LoginField {
-                id: "code".into(),
-                label: "Authorization code".into(),
-                required: false,
-                secret: false,
-                default: None,
-                placeholder: Some("Paste the code from your browser".into()),
-            }],
+            fields: vec![],
         }]
     }
 
@@ -130,7 +127,7 @@ impl OAuthProvider for ClaudeCodeAdapter {
                 "user:sessions:claude_code".into(),
                 "user:mcp_servers".into(),
             ],
-            redirect_uri: Some(CLAUDE_REDIRECT_URI.into()),
+            redirect_uri: Some(claude_redirect_uri()),
             extra_auth_params,
         }
     }
@@ -170,7 +167,7 @@ impl OAuthProvider for ClaudeCodeAdapter {
                 .append_pair("code", "true")
                 .append_pair("client_id", &client_id)
                 .append_pair("response_type", "code")
-                .append_pair("redirect_uri", CLAUDE_REDIRECT_URI)
+                .append_pair("redirect_uri", &claude_redirect_uri())
                 .append_pair("scope", scopes)
                 .append_pair("code_challenge", &challenge)
                 .append_pair("code_challenge_method", "S256")
@@ -296,7 +293,7 @@ async fn finish_exchange(
             "state": effective_state,
             "grant_type": "authorization_code",
             "client_id": client_id,
-            "redirect_uri": CLAUDE_REDIRECT_URI,
+            "redirect_uri": claude_redirect_uri(),
             "code_verifier": verifier,
         }))
         .send()

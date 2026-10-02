@@ -32,6 +32,8 @@
   let flow = $state<LoginStart | null>(null);
   let secondsLeft = $state(0);
   let pkceCode = $state('');
+  let pkceAutoCapture = $state(false);
+  let popup = $state<Window | null>(null);
 
   const method = $derived(methods.find((x) => x.id === methodId));
 
@@ -39,11 +41,19 @@
   let gen = 0;
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let tickTimer: ReturnType<typeof setInterval> | undefined;
+  let oauthChannel: BroadcastChannel | null = null;
+  let popupWatcher: ReturnType<typeof setInterval> | undefined;
 
   function stop() {
     gen++;
     clearTimeout(pollTimer);
     clearInterval(tickTimer);
+    clearInterval(popupWatcher);
+    try { oauthChannel?.close(); } catch { /* ignore */ }
+    oauthChannel = null;
+    try { popup?.close(); } catch { /* ignore */ }
+    popup = null;
+    pkceAutoCapture = false;
   }
 
   function fail(msg: string) {
@@ -141,11 +151,86 @@
           secondsLeft = Math.max(0, secondsLeft - 1);
           if (secondsLeft === 0) fail(m.acct_expired());
         }, 1000);
-        schedulePoll(g, res.login_id, res.interval_secs);
       } else {
         step = 'pkce';
-        window.open(res.authorize_url, '_blank', 'noopener');
+        openPkcePopup(res.authorize_url, res.login_id, g);
       }
+    } catch (err) {
+      if (g === gen) fail((err as Error).message);
+    } finally {
+      if (g === gen) busy = false;
+    }
+  }
+
+  function openPkcePopup(authorizeUrl: string, loginId: string, g: number) {
+    const w = 520, h = 700;
+    const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+    const top  = Math.round(window.screenY + (window.outerHeight - h) / 2);
+    const opened = window.open(
+      authorizeUrl,
+      'vkdg_oauth',
+      `width=${w},height=${h},left=${left},top=${top},toolbar=0,menubar=0,location=1`,
+    );
+    popup = opened;
+
+    // BroadcastChannel — /callback page posts code here.
+    try {
+      oauthChannel = new BroadcastChannel('vkdg_oauth_callback');
+      oauthChannel.onmessage = (ev) => {
+        if (g !== gen) return;
+        handleOAuthMessage(ev.data, loginId, g);
+      };
+    } catch { /* not supported */ }
+
+    // postMessage from popup.
+    const onMsg = (ev: MessageEvent) => {
+      if (ev.origin !== window.location.origin) return;
+      if (g !== gen) return;
+      handleOAuthMessage(ev.data, loginId, g);
+    };
+    window.addEventListener('message', onMsg);
+
+    // Poll for popup closed → try localStorage fallback → expose manual paste.
+    popupWatcher = setInterval(() => {
+      if (g !== gen) { clearInterval(popupWatcher); window.removeEventListener('message', onMsg); return; }
+      if (!popup?.closed) return;
+      clearInterval(popupWatcher);
+      window.removeEventListener('message', onMsg);
+      try {
+        const raw = localStorage.getItem('vkdg_oauth_result');
+        if (raw) {
+          const saved = JSON.parse(raw) as Record<string, string>;
+          if (Date.now() - Number(saved.ts ?? 0) < 30_000 && saved.type === 'oauth_code') {
+            localStorage.removeItem('vkdg_oauth_result');
+            handleOAuthMessage(saved, loginId, g);
+            return;
+          }
+        }
+      } catch { /* ignore */ }
+      // Popup closed without code — fall back to manual paste.
+      pkceAutoCapture = false;
+    }, 500);
+
+    pkceAutoCapture = true;
+  }
+
+  function handleOAuthMessage(data: Record<string, string>, loginId: string, g: number) {
+    if (data?.source !== 'vkdg_oauth_callback') return;
+    if (data.type === 'oauth_error') { fail(data.error_description || data.error || 'OAuth error'); return; }
+    if (data.type !== 'oauth_code' || !data.code) return;
+    pkceCode = data.code;
+    pkceAutoCapture = false;
+    exchangePkceCode(loginId, data.code, g);
+  }
+
+  async function exchangePkceCode(loginId: string, code: string, g: number) {
+    if (g !== gen) return;
+    busy = true;
+    try {
+      const res = await api.pollLogin(selected, loginId, code.trim());
+      if (g !== gen) return;
+      if (res.status === 'done') finish(res.account);
+      else if (res.status === 'failed') fail(res.message);
     } catch (err) {
       if (g === gen) fail((err as Error).message);
     } finally {
@@ -314,44 +399,60 @@
             <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
           </div>
         {:else if step === 'pkce' && flow?.flow === 'authorization_code_pkce'}
-          {@const authorizeUrl = (flow as { authorize_url: string }).authorize_url}
-          <div class="pkce-section">
-            <p class="step-intro">{m.acct_pkce_step()}</p>
-            <Button
-              onclick={() => window.open(authorizeUrl, '_blank', 'noopener,noreferrer')}
-            >
-              <ExternalLink size={16} aria-hidden="true" />
-              {m.acct_open_authorize()}
-            </Button>
-            <div class="pkce-url-row">
-              <code class="pkce-url" title={authorizeUrl}>{authorizeUrl.slice(0, 60)}…</code>
-              <CopyButton text={authorizeUrl} />
-            </div>
-            <p class="pkce-waiting-hint">
-              <Spinner size="sm" />
-              {m.acct_waiting()}
-            </p>
-          </div>
-          <form onsubmit={submitCode} class="fields">
-            <div class="field">
-              <label for="pkce-code">{m.acct_code_label()}</label>
-              <input
-                id="pkce-code"
-                type="text"
-                autocomplete="off"
-                required
-                placeholder="Paste the code or full callback URL"
-                bind:value={pkceCode}
-              />
+          {#if pkceAutoCapture}
+            <!-- Popup is open — waiting for automatic code capture. -->
+            <div class="pkce-auto">
+              <div class="pkce-icon spin">⟳</div>
+              <p class="step-intro">Authorize in the popup window…</p>
+              <p class="muted">The window opened at claude.ai. After you sign in, this dialog completes automatically.</p>
             </div>
             <div class="footer">
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
-              <Button type="submit" disabled={busy || !pkceCode.trim()}>
-                {#if busy}<Spinner size="sm" />{/if}
-                {m.acct_submit_code()}
+            </div>
+          {:else if busy}
+            <!-- Code received, exchange in progress. -->
+            <div class="pkce-auto">
+              <Spinner size="lg" />
+              <p class="step-intro">Completing sign-in…</p>
+            </div>
+          {:else}
+            <!-- Popup closed without code — manual paste fallback. -->
+            {@const authorizeUrl = (flow as { authorize_url: string }).authorize_url}
+            <div class="pkce-section">
+              <p class="step-intro">The popup closed before completing. Paste the authorization code below, or reopen the URL.</p>
+              <div class="pkce-url-row">
+                <code class="pkce-url" title={authorizeUrl}>{authorizeUrl.slice(0, 60)}…</code>
+                <CopyButton text={authorizeUrl} />
+              </div>
+              <Button
+                variant="outline"
+                onclick={() => openPkcePopup(authorizeUrl, flow!.login_id, gen)}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+                Reopen popup
               </Button>
             </div>
-          </form>
+            <form onsubmit={submitCode} class="fields">
+              <div class="field">
+                <label for="pkce-code">{m.acct_code_label()}</label>
+                <input
+                  id="pkce-code"
+                  type="text"
+                  autocomplete="off"
+                  required
+                  placeholder="Paste the code or full callback URL"
+                  bind:value={pkceCode}
+                />
+              </div>
+              <div class="footer">
+                <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
+                <Button type="submit" disabled={busy || !pkceCode.trim()}>
+                  {#if busy}<Spinner size="sm" />{/if}
+                  {m.acct_submit_code()}
+                </Button>
+              </div>
+            </form>
+          {/if}
         {:else if step === 'error'}
           <div class="error" role="alert">
             <AlertTriangle size={16} aria-hidden="true" />
@@ -663,5 +764,28 @@
 
   :global(.social-check) {
     color: var(--accent);
+  }
+
+  .pkce-auto {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    text-align: center;
+  }
+
+  .pkce-icon {
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .pkce-icon.spin {
+    animation: spin 1.2s linear infinite;
+    color: var(--accent);
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>

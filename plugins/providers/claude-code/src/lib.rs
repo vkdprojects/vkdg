@@ -90,7 +90,7 @@ const CLAUDE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const CLAUDE_REDIRECT_URI_DEFAULT: &str = "https://platform.claude.com/oauth/code/callback";
 
 fn claude_redirect_uri() -> String {
-    std::env::var("VKDG_OAUTH_REDIRECT_URI").unwrap_or_else(|_| CLAUDE_REDIRECT_URI_DEFAULT.into())
+    std::env::var("CLAUDE_CODE_REDIRECT_URI").unwrap_or_else(|_| CLAUDE_REDIRECT_URI_DEFAULT.into())
 }
 const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";

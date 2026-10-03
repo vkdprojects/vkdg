@@ -121,6 +121,85 @@ pub struct ConversationRequest {
     /// `x-session-id`). Used by providers that support conversation continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// How the client wants tools used. `None` = the client did not say, which
+    /// every provider treats as automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    /// Client-supplied stop strings (Anthropic `stop_sequences`, `OpenAI` `stop`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    /// The client forbids more than one tool call per assistant turn (Anthropic
+    /// `tool_choice.disable_parallel_tool_use: true`, `OpenAI`
+    /// `parallel_tool_calls: false`). `false` = the provider's default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_parallel_tool_use: bool,
+}
+
+/// Tool use policy requested by the client, in provider-neutral terms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolChoice {
+    /// The model decides (Anthropic `auto`, `OpenAI` `auto`).
+    Auto,
+    /// The model must call some tool (Anthropic `any`, `OpenAI` `required`).
+    Required,
+    /// No tool calls (Anthropic `none`, `OpenAI` `none`).
+    Disabled,
+    /// The model must call this tool.
+    Named(String),
+}
+
+impl ToolChoice {
+    /// Settles a client's `tool_choice` against the tools it sent.
+    ///
+    /// `Auto` and `Disabled` with no tools change nothing, so they normalise to
+    /// `None` (providers reject a `tool_choice` without tools). `Required` and
+    /// `Named` promise a tool call that cannot happen without tools, and `Named`
+    /// must name a tool that was sent; both are request errors, not defaults to
+    /// paper over.
+    ///
+    /// # Errors
+    /// `ConfigInvalid { field: "tool_choice" }` for the two cases above.
+    pub fn settle(choice: Option<Self>, tools: &[Tool]) -> Result<Option<Self>, VkdgError> {
+        let invalid = |message: String| VkdgError::ConfigInvalid {
+            field: "tool_choice".into(),
+            message,
+        };
+        match choice {
+            None => Ok(None),
+            Some(Self::Auto | Self::Disabled) if tools.is_empty() => Ok(None),
+            Some(Self::Required) if tools.is_empty() => {
+                Err(invalid("`required` needs at least one tool".into()))
+            }
+            Some(Self::Named(name)) if !tools.iter().any(|t| t.name == name) => Err(invalid(
+                format!("names tool `{name}`, which is not in `tools`"),
+            )),
+            other => Ok(other),
+        }
+    }
+}
+
+/// The JSON dialect a provider speaks upstream, for the dialects the gateway can
+/// translate to and from. A provider that speaks something else (AWS event
+/// stream, the Responses API) declares `None` and keeps its own decoder or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireFormat {
+    /// Anthropic Messages (`/v1/messages`).
+    AnthropicMessages,
+    /// `OpenAI` Chat Completions (`/v1/chat/completions`).
+    OpenAiChat,
+}
+
+impl WireFormat {
+    /// The dialect a client speaks on `api_type`, when the gateway can translate it.
+    pub fn of_client(api_type: &vkdg_core::ApiType) -> Option<Self> {
+        match api_type {
+            vkdg_core::ApiType::AnthropicMessages => Some(Self::AnthropicMessages),
+            vkdg_core::ApiType::OpenAiChatCompletions => Some(Self::OpenAiChat),
+            _ => None,
+        }
+    }
 }
 
 /// A client's reasoning request, kept in the client's own terms: a token
@@ -334,22 +413,61 @@ pub struct StreamContext<'a> {
 }
 
 /// Encodes [`ConversationEvent`]s into one client wire dialect (Anthropic SSE,
-/// `OpenAI` chunks). Stateful: one instance per response stream. Implemented by
-/// the ingress crates; the pipeline only drives it.
+/// `OpenAI` chunks). Stateful: one instance per response stream; the pipeline
+/// only drives it. Every chunk of output ends exactly on a `\n\n` event
+/// boundary.
 pub trait StreamEncoder: Send {
-    /// Wire bytes for one event (may be empty; may open/close blocks first).
-    fn encode(&mut self, event: &ConversationEvent) -> Vec<u8>;
+    /// Appends the wire bytes for one event to `out` (may append nothing; may
+    /// open/close blocks first).
+    fn encode_into(&mut self, event: &ConversationEvent, out: &mut Vec<u8>);
 
-    /// Called once when the event stream ends. Closes anything still open so the
-    /// client always receives a well-formed terminal sequence.
-    fn finish(&mut self) -> Vec<u8>;
+    /// Called once when the event stream ends. Appends whatever closes
+    /// anything still open so the client always receives a well-formed
+    /// terminal sequence.
+    fn finish_into(&mut self, out: &mut Vec<u8>);
+
+    /// [`encode_into`](Self::encode_into) into a fresh buffer.
+    fn encode(&mut self, event: &ConversationEvent) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.encode_into(event, &mut out);
+        out
+    }
+
+    /// [`finish_into`](Self::finish_into) into a fresh buffer.
+    fn finish(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.finish_into(&mut out);
+        out
+    }
 }
 
 /// Builds a [`StreamEncoder`] for one response. Passed by the ingress to the pipeline.
 pub type StreamEncoderFactory = fn(&StreamContext<'_>) -> Box<dyn StreamEncoder>;
 
+mod sampling;
+pub use sampling::{
+    validated_stop_sequences, validated_top_p, MAX_STOP_SEQUENCES, MAX_STOP_SEQUENCE_BYTES,
+};
+
+mod stop_wire;
+pub use stop_wire::{
+    anthropic_stop_reason, openai_finish_reason, parse_anthropic_stop_reason,
+    parse_openai_finish_reason,
+};
+
+mod tool_id;
+pub use tool_id::sanitize_tool_id;
+
+mod usage;
+
 pub mod stream_encode;
 pub use stream_encode::{AnthropicStreamEncoder, OpenAiStreamEncoder};
+
+mod error_encode;
+pub use error_encode::{client_error, stream_error_frame, ClientError};
+
+mod json_encode;
+pub use json_encode::{json_encoder_for, JsonEncoder, MAX_JSON_RESPONSE_BYTES};
 
 /// Builds the encoder for the dialect the client spoke.
 ///
@@ -404,5 +522,52 @@ mod tests {
         };
         assert!(!req.prompt.is_empty(), "prompt must not be empty");
         assert_eq!(req.prompt, "a sunset over the ocean");
+    }
+
+    fn tool(name: &str) -> Tool {
+        Tool {
+            name: name.into(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
+
+    // Defeat: forwarding `tool_choice: auto` without tools (both providers answer
+    // 400 "tool_choice requires tools") or dropping a forced choice so the model
+    // silently answers in prose instead of calling a tool.
+    #[test]
+    fn settle_drops_no_op_choices_and_rejects_impossible_ones_when_there_are_no_tools() {
+        assert_eq!(
+            ToolChoice::settle(Some(ToolChoice::Auto), &[]).unwrap(),
+            None
+        );
+        assert_eq!(
+            ToolChoice::settle(Some(ToolChoice::Disabled), &[]).unwrap(),
+            None
+        );
+        for choice in [ToolChoice::Required, ToolChoice::Named("a".into())] {
+            let err = ToolChoice::settle(Some(choice), &[]).unwrap_err();
+            assert!(
+                matches!(&err, VkdgError::ConfigInvalid { field, .. } if field == "tool_choice"),
+                "{err:?}"
+            );
+        }
+    }
+
+    // Defeat: accepting a forced tool the client never declared, which the
+    // upstream rejects after the gateway has already spent a routing attempt.
+    #[test]
+    fn settle_requires_a_named_tool_to_exist() {
+        let tools = [tool("read"), tool("write")];
+        assert_eq!(
+            ToolChoice::settle(Some(ToolChoice::Named("write".into())), &tools).unwrap(),
+            Some(ToolChoice::Named("write".into()))
+        );
+        assert!(ToolChoice::settle(Some(ToolChoice::Named("delete".into())), &tools).is_err());
+        assert_eq!(
+            ToolChoice::settle(Some(ToolChoice::Required), &tools).unwrap(),
+            Some(ToolChoice::Required)
+        );
+        assert_eq!(ToolChoice::settle(None, &tools).unwrap(), None);
     }
 }

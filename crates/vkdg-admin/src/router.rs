@@ -88,6 +88,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
             axum::routing::post(crate::handlers::connections::test_connection),
         )
         .route(
+            "/admin/v1/connections/{id}/models/sync",
+            post(crate::handlers::model_sync::sync_models),
+        )
+        .route(
             "/admin/v1/keys",
             get(crate::handlers::keys::list_keys).post(crate::handlers::keys::create_key),
         )

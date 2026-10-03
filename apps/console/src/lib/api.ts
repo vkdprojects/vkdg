@@ -329,6 +329,9 @@ export const api = {
   /** Removes the connection and every route target naming it; the account behind it stays. */
   deleteConnection: (id: string) =>
     req<void>('DELETE', `/admin/v1/connections/${encodeURIComponent(id)}`),
+  /** Asks the provider for its concrete model ids and replaces the connection's `models` with them. */
+  syncConnectionModels: (id: string) =>
+    req<{ models: string[]; count: number }>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/models/sync`),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>

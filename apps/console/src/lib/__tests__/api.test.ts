@@ -97,6 +97,39 @@ describe('deleteConnection', () => {
   });
 });
 
+describe('syncConnectionModels', () => {
+  // Wrong impl: GET/PUT instead of POST, unencoded id, a body sent although the endpoint takes none,
+  // or the { models, count } answer dropped.
+  it('POSTs without a body to the encoded models/sync path and returns the parsed answer', async () => {
+    let seen: { method: string; text: string; id: unknown } | undefined;
+    server.use(
+      http.post(`${BASE}/admin/v1/connections/:id/models/sync`, async ({ request, params }) => {
+        seen = { method: request.method, text: await request.text(), id: params['id'] };
+        return HttpResponse.json({ models: ['claude-sonnet-4-6', 'claude-haiku-4-5'], count: 2 });
+      }),
+    );
+
+    const result = await api.syncConnectionModels('claude code/1');
+
+    expect(seen).toEqual({ method: 'POST', text: '', id: 'claude code/1' });
+    expect(result).toEqual({ models: ['claude-sonnet-4-6', 'claude-haiku-4-5'], count: 2 });
+  });
+
+  // Wrong impl: swallows the admin error shape and reports a bare "HTTP 502".
+  it('surfaces the server message when discovery fails', async () => {
+    server.use(
+      http.post(`${BASE}/admin/v1/connections/:id/models/sync`, () =>
+        HttpResponse.json(
+          { code: 'model_sync_failed', message: 'provider returned no models', request_id: 'r4' },
+          { status: 502 },
+        ),
+      ),
+    );
+
+    await expect(api.syncConnectionModels('claude-main')).rejects.toThrow('provider returned no models');
+  });
+});
+
 describe('enableAccount', () => {
   // Wrong impl: wrong verb/path, or a body sent although the endpoint takes none.
   it('POSTs without a body to the account connection endpoint and returns the connection id', async () => {

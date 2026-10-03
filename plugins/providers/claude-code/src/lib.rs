@@ -14,11 +14,17 @@ use vkdg_provider_sdk::{
     ProviderError, TokenPair,
 };
 
+mod catalog;
+
 pub struct ClaudeCodeAdapter;
 
 impl ProviderAdapter for ClaudeCodeAdapter {
     fn oauth(&self) -> Option<&dyn OAuthProvider> {
         Some(self)
+    }
+
+    fn model_catalog(&self) -> Option<&dyn vkdg_provider_sdk::ModelCatalog> {
+        Some(&catalog::ClaudeCodeCatalog)
     }
 
     fn id(&self) -> &'static str {
@@ -70,12 +76,9 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         );
         headers.insert(
             "anthropic-version",
-            http::HeaderValue::from_static("2023-06-01"),
+            http::HeaderValue::from_static(ANTHROPIC_VERSION),
         );
-        headers.insert(
-            "anthropic-beta",
-            http::HeaderValue::from_static("oauth-2025-04-20"),
-        );
+        headers.insert("anthropic-beta", http::HeaderValue::from_static(OAUTH_BETA));
         headers.insert(
             http::header::CONTENT_TYPE,
             http::HeaderValue::from_static("application/json"),
@@ -89,6 +92,10 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         })
     }
 }
+
+/// `anthropic-version` and the OAuth beta flag every subscription-token call sends.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
 
 /// Public OAuth `client_id` for the Claude Code CLI.
 /// This is a public value — the same one the official `Claude Code CLI` ships in
@@ -410,12 +417,33 @@ fn base_url(config: &ConnectionConfig) -> String {
 /// First system block Anthropic requires on subscription OAuth requests.
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/// Anthropic spells versions with dashes (`claude-sonnet-4-6`, `claude-3-5-haiku`);
+/// Kiro and some clients use dots (`claude-sonnet-4.6`). A dot between two digits
+/// becomes a dash, so a dotted name asks for the same model instead of a 404.
+/// Dated suffixes (`-20250929`) and names that are not Claude's are left alone.
+fn anthropic_model_id(model: &str) -> std::borrow::Cow<'_, str> {
+    if !model.starts_with("claude") || !model.contains('.') {
+        return model.into();
+    }
+    let chars: Vec<char> = model.chars().collect();
+    let mut out = String::with_capacity(model.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let between_digits = c == '.'
+            && i > 0
+            && chars[i - 1].is_ascii_digit()
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit);
+        out.push(if between_digits { '-' } else { c });
+    }
+    out.into()
+}
+
 fn build_body(req: &ConversationRequest) -> Bytes {
     let model = vkdg_provider_sdk::upstream_model(req, "claude-opus-4-5");
+    let model = anthropic_model_id(model);
     // A subscription (OAuth) token is only accepted for Claude Code traffic:
     // without this exact first system block Anthropic answers 429
     // rate_limit_error. The client's own system prompt follows it untouched.
-    vkdg_provider_sdk::anthropic_messages::messages_body(req, model, Some(CLAUDE_CODE_IDENTITY))
+    vkdg_provider_sdk::anthropic_messages::messages_body(req, &model, Some(CLAUDE_CODE_IDENTITY))
 }
 
 #[cfg(test)]
@@ -665,5 +693,49 @@ mod body_tests {
         assert_eq!(v["system"], json!([{ "type": "text", "text": IDENTITY }]));
         assert_eq!(v["tool_choice"], json!({ "type": "tool", "name": "read" }));
         assert_eq!(v["stop_sequences"], json!(["END"]));
+    }
+
+    fn sent_model(model: &str) -> String {
+        let req = ConversationRequest {
+            model: model.into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_slice(&build_body(&req)).unwrap();
+        v["model"].as_str().unwrap().to_owned()
+    }
+
+    // Kiro spells versions with dots and a client may ask for that name; Anthropic
+    // 404s on it. Refutes sending the model verbatim, and a blanket '.'->'-'
+    // rewrite that would also mangle the rest of the name.
+    #[test]
+    fn dotted_claude_versions_go_upstream_with_dashes() {
+        for (asked, sent) in [
+            ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+            ("claude-3.5-haiku", "claude-3-5-haiku"),
+            ("claude-opus-4.1", "claude-opus-4-1"),
+        ] {
+            assert_eq!(sent_model(asked), sent, "{asked}");
+        }
+    }
+
+    // Refutes touching names that are already right or are not Claude's: dated
+    // suffixes, dash-only versions, and a dot that is not between two digits.
+    #[test]
+    fn other_names_are_sent_unchanged() {
+        for name in [
+            "claude-sonnet-4-5-20250929",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "gpt-5.6-mini",
+            "deepseek-3.2",
+            "claude-x.y",
+            "claude-4.",
+        ] {
+            assert_eq!(sent_model(name), name, "{name}");
+        }
     }
 }

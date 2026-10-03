@@ -57,6 +57,25 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- **A rate-limited connection rejoined routing after at most five minutes, whatever the upstream said.**
+  A 429/5xx carrying `retry-after` now keeps that connection out of routing for at least that long
+  (capped at 6 hours); the exponential backoff (1 s to 300 s) stays the floor. A Claude subscription
+  limit that resets in hours is no longer re-probed every five minutes, and the sibling connection
+  serving the same model takes over meanwhile. The cooldown is also recorded when the connection's lock
+  is briefly contended, instead of being skipped.
+- **Model ids differing only by `.`/`-` between version digits no longer split connections.** Kiro's
+  `claude-sonnet-4.6` and Anthropic's `claude-sonnet-4-6` are the same model for connection eligibility,
+  so a client using either spelling reaches both connections of a route.
+- **A Kiro account that was throttled or out of credits kept receiving traffic.** Kiro answers HTTP 200 and
+  reports `ThrottlingException`, `ServiceQuotaExceededException`, `RATE_LIMIT_EXCEEDED` (429) or
+  `MONTHLY_REQUEST_COUNT` (out of credits, 402) as the first frame of the stream, after the response was
+  committed: no failover and no cooldown, every request failed. The gateway now reads the stream up to its
+  first substantive event before committing. A throttling or quota first frame cools that connection (a
+  402 holds it for 6 hours: credits do not return in minutes) and the request is retried once on a sibling
+  connection, before any byte reaches the client; if no sibling can serve it the client gets the upstream's
+  error with a `retry-after`. A normal first event streams exactly as before; a failure after the first
+  event, or one that is not an account failure (400), is still passed to the client as the dialect's error
+  event. A 402, 429 or 529 anywhere in the HTTP response path now fails over the same way.
 - **An OpenAI client over an Anthropic provider (and the reverse) got the other dialect's body.** A client
   calling `/v1/chat/completions` that was routed to Claude Code received `{"type":"message","content":[...]}`
   instead of a `chat.completion` (and an Anthropic client over an OpenAI-compatible provider received

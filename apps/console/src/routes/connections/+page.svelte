@@ -56,6 +56,25 @@
     }
   }
 
+  // Models chips: show a few entries, the rest go into the tooltip.
+  const MODEL_CHIPS = 3;
+  const isPattern = (id: string) => /[*?]/.test(id);
+
+  let syncingId = $state<string | null>(null);
+
+  async function syncModels(conn: ConnectionSummary) {
+    syncingId = conn.id;
+    try {
+      const result = await api.syncConnectionModels(conn.id);
+      toast.success(m.connection_models_synced({ count: result.count }));
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      syncingId = null;
+    }
+  }
+
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
   let connId = $state('');
@@ -250,7 +269,20 @@
                 <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
               </div>
             </td>
-            <td>{conn.model_count}</td>
+            <td class="models-cell">
+              {#if conn.models.length === 0}
+                {m.common_none()}
+              {:else}
+                <div class="model-chips" title={conn.models.join('\n')}>
+                  {#each conn.models.slice(0, MODEL_CHIPS) as id (id)}
+                    <span class="model-chip" class:pattern={isPattern(id)}>{id}</span>
+                  {/each}
+                  {#if conn.models.length > MODEL_CHIPS}
+                    <span class="hint">{m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}</span>
+                  {/if}
+                </div>
+              {/if}
+            </td>
             <td class="concurrency-cell">
               <Meter
                 value={conn.active_requests}
@@ -270,12 +302,24 @@
               {/if}
             </td>
             <td class="actions-cell">
-              <Button
-                variant="danger"
-                size="sm"
-                onclick={() => (pendingDelete = conn)}
-                ariaLabel={`${m.connection_delete()} ${conn.id}`}
-              >{m.connection_delete()}</Button>
+              <div class="row-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onclick={() => syncModels(conn)}
+                  disabled={syncingId === conn.id}
+                  ariaLabel={`${m.connection_sync_models()} ${conn.id}`}
+                >
+                  <RefreshCwIcon size={14} aria-hidden="true" />
+                  {m.connection_sync_models()}
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onclick={() => (pendingDelete = conn)}
+                  ariaLabel={`${m.connection_delete()} ${conn.id}`}
+                >{m.connection_delete()}</Button>
+              </div>
             </td>
           </tr>
         {/each}
@@ -575,6 +619,39 @@
 
   .actions-cell {
     text-align: right;
+  }
+
+  .row-actions {
+    display: inline-flex;
+    gap: 6px;
+    justify-content: flex-end;
+  }
+
+  .models-cell {
+    max-width: 22rem;
+  }
+
+  .model-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .model-chip {
+    font-family: monospace;
+    font-size: 0.75rem;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    color: var(--text-1);
+    white-space: nowrap;
+  }
+
+  .model-chip.pattern {
+    border-style: dashed;
+    color: var(--text-3);
   }
 
   .confirm {

@@ -1413,7 +1413,8 @@ mod tests {
 
     // Plausible wrong impls: deleting an account leaves a dangling connection that
     // fails every request; a multi-target route keeps naming it and makes the next
-    // snapshot invalid, so every later console edit is rejected.
+    // snapshot invalid, so every later console edit is rejected. Logging in also
+    // creates the `fake-route` that carries both accounts' connections.
     #[tokio::test]
     async fn deleting_an_account_removes_its_connection_and_route_targets() {
         let (state, store, gw, rx) = make_state_with_gateway(vec!["fake-*".into()]);
@@ -1448,14 +1449,22 @@ mod tests {
             conns.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
             [conn_b.as_str()]
         );
-        assert_eq!(routes.len(), 1, "{routes:?}");
+        let mut left: Vec<_> = routes
+            .iter()
+            .map(|r| (r.id.as_str(), r.targets.clone()))
+            .collect();
+        left.sort();
         assert_eq!(
-            (routes[0].id.as_str(), &routes[0].targets),
-            ("both", &vec![conn_b.clone()])
+            left,
+            [
+                ("both", vec![conn_b.clone()]),
+                ("fake-route", vec![conn_b.clone()])
+            ],
+            "only-a lost its last target and goes; the others keep conn_b"
         );
         let snap = rx.borrow().clone();
         assert_eq!(snap.connections.len(), 1);
-        assert_eq!(snap.routes.len(), 1);
+        assert_eq!(snap.routes.len(), 2);
     }
 
     fn stored_account(store: &AccountStore) -> Account {

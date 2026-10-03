@@ -16,6 +16,7 @@ use vkdg_provider_sdk::{
 };
 
 pub mod auth;
+pub mod catalog;
 pub mod decode;
 pub mod endpoint;
 pub mod eventstream;
@@ -202,6 +203,10 @@ impl ProviderAdapter for KiroAdapter {
 
     fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
         Some(&usage::KiroUsage)
+    }
+
+    fn model_catalog(&self) -> Option<&dyn vkdg_provider_sdk::ModelCatalog> {
+        Some(&catalog::KiroModelCatalog)
     }
 }
 

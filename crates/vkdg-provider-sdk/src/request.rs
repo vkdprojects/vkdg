@@ -96,6 +96,13 @@ pub trait ProviderAdapter: Send + Sync {
         None
     }
 
+    /// Live model discovery. Return `Some(self)` when the plugin implements
+    /// [`ModelCatalog`](crate::ModelCatalog); `None` means the provider cannot
+    /// enumerate models and connections keep their declared patterns.
+    fn model_catalog(&self) -> Option<&dyn crate::ModelCatalog> {
+        None
+    }
+
     /// List prices per model, specific patterns first. Empty (the default)
     /// means the provider bills some other way (subscription, free tier) and
     /// its requests have no per-token cost, shown as unknown rather than $0.

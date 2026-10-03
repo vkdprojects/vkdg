@@ -58,10 +58,36 @@ impl UsageProvider for KiroUsage {
 }
 
 /// Auth method persisted at login (`api_key` for a `ksk_` key), else Builder ID.
-fn auth_method(extra: &std::collections::HashMap<String, String>) -> &str {
+pub(crate) fn auth_method(extra: &std::collections::HashMap<String, String>) -> &str {
     extra
         .get("auth_method")
         .map_or(crate::auth::AUTH_BUILDER_ID, String::as_str)
+}
+
+/// `https://q.<region>.amazonaws.com` for the account's runtime region: the
+/// host of every control-plane operation (`GetUsageLimits`, `ListAvailableModels`).
+pub(crate) fn control_plane_base(credential: &Credential) -> String {
+    let extra = credential.extra.as_ref();
+    let region = runtime_region(
+        extra.get("profile_arn").map(String::as_str),
+        extra.get("oidc_region").map(String::as_str),
+    );
+    control_plane_host(&region)
+}
+
+/// The credential's own token, plus `tokentype: API_KEY` for an API key. Never a
+/// `profileArn` header: AWS answers 403 when an API key sends one.
+pub(crate) fn authorize(
+    req: reqwest::RequestBuilder,
+    credential: &Credential,
+    auth_method: &str,
+) -> reqwest::RequestBuilder {
+    let req = req.bearer_auth(&credential.token);
+    if sends_api_key_token_type(auth_method) {
+        req.header("tokentype", "API_KEY")
+    } else {
+        req
+    }
 }
 
 /// POST `GetUsageLimits` for one account and return the parsed JSON body.
@@ -74,21 +100,12 @@ async fn fetch_usage_body(
     credential: &Credential,
 ) -> Result<Value, ProviderError> {
     let extra = credential.extra.as_ref();
-    let auth = auth_method(extra);
-    let region = runtime_region(
-        extra.get("profile_arn").map(String::as_str),
-        extra.get("oidc_region").map(String::as_str),
-    );
-
-    let mut req = client
-        .post(format!("{}/", control_plane_host(&region)))
+    let req = client
+        .post(format!("{}/", control_plane_base(credential)))
         .header("content-type", "application/x-amz-json-1.0")
         .header("accept", "application/json")
-        .header("x-amz-target", USAGE_TARGET)
-        .bearer_auth(&credential.token);
-    if sends_api_key_token_type(auth) {
-        req = req.header("tokentype", "API_KEY");
-    }
+        .header("x-amz-target", USAGE_TARGET);
+    let req = authorize(req, credential, auth_method(extra));
 
     let resp = req
         .json(&serde_json::json!({}))

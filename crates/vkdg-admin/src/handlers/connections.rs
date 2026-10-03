@@ -233,6 +233,18 @@ pub fn connection_id_for_account(
 /// models (it cannot serve requests yet, so a connection would only steal
 /// traffic). An existing connection is never touched: a reconnect keeps the
 /// operator's models, weight and limits.
+///
+/// When a new connection is created it is added to routing before the snapshot
+/// is rebuilt, so traffic reaches it immediately:
+/// - Every existing route whose `match_models` patterns overlap the new
+///   connection's models (either side matches the other under glob) gets the
+///   connection appended to its targets.
+/// - If no route overlaps, a new route `<provider_id>-route` (with a numeric
+///   suffix to avoid collisions) is created with `power_of_two_choices` strategy,
+///   `match_models` = the connection's models, and the single new target.
+///
+/// All route mutations happen before `rebuild_and_push`; on rebuild failure the
+/// connection AND any route mutations are rolled back.
 pub fn ensure_account_connection(
     state: &AdminState,
     provider: &dyn vkdg_provider_sdk::ProviderAdapter,
@@ -241,7 +253,7 @@ pub fn ensure_account_connection(
     let Some(store) = &state.gateway_store else {
         return Ok(None);
     };
-    let (conns, _) = store.load().map_err(store_error)?;
+    let (conns, routes) = store.load().map_err(store_error)?;
     if let Some(existing) = connection_for_account(&conns, account_id) {
         return Ok(Some(existing));
     }
@@ -251,10 +263,10 @@ pub fn ensure_account_connection(
     }
     // Account ids are unique, so their id is the natural connection id; fall
     // back to a suffix when the operator already used that name.
-    let taken = |id: &str| conns.iter().any(|c| c.id == id);
+    let taken_conn = |id: &str| conns.iter().any(|c| c.id == id);
     let mut id = account_id.to_owned();
     let mut n = 1;
-    while taken(&id) {
+    while taken_conn(&id) {
         n += 1;
         id = format!("{account_id}-{n}");
     }
@@ -267,16 +279,73 @@ pub fn ensure_account_connection(
             auth: AuthDef::Account {
                 account: account_id.to_owned(),
             },
-            models,
+            models: models.clone(),
             max_concurrent: None,
             weight: None,
             tags: vec![],
         })
         .map_err(store_error)?;
+    // --- Route wiring -------------------------------------------------------
+    // Wire the new connection into routing so traffic reaches it immediately.
+    // Overlap: a route's match_models and the connection's models overlap when
+    // any route pattern matches any connection model (as a literal) OR any
+    // connection model pattern matches any route pattern (as a literal). This
+    // handles glob-vs-glob: `claude-*` vs `claude-*` correctly resolves as
+    // overlapping because `claude-*` (pattern) matches `claude-*` (name).
+    let overlaps = |route: &vkdg_config::schema::RouteDef| -> bool {
+        // Route pattern matches any connection model treated as name
+        models.iter().any(|m| vkdg_core::glob::matches_any(&route.match_models, m))
+        // OR connection model pattern matches any route pattern treated as name
+        || route.match_models.iter().any(|rp| vkdg_core::glob::matches_any(&models, rp))
+    };
+    // Original route defs for rollback (only those we modify).
+    let mut rollback_routes: Vec<(String, Option<vkdg_config::schema::RouteDef>)> = Vec::new();
+    let mut found_overlap = false;
+    for mut route in routes.clone() {
+        if overlaps(&route) {
+            found_overlap = true;
+            if !route.targets.contains(&id) {
+                rollback_routes.push((route.id.clone(), Some(route.clone())));
+                route.targets.push(id.clone());
+                store.upsert_route(&route).map_err(store_error)?;
+            }
+        }
+    }
+    if !found_overlap {
+        // Create a new route for this connection.
+        let provider_id = provider.id();
+        let base_route_id = format!("{provider_id}-route");
+        let taken_route = |rid: &str| routes.iter().any(|r| r.id == rid);
+        let mut route_id = base_route_id.clone();
+        let mut rn = 1;
+        while taken_route(&route_id) {
+            rn += 1;
+            route_id = format!("{base_route_id}-{rn}");
+        }
+        rollback_routes.push((route_id.clone(), None));
+        store
+            .upsert_route(&vkdg_config::schema::RouteDef {
+                id: route_id,
+                match_models: models.clone(),
+                strategy: "power_of_two_choices".to_owned(),
+                targets: vec![id.clone()],
+                hooks: Default::default(),
+            })
+            .map_err(store_error)?;
+    }
     if let Err(e) = rebuild_and_push(state) {
-        // Do not leave a connection the snapshot rejects: it would make every
-        // later console edit fail the same way.
+        // Roll back: remove the connection and undo route changes.
         let _ = store.delete_connection(&id);
+        for (route_id, original) in rollback_routes {
+            match original {
+                Some(orig) => {
+                    let _ = store.upsert_route(&orig);
+                }
+                None => {
+                    let _ = store.delete_route(&route_id);
+                }
+            }
+        }
         return Err(e);
     }
     Ok(Some(id))
@@ -763,7 +832,7 @@ mod tests {
         ));
         let conn = catalog.get(&vkdg_core::ConnectionId("c1".into())).unwrap();
         let guard = conn.read().await.acquire().unwrap();
-        conn.write().await.record_upstream_error(429);
+        conn.write().await.record_upstream_error(429, None);
 
         let (_tx, rx) = watch::channel(Arc::new(snap));
         let sessions = crate::session::SessionStore::new("tok".into());
@@ -1045,5 +1114,222 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["items"][0]["models"], serde_json::json!(["claude-*"]));
         assert_eq!(v["items"][0]["weight"], 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Minimal ProviderAdapter stub for ensure_account_connection tests.
+    // -------------------------------------------------------------------------
+    struct TestProvider {
+        id: &'static str,
+        models: Vec<String>,
+    }
+
+    impl vkdg_provider_sdk::ProviderAdapter for TestProvider {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+        fn display_name(&self) -> &'static str {
+            self.id
+        }
+        fn default_models(&self) -> Vec<String> {
+            self.models.clone()
+        }
+        fn prepare(
+            &self,
+            _: &vkdg_operations::Operation,
+            _: &vkdg_connections::ConnectionConfig,
+            _: &vkdg_connections::Credential,
+        ) -> Result<vkdg_provider_sdk::PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation)
+        }
+    }
+
+    fn claude_provider() -> TestProvider {
+        TestProvider {
+            id: "test-prov",
+            models: vec!["claude-*".to_owned()],
+        }
+    }
+
+    // Plausible wrong impl: ensure always creates a brand-new route even when an
+    // existing route already covers the same model pattern — leading to duplicate
+    // routing and the existing route being bypassed.
+    #[test]
+    fn ensure_overlapping_route_gains_target_and_keeps_strategy() {
+        let (state, _tx) = make_state_with_store();
+        let store = state.gateway_store.clone().unwrap();
+        // Pre-existing route that covers claude-* with a different connection.
+        let other_conn_id = "other-conn";
+        store
+            .upsert_connection(&ConnectionDef {
+                id: other_conn_id.into(),
+                provider: "test-prov".into(),
+                base_url: None,
+                endpoint: None,
+                auth: AuthDef::ApiKey {
+                    env_var: "KEY".into(),
+                },
+                models: vec!["claude-*".into()],
+                max_concurrent: None,
+                weight: None,
+                tags: vec![],
+            })
+            .unwrap();
+        store
+            .upsert_route(&vkdg_config::schema::RouteDef {
+                id: "existing-route".into(),
+                match_models: vec!["claude-*".into()],
+                strategy: "fallback_chain".to_owned(),
+                targets: vec![other_conn_id.into()],
+                hooks: Default::default(),
+            })
+            .unwrap();
+        rebuild_and_push(&state).unwrap();
+
+        let provider = claude_provider();
+        let conn_id = ensure_account_connection(&state, &provider, "acct-1")
+            .unwrap()
+            .unwrap();
+
+        let (_, routes) = store.load().unwrap();
+        let route = routes.iter().find(|r| r.id == "existing-route").unwrap();
+        // Strategy must be preserved (wrong impl might change it).
+        assert_eq!(route.strategy, "fallback_chain");
+        // Original target must remain (wrong impl might replace instead of append).
+        assert!(route.targets.contains(&other_conn_id.to_owned()));
+        // New connection must be added.
+        assert!(route.targets.contains(&conn_id));
+        // No extra route must be created.
+        assert_eq!(routes.len(), 1, "extra route created when overlap existed");
+    }
+
+    // Plausible wrong impl: ensure never creates a route, leaving a freshly
+    // connected account invisible to the routing layer.
+    #[test]
+    fn ensure_no_overlap_creates_route() {
+        let (state, _tx) = make_state_with_store();
+        let store = state.gateway_store.clone().unwrap();
+        let provider = claude_provider();
+        let conn_id = ensure_account_connection(&state, &provider, "acct-2")
+            .unwrap()
+            .unwrap();
+
+        let (_, routes) = store.load().unwrap();
+        assert_eq!(routes.len(), 1, "route not created for new connection");
+        let route = &routes[0];
+        assert_eq!(route.strategy, "power_of_two_choices");
+        assert_eq!(route.targets, vec![conn_id]);
+        assert_eq!(route.match_models, provider.models);
+        assert_eq!(route.id, "test-prov-route");
+    }
+
+    // Plausible wrong impl: a second call for the same account creates a new
+    // connection and mutates routes again, breaking the operator's config.
+    #[test]
+    fn ensure_existing_account_does_not_touch_routes() {
+        let (state, _tx) = make_state_with_store();
+        let store = state.gateway_store.clone().unwrap();
+        let provider = claude_provider();
+        // First call creates the connection + route.
+        ensure_account_connection(&state, &provider, "acct-3")
+            .unwrap()
+            .unwrap();
+        let (_, routes_after_first) = store.load().unwrap();
+
+        // Second call — account already has a connection.
+        ensure_account_connection(&state, &provider, "acct-3").unwrap();
+        let (conns, routes_after_second) = store.load().unwrap();
+
+        // Routes must be identical to after the first call.
+        assert_eq!(routes_after_second.len(), routes_after_first.len());
+        assert_eq!(
+            routes_after_second[0].targets, routes_after_first[0].targets,
+            "routes mutated on reconnect"
+        );
+        // Only one connection for the account.
+        let account_conns = conns
+            .iter()
+            .filter(|c| matches!(&c.auth, AuthDef::Account { account } if account == "acct-3"))
+            .count();
+        assert_eq!(
+            account_conns, 1,
+            "duplicate connection created on reconnect"
+        );
+    }
+
+    // Plausible wrong impl: rollback removes the connection but leaves the
+    // partially modified routes in the store, poisoning future rebuilds.
+    #[test]
+    fn ensure_rollback_leaves_routes_unchanged_on_rebuild_failure() {
+        let (state, _tx) = make_state_with_store();
+        let store = state.gateway_store.clone().unwrap();
+        // Pre-seed a connection and a route that references it (valid state).
+        let anchor_id = "anchor-conn";
+        store
+            .upsert_connection(&ConnectionDef {
+                id: anchor_id.into(),
+                provider: "test-prov".into(),
+                base_url: None,
+                endpoint: None,
+                auth: AuthDef::ApiKey {
+                    env_var: "ANCHOR_KEY".into(),
+                },
+                models: vec!["claude-*".into()],
+                max_concurrent: None,
+                weight: None,
+                tags: vec![],
+            })
+            .unwrap();
+        store
+            .upsert_route(&vkdg_config::schema::RouteDef {
+                id: "anchor-route".into(),
+                match_models: vec!["claude-*".into()],
+                strategy: "fallback_chain".to_owned(),
+                targets: vec![anchor_id.into()],
+                hooks: Default::default(),
+            })
+            .unwrap();
+        // Add a ghost route (references non-existent "ghost-conn") so that
+        // rebuild_and_push always fails with UnknownConnection.
+        store
+            .upsert_route(&vkdg_config::schema::RouteDef {
+                id: "ghost-route".into(),
+                match_models: vec!["gpt-*".into()],
+                strategy: "round_robin".to_owned(),
+                targets: vec!["ghost-conn".into()],
+                hooks: Default::default(),
+            })
+            .unwrap();
+        // Do NOT call rebuild_and_push here — state has config_tx = None and
+        // the snapshot was never updated; the ghost-route will cause the next
+        // rebuild_and_push call inside ensure_account_connection to fail.
+
+        let routes_before: Vec<_> = store.load().unwrap().1;
+        let provider = claude_provider();
+        let result = ensure_account_connection(&state, &provider, "acct-4");
+
+        // Must report an error (rebuild failed).
+        assert!(result.is_err(), "expected error from rebuild failure");
+        let (conns_after, routes_after) = store.load().unwrap();
+        // Connection must have been rolled back.
+        assert!(
+            conns_after
+                .iter()
+                .all(|c| !matches!(&c.auth, AuthDef::Account { account } if account == "acct-4")),
+            "connection not rolled back"
+        );
+        // anchor-route must be unchanged (target list same as before).
+        let anchor = routes_after
+            .iter()
+            .find(|r| r.id == "anchor-route")
+            .unwrap();
+        let anchor_before = routes_before
+            .iter()
+            .find(|r| r.id == "anchor-route")
+            .unwrap();
+        assert_eq!(
+            anchor.targets, anchor_before.targets,
+            "route mutated and not rolled back"
+        );
     }
 }

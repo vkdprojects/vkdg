@@ -1,0 +1,582 @@
+//! Expected wire JSON below is written by hand from the Anthropic Messages API
+//! reference (messages, tool use, `tool_choice`, extended thinking, images).
+
+use serde_json::{json, Value};
+use vkdg_operations::{
+    ContentBlock, ConversationRequest, ImageData, Message, MessageContent, Role, ThinkingRequest,
+    Tool, ToolChoice,
+};
+
+use super::{messages_body, DEFAULT_MAX_TOKENS};
+
+fn text(role: Role, t: &str) -> Message {
+    Message {
+        role,
+        content: MessageContent::Text(t.into()),
+    }
+}
+
+fn blocks(role: Role, b: Vec<ContentBlock>) -> Message {
+    Message {
+        role,
+        content: MessageContent::Blocks(b),
+    }
+}
+
+fn call(id: &str, name: &str, input: Value) -> ContentBlock {
+    ContentBlock::ToolUse {
+        id: id.into(),
+        name: name.into(),
+        input,
+    }
+}
+
+fn result(id: &str, content: &str) -> ContentBlock {
+    ContentBlock::ToolResult {
+        tool_use_id: id.into(),
+        content: content.into(),
+        is_error: false,
+    }
+}
+
+fn tool(name: &str) -> Tool {
+    Tool {
+        name: name.into(),
+        description: Some(format!("{name} tool")),
+        input_schema: json!({"type": "object", "properties": {}}),
+    }
+}
+
+fn request(messages: Vec<Message>) -> ConversationRequest {
+    ConversationRequest {
+        model: "claude-sonnet-4-5".into(),
+        messages,
+        max_tokens: Some(1000),
+        ..Default::default()
+    }
+}
+
+fn with_tools(mut req: ConversationRequest) -> ConversationRequest {
+    req.tools = vec![tool("get_weather"), tool("get_time")];
+    req
+}
+
+fn wire(req: &ConversationRequest) -> Value {
+    serde_json::from_slice(&messages_body(req, "claude-sonnet-4-5", None)).unwrap()
+}
+
+fn thinking(budget: Option<u32>) -> ThinkingRequest {
+    ThinkingRequest {
+        budget_tokens: budget,
+        effort: None,
+    }
+}
+
+// ── tool_choice ───────────────────────────────────────────────────────────────
+
+// Defeat: dropping tool_choice (the model ignores a forced tool), or sending the
+// OpenAI spellings (`required`, `{type:function}`), which Anthropic rejects.
+#[test]
+fn tool_choice_uses_the_anthropic_spellings() {
+    let cases = [
+        (ToolChoice::Auto, json!({"type": "auto"})),
+        (ToolChoice::Required, json!({"type": "any"})),
+        (ToolChoice::Disabled, json!({"type": "none"})),
+        (
+            ToolChoice::Named("get_weather".into()),
+            json!({"type": "tool", "name": "get_weather"}),
+        ),
+    ];
+    for (choice, expected) in cases {
+        let mut req = with_tools(request(vec![text(Role::User, "hi")]));
+        req.tool_choice = Some(choice.clone());
+        assert_eq!(wire(&req)["tool_choice"], expected, "{choice:?}");
+    }
+}
+
+// Defeat: losing the client's one-call-per-turn limit, or attaching it to
+// `none`, whose schema has no such field.
+#[test]
+fn disable_parallel_tool_use_rides_inside_tool_choice() {
+    let cases = [
+        (
+            None,
+            json!({"type": "auto", "disable_parallel_tool_use": true}),
+        ),
+        (
+            Some(ToolChoice::Auto),
+            json!({"type": "auto", "disable_parallel_tool_use": true}),
+        ),
+        (
+            Some(ToolChoice::Required),
+            json!({"type": "any", "disable_parallel_tool_use": true}),
+        ),
+        (
+            Some(ToolChoice::Named("get_time".into())),
+            json!({"type": "tool", "name": "get_time", "disable_parallel_tool_use": true}),
+        ),
+        (Some(ToolChoice::Disabled), json!({"type": "none"})),
+    ];
+    for (choice, expected) in cases {
+        let mut req = with_tools(request(vec![text(Role::User, "hi")]));
+        req.tool_choice = choice.clone();
+        req.disable_parallel_tool_use = true;
+        assert_eq!(wire(&req)["tool_choice"], expected, "{choice:?}");
+    }
+}
+
+// Defeat: sending tool_choice with no tools (Anthropic: 400), or inventing a
+// tool_choice when the client expressed no preference.
+#[test]
+fn no_tool_choice_without_tools_or_without_a_preference() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.tool_choice = Some(ToolChoice::Auto);
+    assert!(wire(&req).get("tool_choice").is_none());
+    let req = with_tools(request(vec![text(Role::User, "hi")]));
+    assert!(wire(&req).get("tool_choice").is_none());
+}
+
+// ── stop_sequences, top_p, max_tokens ─────────────────────────────────────────
+
+// Defeat: omitting stop_sequences so the model runs past the client's stop.
+#[test]
+fn stop_sequences_reach_the_wire_only_when_set() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    assert!(wire(&req).get("stop_sequences").is_none());
+    req.stop_sequences = vec!["\n\nHuman:".into(), "END".into()];
+    assert_eq!(wire(&req)["stop_sequences"], json!(["\n\nHuman:", "END"]));
+}
+
+// Defeat: Claude 4.5+ answers 400 "temperature and top_p cannot both be
+// specified" to the pair OpenAI clients commonly send; temperature wins.
+#[test]
+fn top_p_is_sent_alone_and_yields_to_temperature() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.top_p = Some(0.9);
+    let v = wire(&req);
+    assert_eq!(v["top_p"], json!(0.9));
+    assert!(v.get("temperature").is_none());
+    req.temperature = Some(0.7);
+    let v = wire(&req);
+    assert_eq!(v["temperature"], json!(0.7));
+    assert!(v.get("top_p").is_none());
+}
+
+// Defeat: omitting max_tokens (Anthropic requires it: 400) or overriding the
+// client's own value with the default.
+#[test]
+fn max_tokens_defaults_only_when_the_client_sent_none() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.max_tokens = None;
+    assert_eq!(wire(&req)["max_tokens"], json!(DEFAULT_MAX_TOKENS));
+    assert_eq!(DEFAULT_MAX_TOKENS, 8192);
+    req.max_tokens = Some(77);
+    assert_eq!(wire(&req)["max_tokens"], json!(77));
+}
+
+// ── extended thinking constraints ─────────────────────────────────────────────
+
+// Defeat: sending temperature 0.7 or top_p 0.9 with thinking on (Anthropic: 400),
+// or dropping a value the API allows (temperature 1, top_p >= 0.95).
+// 0.95 is f32 0.95; widened to f64 naively it is 0.949999988... < 0.95.
+#[test]
+fn thinking_keeps_only_the_sampling_values_the_api_allows() {
+    let cases = [
+        (Some(0.7_f32), None, None, None),
+        (Some(1.0), None, Some(json!(1.0)), None),
+        (None, Some(0.9), None, None),
+        (None, Some(0.95), None, Some(json!(0.95))),
+        (None, Some(1.0), None, Some(json!(1.0))),
+    ];
+    for (temperature, top_p, want_t, want_p) in cases {
+        let mut req = request(vec![text(Role::User, "hi")]);
+        req.thinking = Some(thinking(Some(2000)));
+        req.max_tokens = Some(4000);
+        req.temperature = temperature;
+        req.top_p = top_p;
+        let v = wire(&req);
+        assert_eq!(
+            v.get("temperature").cloned(),
+            want_t,
+            "{temperature:?}/{top_p:?}"
+        );
+        assert_eq!(v.get("top_p").cloned(), want_p, "{temperature:?}/{top_p:?}");
+        assert_eq!(
+            v["thinking"],
+            json!({"type": "enabled", "budget_tokens": 2000})
+        );
+    }
+}
+
+// Defeat: budget_tokens >= max_tokens (Anthropic: 400), or shrinking the
+// client's output allowance to fit the budget instead of adding the budget.
+#[test]
+fn thinking_budget_is_added_on_top_of_a_max_tokens_that_would_not_fit_it() {
+    let cases = [
+        // (client max_tokens, budget, expected max_tokens, expected budget)
+        (Some(4000), Some(2000), 4000, 2000),
+        (Some(2000), Some(2000), 4000, 2000),
+        (Some(1000), Some(2000), 3000, 2000),
+        (None, Some(10_000), DEFAULT_MAX_TOKENS + 10_000, 10_000),
+        (Some(500), Some(100), 500 + 1024, 1024),
+    ];
+    for (max, budget, want_max, want_budget) in cases {
+        let mut req = request(vec![text(Role::User, "hi")]);
+        req.max_tokens = max;
+        req.thinking = Some(thinking(budget));
+        let v = wire(&req);
+        assert_eq!(
+            v["max_tokens"],
+            json!(want_max),
+            "max {max:?} budget {budget:?}"
+        );
+        assert_eq!(v["thinking"]["budget_tokens"], json!(want_budget));
+    }
+}
+
+// Defeat: sending thinking together with a forced tool (Anthropic: 400 "thinking
+// may not be enabled when tool_choice forces tool use"); or dropping thinking
+// for the choices that allow it.
+#[test]
+fn forced_tool_choice_drops_thinking_and_keeps_sampling() {
+    for (choice, keeps_thinking) in [
+        (ToolChoice::Required, false),
+        (ToolChoice::Named("get_time".into()), false),
+        (ToolChoice::Auto, true),
+        (ToolChoice::Disabled, true),
+    ] {
+        let mut req = with_tools(request(vec![text(Role::User, "hi")]));
+        req.tool_choice = Some(choice.clone());
+        req.thinking = Some(thinking(Some(2000)));
+        req.temperature = Some(0.7);
+        let v = wire(&req);
+        assert_eq!(v.get("thinking").is_some(), keeps_thinking, "{choice:?}");
+        // With thinking gone the client's temperature is valid and must survive.
+        assert_eq!(
+            v.get("temperature").is_some(),
+            !keeps_thinking,
+            "{choice:?}"
+        );
+        if !keeps_thinking {
+            assert_eq!(v["max_tokens"], json!(1000), "{choice:?}");
+        }
+    }
+}
+
+fn weather_loop(first_assistant_block: Option<ContentBlock>) -> Vec<Message> {
+    let mut assistant: Vec<ContentBlock> = first_assistant_block.into_iter().collect();
+    assistant.push(call("toolu_1", "get_weather", json!({"city": "Paris"})));
+    vec![
+        text(Role::User, "weather?"),
+        blocks(Role::Assistant, assistant),
+        blocks(Role::Tool, vec![result("toolu_1", "sunny")]),
+    ]
+}
+
+// Defeat: continuing a tool turn with thinking on when the assistant turn has no
+// signed thinking block (Anthropic: 400 "Expected thinking or redacted_thinking,
+// but found tool_use"); every OpenAI-origin history looks like this. A signed
+// block, or a request that is not mid tool turn, keeps thinking.
+#[test]
+fn thinking_is_dropped_only_for_a_tool_turn_continuation_without_a_signed_block() {
+    let signed = ContentBlock::Thinking {
+        thinking: "hmm".into(),
+        signature: Some("sig".into()),
+    };
+    let unsigned = ContentBlock::Thinking {
+        thinking: "hmm".into(),
+        signature: None,
+    };
+    let redacted = ContentBlock::RedactedThinking { data: "abc".into() };
+    for (first, expect_thinking) in [
+        (None, false),
+        (Some(unsigned), false),
+        (Some(signed), true),
+        (Some(redacted), true),
+    ] {
+        let mut req = with_tools(request(weather_loop(first.clone())));
+        req.thinking = Some(thinking(Some(2000)));
+        assert_eq!(
+            wire(&req).get("thinking").is_some(),
+            expect_thinking,
+            "{first:?}"
+        );
+    }
+    // Not a continuation: the last turn is a fresh user question.
+    let mut msgs = weather_loop(None);
+    msgs.push(text(Role::Assistant, "It is sunny."));
+    msgs.push(text(Role::User, "and tomorrow?"));
+    let mut req = with_tools(request(msgs));
+    req.thinking = Some(thinking(Some(2000)));
+    assert!(wire(&req).get("thinking").is_some());
+}
+
+// ── tool use / tool result adjacency ──────────────────────────────────────────
+
+// Defeat: one user turn per `role:tool` message (consecutive user turns, with
+// results split across turns), or results in arrival order instead of the order
+// of the assistant's tool_use blocks.
+#[test]
+fn parallel_tool_results_become_one_user_turn_in_tool_use_order() {
+    let req = request(vec![
+        text(Role::User, "weather and time?"),
+        blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Text {
+                    text: "Checking.".into(),
+                },
+                call("toolu_a", "get_weather", json!({"city": "Paris"})),
+                call("toolu_b", "get_time", json!({})),
+            ],
+        ),
+        blocks(Role::Tool, vec![result("toolu_b", "noon")]),
+        blocks(Role::Tool, vec![result("toolu_a", "sunny")]),
+    ]);
+    assert_eq!(
+        wire(&req)["messages"],
+        json!([
+            {"role": "user", "content": "weather and time?"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Checking."},
+                {"type": "tool_use", "id": "toolu_a", "name": "get_weather", "input": {"city": "Paris"}},
+                {"type": "tool_use", "id": "toolu_b", "name": "get_time", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_a", "content": "sunny"},
+                {"type": "tool_result", "tool_use_id": "toolu_b", "content": "noon"},
+            ]},
+        ])
+    );
+}
+
+// Defeat: text before tool_result in the same user turn (Anthropic: tool_result
+// blocks must come first), or a separate user turn for the follow-up text.
+#[test]
+fn user_text_after_tool_results_joins_the_same_turn_after_them() {
+    let req = request(vec![
+        text(Role::User, "go"),
+        blocks(
+            Role::Assistant,
+            vec![call("toolu_1", "get_time", json!({}))],
+        ),
+        text(Role::User, "thanks, also be brief"),
+        blocks(Role::Tool, vec![result("toolu_1", "noon")]),
+    ]);
+    assert_eq!(
+        wire(&req)["messages"][2],
+        json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "noon"},
+            {"type": "text", "text": "thanks, also be brief"},
+        ]})
+    );
+}
+
+// Defeat: forwarding a tool_result whose id no preceding tool_use carries
+// (Anthropic: 400 "unexpected tool_use_id"), or silently dropping its content.
+#[test]
+fn an_orphan_tool_result_survives_as_text_not_as_a_tool_result() {
+    let req = request(vec![
+        text(Role::User, "hi"),
+        text(Role::Assistant, "hello"),
+        blocks(Role::Tool, vec![result("toolu_gone", "42")]),
+    ]);
+    let v = wire(&req);
+    let last = &v["messages"][2];
+    assert_eq!(last["role"], "user");
+    let rendered = last["content"].to_string();
+    assert!(!rendered.contains("tool_result"), "{rendered}");
+    assert!(
+        rendered.contains("toolu_gone") && rendered.contains("42"),
+        "{rendered}"
+    );
+}
+
+// Defeat: a tool_use with no tool_result in the next user turn (Anthropic: 400
+// "tool_use ids were found without tool_result blocks immediately after"), e.g.
+// the client interrupted the call; the real result must still win when present.
+#[test]
+fn an_unanswered_tool_use_gets_an_error_result_and_answered_ones_keep_theirs() {
+    let req = request(vec![
+        text(Role::User, "go"),
+        blocks(
+            Role::Assistant,
+            vec![
+                call("toolu_a", "get_weather", json!({})),
+                call("toolu_b", "get_time", json!({})),
+            ],
+        ),
+        blocks(Role::Tool, vec![result("toolu_b", "noon")]),
+    ]);
+    assert_eq!(
+        wire(&req)["messages"][2]["content"],
+        json!([
+            {"type": "tool_result", "tool_use_id": "toolu_a",
+             "content": "[No response received]", "is_error": true},
+            {"type": "tool_result", "tool_use_id": "toolu_b", "content": "noon"},
+        ])
+    );
+}
+
+// Defeat: the tool_result of an interrupted exchange being sent twice for one
+// id (Anthropic rejects duplicate results), or `is_error` being lost.
+#[test]
+fn duplicate_results_are_not_repeated_and_is_error_is_kept() {
+    let req = request(vec![
+        text(Role::User, "go"),
+        blocks(
+            Role::Assistant,
+            vec![call("toolu_1", "get_time", json!({}))],
+        ),
+        blocks(
+            Role::Tool,
+            vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "toolu_1".into(),
+                    content: "boom".into(),
+                    is_error: true,
+                },
+                result("toolu_1", "late duplicate"),
+            ],
+        ),
+    ]);
+    let content = &wire(&req)["messages"][2]["content"];
+    assert_eq!(content[0]["content"], "boom");
+    assert_eq!(content[0]["is_error"], true);
+    assert_eq!(
+        content
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["type"] == "tool_result")
+            .count(),
+        1
+    );
+}
+
+// ── content blocks ────────────────────────────────────────────────────────────
+
+// Defeat: serializing ContentBlock with serde's internal shape
+// (`data: {"Base64": {...}}`, no `source`), which Anthropic rejects.
+#[test]
+fn images_use_the_anthropic_source_shape() {
+    let req = request(vec![blocks(
+        Role::User,
+        vec![
+            ContentBlock::Text {
+                text: "what is this?".into(),
+            },
+            ContentBlock::Image {
+                media_type: "image/png".into(),
+                data: ImageData::Base64 {
+                    data: "iVBORw0KGgo=".into(),
+                },
+            },
+            ContentBlock::Image {
+                media_type: String::new(),
+                data: ImageData::Url {
+                    url: "https://example.com/cat.jpg".into(),
+                },
+            },
+        ],
+    )]);
+    assert_eq!(
+        wire(&req)["messages"][0]["content"],
+        json!([
+            {"type": "text", "text": "what is this?"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.com/cat.jpg"}},
+        ])
+    );
+}
+
+// Defeat: replaying a thinking block without a signature (from another
+// provider; Anthropic: 400 invalid signature), or mangling a signed one.
+#[test]
+fn only_signed_thinking_is_replayed() {
+    let req = request(vec![
+        text(Role::User, "hi"),
+        blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Thinking {
+                    thinking: "from elsewhere".into(),
+                    signature: None,
+                },
+                ContentBlock::Thinking {
+                    thinking: "ponder".into(),
+                    signature: Some("EqQBCg".into()),
+                },
+                ContentBlock::RedactedThinking {
+                    data: String::new(),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "opaque".into(),
+                },
+                ContentBlock::Text {
+                    text: "done".into(),
+                },
+            ],
+        ),
+    ]);
+    assert_eq!(
+        wire(&req)["messages"][1]["content"],
+        json!([
+            {"type": "thinking", "thinking": "ponder", "signature": "EqQBCg"},
+            {"type": "redacted_thinking", "data": "opaque"},
+            {"type": "text", "text": "done"},
+        ])
+    );
+}
+
+// Defeat: `role: "system"` inside messages (Anthropic: 400) or losing that text.
+// Empty text blocks are rejected by Anthropic too.
+#[test]
+fn system_messages_fold_into_system_and_empty_text_is_dropped() {
+    let mut req = request(vec![
+        text(Role::System, "mid-conversation rule"),
+        text(Role::User, "hi"),
+        blocks(
+            Role::Assistant,
+            vec![
+                ContentBlock::Text {
+                    text: String::new(),
+                },
+                ContentBlock::Text { text: "yo".into() },
+            ],
+        ),
+    ]);
+    req.system = Some("base".into());
+    let v = wire(&req);
+    assert_eq!(v["system"], json!("base\n\nmid-conversation rule"));
+    assert_eq!(
+        v["messages"],
+        json!([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "yo"},
+        ])
+    );
+}
+
+// Defeat: the preamble replacing or following the client's system prompt (the
+// subscription gate needs it first, the client's text untouched after it).
+#[test]
+fn a_system_preamble_comes_first_as_its_own_block() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.system = Some("Be brief.".into());
+    let v: Value =
+        serde_json::from_slice(&messages_body(&req, "claude-sonnet-4-5", Some("IDENTITY")))
+            .unwrap();
+    assert_eq!(
+        v["system"],
+        json!([
+            {"type": "text", "text": "IDENTITY"},
+            {"type": "text", "text": "Be brief."},
+        ])
+    );
+    req.system = None;
+    let v: Value =
+        serde_json::from_slice(&messages_body(&req, "claude-sonnet-4-5", Some("IDENTITY")))
+            .unwrap();
+    assert_eq!(v["system"], json!([{"type": "text", "text": "IDENTITY"}]));
+}

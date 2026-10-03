@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::HeaderMap;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
-use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
+use vkdg_operations::{ConversationRequest, Operation};
 use vkdg_provider_sdk::{
     Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
     ProviderError, TokenPair,
@@ -27,6 +27,10 @@ impl ProviderAdapter for ClaudeCodeAdapter {
 
     fn display_name(&self) -> &'static str {
         "Claude Code"
+    }
+
+    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
+        Some(vkdg_operations::WireFormat::AnthropicMessages)
     }
 
     fn default_models(&self) -> Vec<String> {
@@ -407,78 +411,11 @@ fn base_url(config: &ConnectionConfig) -> String {
 const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 fn build_body(req: &ConversationRequest) -> Bytes {
-    let model = vkdg_provider_sdk::upstream_model(req, "claude-opus-4-5").to_owned();
-
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-                Role::Tool => "user",
-            };
-            let content = match &m.content {
-                MessageContent::Text(t) => Value::String(t.clone()),
-                MessageContent::Blocks(blocks) => Value::Array(
-                    blocks
-                        .iter()
-                        .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
-                        .collect(),
-                ),
-            };
-            json!({ "role": role, "content": content })
-        })
-        .collect();
-
-    let mut body = Map::new();
-    body.insert("model".into(), Value::String(model));
-    body.insert("messages".into(), Value::Array(messages));
+    let model = vkdg_provider_sdk::upstream_model(req, "claude-opus-4-5");
     // A subscription (OAuth) token is only accepted for Claude Code traffic:
-    // without this exact first block Anthropic answers 429 rate_limit_error. The
-    // client's own system prompt follows it untouched.
-    let mut system = vec![json!({ "type": "text", "text": CLAUDE_CODE_IDENTITY })];
-    if let Some(sys) = &req.system {
-        system.push(json!({ "type": "text", "text": sys }));
-    }
-    body.insert("system".into(), Value::Array(system));
-    if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".into(), json!(max));
-    }
-    if let Some(temp) = req.temperature {
-        body.insert("temperature".into(), json!(temp));
-    }
-    if req.stream {
-        body.insert("stream".into(), Value::Bool(true));
-    }
-    // Extended thinking: both fields are required when the key is present, and
-    // 1024 is Anthropic's minimum budget.
-    if let Some(thinking) = &req.thinking {
-        let budget = thinking.budget_tokens.unwrap_or(1024);
-        body.insert(
-            "thinking".into(),
-            json!({ "type": "enabled", "budget_tokens": budget }),
-        );
-    }
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut tool = Map::new();
-                tool.insert("name".into(), Value::String(t.name.clone()));
-                if let Some(desc) = &t.description {
-                    tool.insert("description".into(), Value::String(desc.clone()));
-                }
-                tool.insert("input_schema".into(), t.input_schema.clone());
-                Value::Object(tool)
-            })
-            .collect();
-        body.insert("tools".into(), Value::Array(tools));
-    }
-
-    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+    // without this exact first system block Anthropic answers 429
+    // rate_limit_error. The client's own system prompt follows it untouched.
+    vkdg_provider_sdk::anthropic_messages::messages_body(req, model, Some(CLAUDE_CODE_IDENTITY))
 }
 
 #[cfg(test)]
@@ -616,7 +553,7 @@ mod paste_tests {
 #[cfg(test)]
 mod body_tests {
     use super::*;
-    use vkdg_operations::Message;
+    use vkdg_operations::{Message, MessageContent, Role, ToolChoice};
 
     const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -701,5 +638,32 @@ mod body_tests {
             v["thinking"],
             json!({ "type": "enabled", "budget_tokens": 1024 })
         );
+    }
+
+    // Defeat: the identity gate lost when the new tool/limit fields are present,
+    // a glob model sent upstream, or no max_tokens (Anthropic: 400).
+    #[test]
+    fn identity_gate_survives_tools_and_missing_limits() {
+        let req = ConversationRequest {
+            model: "claude-*".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            tools: vec![vkdg_operations::Tool {
+                name: "read".into(),
+                description: None,
+                input_schema: json!({ "type": "object" }),
+            }],
+            tool_choice: Some(ToolChoice::Named("read".into())),
+            stop_sequences: vec!["END".into()],
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_slice(&build_body(&req)).unwrap();
+        assert_eq!(v["model"], "claude-opus-4-5");
+        assert_eq!(v["max_tokens"], 8192);
+        assert_eq!(v["system"], json!([{ "type": "text", "text": IDENTITY }]));
+        assert_eq!(v["tool_choice"], json!({ "type": "tool", "name": "read" }));
+        assert_eq!(v["stop_sequences"], json!(["END"]));
     }
 }

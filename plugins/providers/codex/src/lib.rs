@@ -256,7 +256,10 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
     body.insert("store".into(), Value::Bool(false));
     // Always stream; the /responses endpoint is SSE-first.
     body.insert("stream".into(), Value::Bool(true));
-    // max_tokens and max_output_tokens are stripped: Codex rejects both.
+    // Not forwarded, on purpose: `tool_choice`, `stop_sequences`, `top_p` and
+    // `disable_parallel_tool_use` (the Responses API has no `stop`; the others
+    // are untested against this OAuth backend, and this adapter's wire behavior is
+    // unchanged). `max_tokens` and `max_output_tokens` are stripped: Codex rejects both.
     if let Some(temp) = req.temperature {
         body.insert("temperature".into(), json!(temp));
     }

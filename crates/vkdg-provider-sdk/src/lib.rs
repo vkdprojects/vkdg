@@ -8,13 +8,22 @@
 //! Adding a provider never requires modifying the VKDG core.
 //! Register the provider with [`ProviderRegistry`].
 
+pub mod anthropic_messages;
+pub mod dialect;
 pub mod error;
 pub mod oauth;
 pub mod openai_compat;
 pub mod registry;
 pub mod request;
+mod sampling_json;
+mod turns;
 pub mod usage;
 
+pub use dialect::{
+    decode_anthropic_json, decode_openai_json, json_decoder_for, sse_decoder_for,
+    AnthropicSseDecoder, FrameError, JsonDecoder, OpenAiSseDecoder, SseFrame, SseFramer,
+    DEFAULT_MAX_EVENT_BYTES, DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
+};
 pub use error::ProviderError;
 pub use oauth::{
     find_login_method, resolve_login_params, run_device_login, DeviceAuthorization, DevicePoll,

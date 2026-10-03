@@ -3,12 +3,11 @@
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use futures::future::BoxFuture;
 use http::HeaderMap;
-use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
-use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
+use vkdg_operations::Operation;
+use vkdg_provider_sdk::openai_compat::chat_completions_body;
 use vkdg_provider_sdk::{
     Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
     ProviderError, TokenPair,
@@ -27,6 +26,10 @@ impl ProviderAdapter for GitHubCopilotAdapter {
 
     fn display_name(&self) -> &'static str {
         "GitHub Copilot"
+    }
+
+    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
+        Some(vkdg_operations::WireFormat::OpenAiChat)
     }
 
     fn default_models(&self) -> Vec<String> {
@@ -56,7 +59,7 @@ impl ProviderAdapter for GitHubCopilotAdapter {
 
         // Note: production use requires fetching a short-lived copilot_token from
         //   /copilot_internal/v2/token first; Phase E will add that layer.
-        let body = build_chat_completions_body(req, "gpt-4o");
+        let body = chat_completions_body(req, vkdg_provider_sdk::upstream_model(req, "gpt-4o"));
         let url = format!("{}/v1/chat/completions", base_url(config));
         let headers = build_auth_headers(token);
 
@@ -116,131 +119,4 @@ fn build_auth_headers(token: &str) -> HeaderMap {
         http::HeaderValue::from_static("application/json"),
     );
     headers
-}
-
-fn build_chat_completions_body(req: &ConversationRequest, default_model: &str) -> Bytes {
-    let model = vkdg_provider_sdk::upstream_model(req, default_model).to_owned();
-
-    let mut messages: Vec<Value> = Vec::new();
-    if let Some(sys) = &req.system {
-        messages.push(json!({ "role": "system", "content": sys }));
-    }
-
-    for m in &req.messages {
-        let msg = match m.role {
-            Role::System => {
-                let c = msg_content(&m.content);
-                json!({ "role": "system", "content": c })
-            }
-            Role::User => {
-                let c = msg_content(&m.content);
-                json!({ "role": "user", "content": c })
-            }
-            Role::Assistant => {
-                if let MessageContent::Blocks(blocks) = &m.content {
-                    let tool_calls: Vec<Value> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
-                                let args =
-                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
-                                Some(json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": { "name": name, "arguments": args }
-                                }))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    if tool_calls.is_empty() {
-                        let c = msg_content(&m.content);
-                        json!({ "role": "assistant", "content": c })
-                    } else {
-                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
-                    }
-                } else {
-                    let c = msg_content(&m.content);
-                    json!({ "role": "assistant", "content": c })
-                }
-            }
-            Role::Tool => {
-                let (id, text) = extract_tool_result(&m.content);
-                json!({ "role": "tool", "tool_call_id": id, "content": text })
-            }
-        };
-        messages.push(msg);
-    }
-
-    let mut body = Map::new();
-    body.insert("model".into(), Value::String(model));
-    body.insert("messages".into(), Value::Array(messages));
-    if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".into(), json!(max));
-    }
-    if let Some(temp) = req.temperature {
-        body.insert("temperature".into(), json!(temp));
-    }
-    if req.stream {
-        body.insert("stream".into(), Value::Bool(true));
-        body.insert("stream_options".into(), json!({ "include_usage": true }));
-    }
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut func = Map::new();
-                func.insert("name".into(), Value::String(t.name.clone()));
-                if let Some(desc) = &t.description {
-                    func.insert("description".into(), Value::String(desc.clone()));
-                }
-                func.insert("parameters".into(), t.input_schema.clone());
-                json!({ "type": "function", "function": func })
-            })
-            .collect();
-        body.insert("tools".into(), Value::Array(tools));
-    }
-
-    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
-}
-
-fn msg_content(content: &MessageContent) -> Value {
-    match content {
-        MessageContent::Text(t) => Value::String(t.clone()),
-        MessageContent::Blocks(blocks) => {
-            let parts: Vec<Value> = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                    _ => None,
-                })
-                .collect();
-            if parts.is_empty() {
-                Value::Null
-            } else {
-                Value::Array(parts)
-            }
-        }
-    }
-}
-
-fn extract_tool_result(content: &MessageContent) -> (String, String) {
-    if let MessageContent::Blocks(blocks) = content {
-        for b in blocks {
-            if let ContentBlock::ToolResult {
-                tool_use_id,
-                content: c,
-                ..
-            } = b
-            {
-                return (tool_use_id.clone(), c.clone());
-            }
-        }
-    }
-    let text = match content {
-        MessageContent::Text(t) => t.clone(),
-        MessageContent::Blocks(_) => String::new(),
-    };
-    (String::new(), text)
 }

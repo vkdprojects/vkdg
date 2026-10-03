@@ -114,6 +114,15 @@ pub trait ProviderAdapter: Send + Sync {
         vec!["*".to_owned()]
     }
 
+    /// The dialect this provider's conversation responses use for `config`.
+    /// Declared, the gateway translates responses (stream and not) to the
+    /// client's dialect when they differ, and passes bytes through untouched when
+    /// they match. `None` (the default) never translates: right for providers that
+    /// speak another protocol and decode it themselves ([`Self::stream_decoder`]).
+    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
+        None
+    }
+
     /// Metadata for the admin console UI. Defaults work for any plugin that
     /// only implements `id()` and `display_name()`.
     fn meta(&self) -> ProviderMeta {

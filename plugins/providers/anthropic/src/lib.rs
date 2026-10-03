@@ -4,10 +4,9 @@
 
 use bytes::Bytes;
 use http::HeaderMap;
-use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_core::pricing::ModelPrice;
-use vkdg_operations::{ConversationRequest, MessageContent, Operation, Role};
+use vkdg_operations::{ConversationRequest, Operation};
 use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
 pub struct AnthropicAdapter;
@@ -41,6 +40,10 @@ impl ProviderAdapter for AnthropicAdapter {
 
     fn display_name(&self) -> &'static str {
         "Anthropic"
+    }
+
+    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
+        Some(vkdg_operations::WireFormat::AnthropicMessages)
     }
 
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
@@ -112,73 +115,102 @@ fn base_url(config: &ConnectionConfig) -> String {
 }
 
 fn build_body(req: &ConversationRequest) -> Bytes {
-    let model = vkdg_provider_sdk::upstream_model(req, "claude-3-5-sonnet-20241022").to_owned();
+    let model = vkdg_provider_sdk::upstream_model(req, "claude-3-5-sonnet-20241022");
+    vkdg_provider_sdk::anthropic_messages::messages_body(req, model, None)
+}
 
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-                Role::Tool => "user",
-            };
-            let content = match &m.content {
-                MessageContent::Text(t) => Value::String(t.clone()),
-                MessageContent::Blocks(blocks) => Value::Array(
-                    blocks
-                        .iter()
-                        .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
-                        .collect(),
-                ),
-            };
-            json!({ "role": role, "content": content })
-        })
-        .collect();
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use vkdg_operations::{ContentBlock, Message, MessageContent, Role, ToolChoice};
 
-    let mut body = Map::new();
-    body.insert("model".into(), Value::String(model));
-    body.insert("messages".into(), Value::Array(messages));
-    if let Some(sys) = &req.system {
-        body.insert("system".into(), Value::String(sys.clone()));
-    }
-    if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".into(), json!(max));
-    }
-    if let Some(temp) = req.temperature {
-        body.insert("temperature".into(), json!(temp));
-    }
-    if req.stream {
-        body.insert("stream".into(), Value::Bool(true));
-    }
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut tool = Map::new();
-                tool.insert("name".into(), Value::String(t.name.clone()));
-                if let Some(desc) = &t.description {
-                    tool.insert("description".into(), Value::String(desc.clone()));
-                }
-                tool.insert("input_schema".into(), t.input_schema.clone());
-                Value::Object(tool)
-            })
-            .collect();
-        body.insert("tools".into(), Value::Array(tools));
-    }
-    // Adaptive thinking: tell Anthropic to use extended reasoning and cap the
-    // token budget. Both fields are required when the key is present.
-    if let Some(thinking) = &req.thinking {
-        let budget = thinking.budget_tokens.unwrap_or(1024);
-        body.insert(
-            "thinking".into(),
-            json!({"type": "enabled", "budget_tokens": budget}),
-        );
+    fn body(req: &ConversationRequest) -> Value {
+        serde_json::from_slice(&build_body(req)).unwrap()
     }
 
-    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+    // Defeat: a route pattern (`claude-*`) sent upstream as the model id, or a
+    // missing max_tokens (Anthropic answers 400 "max_tokens: Field required" to
+    // an OpenAI client that omitted it).
+    #[test]
+    fn glob_model_falls_back_and_max_tokens_is_always_present() {
+        let req = ConversationRequest {
+            model: "claude-*".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            ..Default::default()
+        };
+        let v = body(&req);
+        assert_eq!(v["model"], "claude-3-5-sonnet-20241022");
+        assert_eq!(v["max_tokens"], 8192);
+        assert!(v["system"].is_null(), "no preamble for the API-key adapter");
+    }
+
+    // Defeat: any one of thinking+forced-tool (400), results split across user
+    // turns (400/ambiguity), or the client's temperature lost with thinking gone.
+    #[test]
+    fn an_openai_style_agent_turn_becomes_a_valid_messages_request() {
+        let req = ConversationRequest {
+            model: "claude-sonnet-4-5".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("go".into()),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Blocks(vec![
+                        ContentBlock::ToolUse {
+                            id: "call_1".into(),
+                            name: "a".into(),
+                            input: json!({}),
+                        },
+                        ContentBlock::ToolUse {
+                            id: "call_2".into(),
+                            name: "b".into(),
+                            input: json!({}),
+                        },
+                    ]),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: "call_1".into(),
+                        content: "one".into(),
+                        is_error: false,
+                    }]),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: "call_2".into(),
+                        content: "two".into(),
+                        is_error: false,
+                    }]),
+                },
+            ],
+            tools: vec![vkdg_operations::Tool {
+                name: "a".into(),
+                description: None,
+                input_schema: json!({"type": "object"}),
+            }],
+            tool_choice: Some(ToolChoice::Required),
+            thinking: Some(vkdg_operations::ThinkingRequest {
+                budget_tokens: None,
+                effort: Some("high".into()),
+            }),
+            temperature: Some(0.2),
+            ..Default::default()
+        };
+        let v = body(&req);
+        assert_eq!(v["tool_choice"], json!({"type": "any"}));
+        assert!(v.get("thinking").is_none());
+        assert_eq!(v["temperature"], json!(0.2));
+        assert_eq!(v["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(v["messages"][2]["content"][1]["tool_use_id"], "call_2");
+    }
 }
 
 #[cfg(test)]

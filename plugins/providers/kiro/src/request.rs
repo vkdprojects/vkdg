@@ -168,6 +168,11 @@ impl Turn {
     }
 }
 
+/// Builds the Kiro `conversationState` for `conv`.
+///
+/// Request fields with no Kiro counterpart are not forwarded, on purpose:
+/// `tool_choice`, `stop_sequences`, `top_p`, `temperature`, `max_tokens` and
+/// `disable_parallel_tool_use`. Kiro's wire format has no place for them.
 pub fn build_conversation_state(
     conv: &ConversationRequest,
     model_id: &str,

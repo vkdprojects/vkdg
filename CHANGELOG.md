@@ -12,6 +12,14 @@ Versioning: [Semantic Versioning](https://semver.org/).
   and globally, with 429 and `retry-after`.
 
 ### Added
+- **Account routing in the console.** The account card (Accounts and the provider page) now shows how
+  that account is routed and lets you edit it: models, weight, max concurrent, plus Test. An account with
+  no connection (connected before they were automatic) gets an "Enable routing" button. The connection
+  stays a separate object in the gateway (an account can have several, e.g. both Kiro endpoints) but the
+  console no longer asks you to think about it. API: `connections[]` list items carry `models` and
+  `weight`; `PATCH /admin/v1/connections/{id}` changes only `models`/`max_concurrent`/`weight` (auth,
+  endpoint, base URL and tags are untouched, 422 on empty models or zero values);
+  `POST /admin/v1/accounts/{id}/connection` creates the connection (201) or returns the existing one (200).
 - **Request history:** streaming rows now record `input_tokens`, `output_tokens` and `cost_microdollars`
   (from the response body, once the stream ends). Status changes from `pending` to `completed`
   (body ran to the end) or `cancelled` (client disconnected mid-stream). Before, every streaming row
@@ -49,6 +57,49 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- **Claude Code requests always failed upstream.** Anthropic answers a subscription OAuth token with
+  `429 rate_limit_error` unless the first system block is the Claude Code identity; the gateway then put
+  the connection in cooldown and the client only saw "no eligible connection". The plugin now sends that
+  block first and the client's own system prompt after it. Checked live: `claude-sonnet-4-5`,
+  `claude-haiku-4-5`, `claude-opus-4-5`, streaming and non-streaming through `/v1/messages` all return 200.
+- **Claude Code ignored `thinking`.** The plugin never sent the client's extended-thinking request, so
+  replies had no thinking block. It now sends `thinking: { type: enabled, budget_tokens }` (1024, the
+  minimum, when the client gave only an effort). Checked live, streaming and not.
+- **A rate-limited sole connection was reported as "no eligible connection" (502).** After a 429 with no
+  sibling to fall back to, the retry failed and replaced the real error. The client now gets the
+  upstream 429 with its `retry-after`, and while every connection serving the model is cooling down,
+  requests get `429` + `retry-after` (seconds until the first one frees up) instead of 502, without
+  touching the upstream.
+- **Connecting an account never created the connection that serves it.** The account was saved and the
+  card showed "active", but nothing routed to it until a connection was written by hand (YAML snippet).
+  Now every console login (device code, PKCE, token or API-key import) creates one: id = account id,
+  `auth: { type: account }`, models from the new `ProviderAdapter::default_models()` (set for Claude
+  Code, Codex, Kiro, Kimi, Copilot; Antigravity declares none because its `prepare` is not implemented).
+  An account that already has a connection (reconnect, YAML, hand-made) keeps it as is. Reconnect an
+  account that predates this to give it one. Deleting an account removes its connections and their route
+  targets. The login response carries `connection_id` or `connection_error`. `vkdg login` still only prints
+  the snippet.
+- **Console connections did not reach the running gateway, and a config file fought them.** With no
+  config file and no `ANTHROPIC_API_KEY` there was no pipeline at all, so connections made in the
+  console only took effect after a restart; with `ANTHROPIC_API_KEY` the pipeline never received console
+  edits. Saving the YAML replaced the live connections with the file's, dropping the console's. And a
+  store that was written to but never seeded counted as empty, so a later `--config` boot overwrote it.
+  Now the pipeline always applies config changes live (an unconfigured gateway answers 502, not 501),
+  `ANTHROPIC_API_KEY` is seeded into the store on the first boot like a config file, a store with rows is
+  never re-seeded, and saving the config file merges with the store: the file's connections and routes
+  are added or replaced by id and persisted, ones it used to define and dropped are removed, and what
+  the console made is kept. A reload that does not validate changes nothing.
+- **Claude Code sign-in failed on claude.ai with "Invalid request format" after Authorize.** The OAuth
+  `state` was 16 bytes; claude.ai requires the 32 bytes the official CLI sends. The authorize URL also
+  no longer carries `prompt=login`, which bounced an already signed-in browser to the login page.
+  When the console runs on `localhost`/`127.0.0.1` it now asks for `http://<origin>/callback` as the
+  redirect, so the code is captured automatically; elsewhere the user pastes the code shown by
+  claude.ai. `start` accepts a `redirect_uri` param, restricted to loopback `/callback`, and the token
+  exchange repeats it verbatim.
+- **Connect-account dialog reset itself when the OAuth popup opened,** cancelling the login (the popup
+  handle was reactive state read by the open/reset effect). The popup-closed watcher is gone as well:
+  claude.ai's Cross-Origin-Opener-Policy makes `popup.closed` read true while the popup is open. The
+  code now arrives over `BroadcastChannel` only, with an "Enter the code manually" button.
 - **`endpoint:` per connection, so one account can use both Kiro planes.** Kiro answers on
   `runtime.{region}.kiro.dev` and on `codewhisperer.us-east-1.amazonaws.com`, and the two keep
   SEPARATE rate-limit buckets: driving `runtime` to 75% HTTP 429 (271 of 360 at 120 concurrent) left

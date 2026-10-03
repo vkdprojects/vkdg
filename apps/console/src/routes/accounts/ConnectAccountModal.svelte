@@ -2,7 +2,7 @@
   import { Dialog } from 'bits-ui';
   import { X as XIcon, ExternalLink, Check, AlertTriangle } from 'lucide-svelte';
   import { api } from '$lib/api.js';
-  import type { Account, LoginMethod, LoginStart } from '$lib/api.js';
+  import type { Account, ConnectionOutcome, LoginMethod, LoginStart } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Button, CopyButton, Select, Spinner } from '$lib/components/index.js';
 
@@ -12,7 +12,7 @@
     provider?: string;
     /** Reconnect this account in place, keeping its id. */
     accountId?: string;
-    onconnected: (account: Account) => void;
+    onconnected: (account: Account, outcome: ConnectionOutcome) => void;
   }
   let { open = $bindable(), provider = 'kiro', accountId, onconnected }: Props = $props();
 
@@ -33,7 +33,12 @@
   let secondsLeft = $state(0);
   let pkceCode = $state('');
   let pkceAutoCapture = $state(false);
-  let popup = $state<Window | null>(null);
+  /** No loopback callback available: the code is pasted, not captured. */
+  let pkceManual = $state(false);
+  // Plain variable, not `$state`: `stop()` reads it, and the open/reset `$effect`
+  // below calls `stop()`. As state it became an effect dependency, so opening the
+  // popup re-ran the effect, which reset the modal and cancelled the whole login.
+  let popup: Window | null = null;
 
   const method = $derived(methods.find((x) => x.id === methodId));
 
@@ -42,13 +47,11 @@
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let tickTimer: ReturnType<typeof setInterval> | undefined;
   let oauthChannel: BroadcastChannel | null = null;
-  let popupWatcher: ReturnType<typeof setInterval> | undefined;
 
   function stop() {
     gen++;
     clearTimeout(pollTimer);
     clearInterval(tickTimer);
-    clearInterval(popupWatcher);
     try { oauthChannel?.close(); } catch { /* ignore */ }
     oauthChannel = null;
     try { popup?.close(); } catch { /* ignore */ }
@@ -124,10 +127,10 @@
     return Object.fromEntries(Object.entries(params).filter(([, v]) => v.trim() !== ''));
   }
 
-  function finish(account: Account) {
+  function finish(res: { account: Account } & ConnectionOutcome) {
     stop();
     open = false;
-    onconnected(account);
+    onconnected(res.account, res);
   }
 
   async function start(e: Event) {
@@ -138,10 +141,16 @@
     try {
       if (method.flow === 'import_token') {
         const res = await api.importToken(selected, method.id, filledParams(), accountId);
-        if (g === gen) finish(res.account);
+        if (g === gen) finish(res);
         return;
       }
-      const res = await api.startLogin(selected, method.id, filledParams(), accountId);
+      const startParams = filledParams();
+      if (method.flow === 'authorization_code_pkce') {
+        const redirect = loopbackRedirect();
+        pkceManual = redirect === null;
+        if (redirect) startParams.redirect_uri = redirect;
+      }
+      const res = await api.startLogin(selected, method.id, startParams, accountId);
       if (g !== gen) return;
       flow = res;
       if (res.flow === 'device_code') {
@@ -162,6 +171,17 @@
     }
   }
 
+  /**
+   * claude.ai only redirects to its own code page or to a loopback `/callback`.
+   * On a loopback console the callback page captures the code automatically;
+   * anywhere else the user copies the code from claude.ai's page and pastes it.
+   */
+  function loopbackRedirect(): string | null {
+    const { protocol, hostname, origin } = window.location;
+    if (protocol !== 'http:' || (hostname !== 'localhost' && hostname !== '127.0.0.1')) return null;
+    return `${origin}/callback`;
+  }
+
   function openPkcePopup(authorizeUrl: string, loginId: string, g: number) {
     const w = 520, h = 700;
     const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
@@ -173,43 +193,26 @@
     );
     popup = opened;
 
-    // BroadcastChannel — /callback page posts code here.
+    // Blocked popup, or a non-loopback console with no callback to capture: the user pastes the code.
+    if (!opened || pkceManual) {
+      pkceAutoCapture = false;
+      return;
+    }
+    // The /callback page posts the code on this channel. It is the only capture
+    // path: claude.ai serves a Cross-Origin-Opener-Policy that severs `window.opener`
+    // and makes `popup.closed` read true while the popup is still open, so neither
+    // postMessage nor popup polling can be relied on.
+    try { oauthChannel?.close(); } catch { /* ignore */ }
     try {
       oauthChannel = new BroadcastChannel('vkdg_oauth_callback');
       oauthChannel.onmessage = (ev) => {
         if (g !== gen) return;
         handleOAuthMessage(ev.data, loginId, g);
       };
-    } catch { /* not supported */ }
-
-    // postMessage from popup.
-    const onMsg = (ev: MessageEvent) => {
-      if (ev.origin !== window.location.origin) return;
-      if (g !== gen) return;
-      handleOAuthMessage(ev.data, loginId, g);
-    };
-    window.addEventListener('message', onMsg);
-
-    // Poll for popup closed → try localStorage fallback → expose manual paste.
-    popupWatcher = setInterval(() => {
-      if (g !== gen) { clearInterval(popupWatcher); window.removeEventListener('message', onMsg); return; }
-      if (!popup?.closed) return;
-      clearInterval(popupWatcher);
-      window.removeEventListener('message', onMsg);
-      try {
-        const raw = localStorage.getItem('vkdg_oauth_result');
-        if (raw) {
-          const saved = JSON.parse(raw) as Record<string, string>;
-          if (Date.now() - Number(saved.ts ?? 0) < 30_000 && saved.type === 'oauth_code') {
-            localStorage.removeItem('vkdg_oauth_result');
-            handleOAuthMessage(saved, loginId, g);
-            return;
-          }
-        }
-      } catch { /* ignore */ }
-      // Popup closed without code — fall back to manual paste.
+    } catch {
       pkceAutoCapture = false;
-    }, 500);
+      return;
+    }
 
     pkceAutoCapture = true;
   }
@@ -229,7 +232,7 @@
     try {
       const res = await api.pollLogin(selected, loginId, code.trim());
       if (g !== gen) return;
-      if (res.status === 'done') finish(res.account);
+      if (res.status === 'done') finish(res);
       else if (res.status === 'failed') fail(res.message);
     } catch (err) {
       if (g === gen) fail((err as Error).message);
@@ -244,7 +247,7 @@
       try {
         const res = await api.pollLogin(selected, loginId);
         if (g !== gen) return;
-        if (res.status === 'done') finish(res.account);
+        if (res.status === 'done') finish(res);
         else if (res.status === 'failed') fail(res.message);
         // RFC 8628: slow_down adds 5 seconds to the interval.
         else schedulePoll(g, loginId, res.status === 'slow_down' ? intervalSecs + 5 : intervalSecs);
@@ -262,7 +265,7 @@
     try {
       const res = await api.pollLogin(selected, flow.login_id, pkceCode.trim());
       if (g !== gen) return;
-      if (res.status === 'done') finish(res.account);
+      if (res.status === 'done') finish(res);
       else if (res.status === 'failed') fail(res.message);
     } catch (err) {
       if (g === gen) fail((err as Error).message);
@@ -407,6 +410,7 @@
               <p class="muted">The window opened at claude.ai. After you sign in, this dialog completes automatically.</p>
             </div>
             <div class="footer">
+              <Button variant="outline" onclick={() => (pkceAutoCapture = false)}>{m.acct_enter_code_manually()}</Button>
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
             </div>
           {:else if busy}
@@ -416,10 +420,10 @@
               <p class="step-intro">Completing sign-in…</p>
             </div>
           {:else}
-            <!-- Popup closed without code — manual paste fallback. -->
+            <!-- Manual paste: no loopback callback, blocked popup, or the user asked for it. -->
             {@const authorizeUrl = (flow as { authorize_url: string }).authorize_url}
             <div class="pkce-section">
-              <p class="step-intro">The popup closed before completing. Paste the authorization code below, or reopen the URL.</p>
+              <p class="step-intro">{m.acct_pkce_step()}</p>
               <div class="pkce-url-row">
                 <code class="pkce-url" title={authorizeUrl}>{authorizeUrl.slice(0, 60)}…</code>
                 <CopyButton text={authorizeUrl} />

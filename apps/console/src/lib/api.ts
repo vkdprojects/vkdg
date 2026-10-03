@@ -46,6 +46,10 @@ export interface ConnectionSummary {
   /** `unknown` when the data plane is not running. */
   status: ConnectionStatus;
   model_count: number;
+  /** Model patterns this connection serves, e.g. `claude-*`. */
+  models: string[];
+  /** Share of traffic relative to other connections matching the same model. */
+  weight: number;
   active_requests: number;
   max_concurrent: number;
   /** RFC 3339; set while cooling down or while the circuit is open. */
@@ -54,6 +58,13 @@ export interface ConnectionSummary {
   account_id?: string;
   /** Set only while cooling down. */
   failure_count?: number;
+}
+
+/** PATCH body: an absent field is left as it is. `models` must be non-empty; the numbers at least 1. */
+export interface ConnectionPatch {
+  models?: string[];
+  max_concurrent?: number;
+  weight?: number;
 }
 
 export interface ConnectionTestResult {
@@ -187,10 +198,18 @@ export type LoginStart =
     }
   | { flow: 'authorization_code_pkce'; login_id: string; authorize_url: string };
 
+/** What happened to the connection that serves a freshly connected account. */
+export interface ConnectionOutcome {
+  /** Connection created (or already existing) for the account. */
+  connection_id?: string;
+  /** Why it could not be created; the account itself was saved. */
+  connection_error?: string;
+}
+
 export type LoginPoll =
   | { status: 'pending' | 'slow_down' }
   | { status: 'failed'; message: string }
-  | { status: 'done'; account: Account };
+  | ({ status: 'done'; account: Account } & ConnectionOutcome);
 
 export interface RouteSummary {
   id: string;
@@ -305,6 +324,8 @@ export const api = {
     req<{ items: ConnectionSummary[]; total: number }>('GET', '/admin/v1/connections'),
   testConnection: (id: string) =>
     req<ConnectionTestResult>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/test`),
+  patchConnection: (id: string, patch: ConnectionPatch) =>
+    req<ConnectionSummary>('PATCH', `/admin/v1/connections/${encodeURIComponent(id)}`, patch),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>
@@ -323,6 +344,9 @@ export const api = {
     req<{ items: Account[]; total: number }>('GET', '/admin/v1/accounts'),
   deleteAccount: (id: string) =>
     req<void>('DELETE', `/admin/v1/accounts/${encodeURIComponent(id)}`),
+  /** Creates the routing connection for an account, or returns the one it already has. */
+  enableAccount: (accountId: string) =>
+    req<{ connection_id: string }>('POST', `/admin/v1/accounts/${encodeURIComponent(accountId)}/connection`),
   /** Providers on this gateway that support interactive login, plugins included. */
   oauthProviders: () =>
     req<{ items: OAuthProvider[] }>('GET', '/admin/v1/providers/oauth'),
@@ -334,7 +358,7 @@ export const api = {
   pollLogin: (provider: string, login_id: string, code?: string) =>
     req<LoginPoll>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/poll`, { login_id, code }),
   importToken: (provider: string, method: string, params: Record<string, string>, accountId?: string) =>
-    req<{ status: 'done'; account: Account }>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params, account_id: accountId }),
+    req<{ status: 'done'; account: Account } & ConnectionOutcome>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params, account_id: accountId }),
   listRoutes: () =>
     req<{ items: RouteSummary[] }>('GET', '/admin/v1/routes'),
   previewRoute: (model: string) =>

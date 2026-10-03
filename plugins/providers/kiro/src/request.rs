@@ -340,10 +340,11 @@ fn collect_turns(conv: &ConversationRequest) -> Vec<Turn> {
                                 "input": tool_input_object(input),
                             }));
                         }
+                        // Kiro's `toolResults` content is text or JSON; images have no slot.
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
-                            is_error: _,
+                            ..
                         } => turn
                             .tool_results
                             .push((tool_use_id.clone(), content.clone())),

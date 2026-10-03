@@ -35,6 +35,7 @@ fn result(id: &str, content: &str) -> ContentBlock {
     ContentBlock::ToolResult {
         tool_use_id: id.into(),
         content: content.into(),
+        images: vec![],
         is_error: false,
     }
 }
@@ -434,6 +435,7 @@ fn duplicate_results_are_not_repeated_and_is_error_is_kept() {
                 ContentBlock::ToolResult {
                     tool_use_id: "toolu_1".into(),
                     content: "boom".into(),
+                    images: vec![],
                     is_error: true,
                 },
                 result("toolu_1", "late duplicate"),
@@ -579,4 +581,147 @@ fn a_system_preamble_comes_first_as_its_own_block() {
         serde_json::from_slice(&messages_body(&req, "claude-sonnet-4-5", Some("IDENTITY")))
             .unwrap();
     assert_eq!(v["system"], json!([{"type": "text", "text": "IDENTITY"}]));
+}
+
+// ── images inside tool results ────────────────────────────────────────────────
+
+fn result_with_image(id: &str, content: &str, media_type: &str, data: ImageData) -> ContentBlock {
+    ContentBlock::ToolResult {
+        tool_use_id: id.into(),
+        content: content.into(),
+        images: vec![vkdg_operations::ToolResultImage {
+            media_type: media_type.into(),
+            data,
+        }],
+        is_error: false,
+    }
+}
+
+// Defeat: writing the result as a bare string, which silently drops the screenshot a
+// tool returned. Anthropic takes an array of text and image blocks as the content.
+#[test]
+fn tool_result_images_stay_inside_the_result_in_anthropic_shape() {
+    let req = request(vec![
+        text(Role::User, "look"),
+        blocks(
+            Role::Assistant,
+            vec![call("toolu_1", "screenshot", json!({}))],
+        ),
+        blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "toolu_1".into(),
+                content: "page loaded".into(),
+                images: vec![
+                    vkdg_operations::ToolResultImage {
+                        media_type: "image/png".into(),
+                        data: ImageData::Base64 {
+                            data: "AAAA".into(),
+                        },
+                    },
+                    vkdg_operations::ToolResultImage {
+                        media_type: "image/png".into(),
+                        data: ImageData::Url {
+                            url: "https://x.test/a.png".into(),
+                        },
+                    },
+                ],
+                is_error: false,
+            }],
+        ),
+    ]);
+    let body = wire(&req);
+    let content = &body["messages"][2]["content"][0];
+    assert_eq!(content["type"], "tool_result");
+    assert_eq!(content["tool_use_id"], "toolu_1");
+    assert_eq!(
+        content["content"],
+        json!([
+            {"type": "text", "text": "page loaded"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+            {"type": "image", "source": {"type": "url", "url": "https://x.test/a.png"}},
+        ])
+    );
+}
+
+// Defeat: an empty text block in front of an image-only result, which Anthropic rejects
+// ("text content blocks must be non-empty").
+#[test]
+fn image_only_tool_result_has_no_empty_text_block() {
+    let req = request(vec![
+        text(Role::User, "look"),
+        blocks(
+            Role::Assistant,
+            vec![call("toolu_1", "screenshot", json!({}))],
+        ),
+        blocks(
+            Role::User,
+            vec![result_with_image(
+                "toolu_1",
+                "",
+                "image/jpeg",
+                ImageData::Base64 {
+                    data: "BBBB".into(),
+                },
+            )],
+        ),
+    ]);
+    let body = wire(&req);
+    assert_eq!(
+        body["messages"][2]["content"][0]["content"],
+        json!([{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "BBBB"}}])
+    );
+}
+
+// Defeat: turning every result into an array; plain text results keep the string form
+// Anthropic's own SDKs write.
+#[test]
+fn text_only_tool_result_stays_a_string() {
+    let req = request(vec![
+        text(Role::User, "hi"),
+        blocks(
+            Role::Assistant,
+            vec![call("toolu_1", "get_time", json!({}))],
+        ),
+        blocks(Role::User, vec![result("toolu_1", "noon")]),
+    ]);
+    assert_eq!(wire(&req)["messages"][2]["content"][0]["content"], "noon");
+}
+
+// ── server tools ──────────────────────────────────────────────────────────────
+
+fn web_search() -> vkdg_operations::ServerTool {
+    vkdg_operations::ServerTool {
+        name: "web_search".into(),
+        declaration: json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3,
+                            "allowed_domains": ["rust-lang.org"]}),
+    }
+}
+
+// Defeat: dropping the declaration (the model never searches), or rewriting it into a
+// custom tool with an `input_schema`, which Anthropic rejects for a server tool. It is
+// forwarded exactly as the client wrote it, after the custom tools.
+#[test]
+fn server_tools_are_forwarded_verbatim_after_custom_tools() {
+    let mut req = with_tools(request(vec![text(Role::User, "search")]));
+    req.server_tools = vec![web_search()];
+    let body = wire(&req);
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 3);
+    assert_eq!(tools[2], web_search().declaration);
+}
+
+// Defeat: gating `tools` on the custom list only, so a request that declares just a
+// server tool is sent without it; and a forced server tool losing its tool_choice.
+#[test]
+fn a_request_with_only_a_server_tool_still_sends_it_and_its_tool_choice() {
+    let mut req = request(vec![text(Role::User, "search")]);
+    req.server_tools = vec![web_search()];
+    req.tool_choice = Some(ToolChoice::Named("web_search".into()));
+    let body = wire(&req);
+    assert_eq!(body["tools"], json!([web_search().declaration]));
+    assert_eq!(
+        body["tool_choice"],
+        json!({"type": "tool", "name": "web_search"})
+    );
 }

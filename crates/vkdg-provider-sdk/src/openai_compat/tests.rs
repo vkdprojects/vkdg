@@ -35,6 +35,7 @@ fn result(id: &str, content: &str) -> ContentBlock {
     ContentBlock::ToolResult {
         tool_use_id: id.into(),
         content: content.into(),
+        images: vec![],
         is_error: false,
     }
 }
@@ -377,4 +378,98 @@ fn thinking_blocks_are_not_sent() {
             {"role": "assistant", "content": "yo"},
         ])
     );
+}
+
+// ── images inside tool results ────────────────────────────────────────────────
+
+// Defeat: dropping the image (the model never sees the screenshot), or putting an
+// `image_url` into the `tool` message, which Chat Completions rejects (tool content is
+// text only). The image rides in the user message right behind the tool messages.
+#[test]
+fn tool_result_images_follow_the_tool_message_as_a_user_message() {
+    let req = request(vec![
+        text(Role::User, "look"),
+        blocks(
+            Role::Assistant,
+            vec![call("call_1", "screenshot", json!({}))],
+        ),
+        blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: "page loaded".into(),
+                images: vec![vkdg_operations::ToolResultImage {
+                    media_type: "image/png".into(),
+                    data: ImageData::Base64 {
+                        data: "AAAA".into(),
+                    },
+                }],
+                is_error: false,
+            }],
+        ),
+    ]);
+    let messages = wire(&req)["messages"].clone();
+    assert_eq!(
+        messages[2],
+        json!({"role": "tool", "tool_call_id": "call_1", "content": "page loaded"})
+    );
+    assert_eq!(
+        messages[3],
+        json!({"role": "user", "content": [
+            {"type": "text", "text": "[image returned by tool call call_1]"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]})
+    );
+    assert_eq!(messages.as_array().unwrap().len(), 4);
+}
+
+// Defeat: an empty tool message (some servers reject empty content) when the result
+// was only an image.
+#[test]
+fn image_only_tool_result_gets_a_pointer_text_not_an_empty_message() {
+    let req = request(vec![
+        text(Role::User, "look"),
+        blocks(
+            Role::Assistant,
+            vec![call("call_1", "screenshot", json!({}))],
+        ),
+        blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".into(),
+                content: String::new(),
+                images: vec![vkdg_operations::ToolResultImage {
+                    media_type: "image/png".into(),
+                    data: ImageData::Url {
+                        url: "https://x.test/a.png".into(),
+                    },
+                }],
+                is_error: false,
+            }],
+        ),
+    ]);
+    let messages = wire(&req)["messages"].clone();
+    assert_eq!(
+        messages[2]["content"],
+        "[the tool returned an image, shown in the next message]"
+    );
+    assert_eq!(
+        messages[3]["content"][1],
+        json!({"type": "image_url", "image_url": {"url": "https://x.test/a.png"}})
+    );
+}
+
+// Defeat: sending an Anthropic server tool declaration to an OpenAI-compatible server,
+// which answers 400 on a tool without a `function`. Only Anthropic upstreams get it.
+#[test]
+fn anthropic_server_tools_are_not_sent_to_openai_upstreams() {
+    let mut req = request(vec![text(Role::User, "search")]);
+    req.server_tools = vec![vkdg_operations::ServerTool {
+        name: "web_search".into(),
+        declaration: json!({"type": "web_search_20250305", "name": "web_search"}),
+    }];
+    req.tool_choice = Some(ToolChoice::Required);
+    let body = wire(&req);
+    assert!(body.get("tools").is_none(), "{body}");
+    assert!(body.get("tool_choice").is_none(), "{body}");
 }

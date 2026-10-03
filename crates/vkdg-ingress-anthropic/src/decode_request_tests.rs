@@ -291,6 +291,7 @@ fn tool_result_without_content_is_empty() {
         content,
         tool_use_id,
         is_error,
+        ..
     } = only_block(&req)
     else {
         panic!("expected ToolResult")
@@ -338,4 +339,78 @@ fn tool_use_input_defaults_to_an_empty_object_and_keeps_sent_values() {
         assert!(name.starts_with("get_"));
         assert_eq!(input, &want, "{wire}");
     }
+}
+
+// ── images inside tool results ────────────────────────────────────────────────
+
+// Defeat: keeping only the text of an array result, which loses the screenshot a tool
+// returned (`computer`-style tools answer with images). Images keep their order and form.
+#[test]
+fn tool_result_array_keeps_its_images() {
+    let body = body_with(json!({"messages": [
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_01", "content": [
+                {"type": "text", "text": "page loaded"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+                {"type": "image", "source": {"type": "url", "url": "https://x.test/a.png"}},
+                {"type": "text", "text": "done"}
+            ]}
+        ]}
+    ]}));
+    let req = conversation(&body).expect("decode");
+    let ContentBlock::ToolResult {
+        content, images, ..
+    } = only_block(&req)
+    else {
+        panic!("expected ToolResult")
+    };
+    assert_eq!(content, "page loaded\ndone");
+    assert_eq!(
+        images,
+        &vec![
+            vkdg_operations::ToolResultImage {
+                media_type: "image/png".into(),
+                data: vkdg_operations::ImageData::Base64 {
+                    data: "AAAA".into()
+                },
+            },
+            vkdg_operations::ToolResultImage {
+                media_type: "image/jpeg".into(),
+                data: vkdg_operations::ImageData::Url {
+                    url: "https://x.test/a.png".into()
+                },
+            },
+        ]
+    );
+}
+
+// ── server tools ──────────────────────────────────────────────────────────────
+
+// Defeat: answering 400 "missing field `input_schema`" for a server tool (what the real
+// API accepted as `web_search_20250305`), or turning it into a custom tool.
+#[test]
+fn server_tool_declarations_are_kept_verbatim_beside_custom_tools() {
+    let search = json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 2});
+    let mut all = tools();
+    all.as_array_mut().unwrap().push(search.clone());
+    let req = conversation(&body_with(json!({
+        "tools": all,
+        "tool_choice": {"type": "tool", "name": "web_search"}
+    })))
+    .expect("decode");
+    assert_eq!(req.tools.len(), 2);
+    assert_eq!(req.server_tools.len(), 1);
+    assert_eq!(req.server_tools[0].name, "web_search");
+    assert_eq!(req.server_tools[0].declaration, search);
+    assert_eq!(
+        req.tool_choice,
+        Some(ToolChoice::Named("web_search".into()))
+    );
+}
+
+// Defeat: accepting a tool entry that is neither a custom tool nor a typed server tool.
+#[test]
+fn a_tool_without_schema_or_type_is_rejected_naming_its_index() {
+    let field = rejected_field(&body_with(json!({"tools": [{"name": "x"}]})));
+    assert_eq!(field, "tools[0]");
 }

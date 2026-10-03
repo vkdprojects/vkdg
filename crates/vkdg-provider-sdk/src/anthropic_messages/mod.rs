@@ -83,8 +83,8 @@ pub fn messages_body(
     if req.stream {
         body.insert("stream".into(), Value::Bool(true));
     }
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
+    if has_tools(req) {
+        let mut tools: Vec<Value> = req
             .tools
             .iter()
             .map(|t| {
@@ -97,6 +97,8 @@ pub fn messages_body(
                 Value::Object(tool)
             })
             .collect();
+        // Provider-run tools go as the client declared them.
+        tools.extend(req.server_tools.iter().map(|t| t.declaration.clone()));
         body.insert("tools".into(), Value::Array(tools));
     }
     if let Some(choice) = tool_choice_wire(req, tool_choice) {
@@ -110,15 +112,20 @@ pub fn messages_body(
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
+/// Whether the request declares anything for a tool call to act on.
+fn has_tools(req: &ConversationRequest) -> bool {
+    !req.tools.is_empty() || !req.server_tools.is_empty()
+}
+
 /// The client's `tool_choice` when there are tools for it to act on.
 fn effective_tool_choice(req: &ConversationRequest) -> Option<&ToolChoice> {
-    req.tool_choice.as_ref().filter(|_| !req.tools.is_empty())
+    req.tool_choice.as_ref().filter(|_| has_tools(req))
 }
 
 /// Anthropic's `tool_choice` object. The parallel-call limit lives inside it, so
 /// a client that sent only the limit still gets an explicit `auto`.
 fn tool_choice_wire(req: &ConversationRequest, choice: Option<&ToolChoice>) -> Option<Value> {
-    if req.tools.is_empty() {
+    if !has_tools(req) {
         return None;
     }
     let mut wire = match choice {

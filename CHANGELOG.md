@@ -99,8 +99,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
     calls, one `tool` message per result placed behind its call, and images. api.openai.com gets
     `max_completion_tokens`; compatible endpoints keep `max_tokens`; never both.
   - Not forwarded on purpose: Codex (Responses API) and Kiro ignore `tool_choice`, `stop`, `top_p` and the
-    parallel-call limit. `tool_result` images are dropped on Anthropic ingress (the operation type carries
-    tool results as text).
+    parallel-call limit.
+- **Images and provider-run tools were dropped.** A tool result's images (a screenshot returned by a
+  `computer`-style tool) never reached the model: the operation type carried tool results as text only.
+  `ToolResult` now carries its images. Anthropic upstreams get them inside the `tool_result`; OpenAI upstreams
+  get the text in the `tool` message and the images in a labelled `user` message right behind it (Chat
+  Completions tool messages are text only); OpenAI ingress reads `image_url` parts of a `tool` message. Anthropic
+  clients can now declare provider-run tools such as `web_search_20250305` (the gateway answered 400 "missing
+  field `input_schema`"): the declaration is forwarded untouched to Anthropic upstreams and never to OpenAI ones.
+  Checked live on Claude Code: a screenshot-style tool result read back correctly from an OpenAI client and from an
+  Anthropic client, user images, web search (stream and not), signed-thinking replay and an OpenAI client's
+  tool loop with `reasoning_effort`. Kiro and Codex still do not forward any image (pending).
 - **Claude Code requests always failed upstream.** Anthropic answers a subscription OAuth token with
   `429 rate_limit_error` unless the first system block is the Claude Code identity; the gateway then put
   the connection in cooldown and the client only saw "no eligible connection". The plugin now sends that

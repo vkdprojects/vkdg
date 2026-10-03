@@ -64,6 +64,12 @@ OAuth-backed code agent providers handle token refresh automatically — you aut
 **Reliability**
 - Full streaming support with mid-stream failure detection
 - Streaming error surfaced to the client immediately; no silent truncation
+- Responses are translated between the Anthropic Messages and OpenAI Chat dialects (stream and non-stream), so either client works against either kind of provider; same-dialect traffic is passed through untouched
+- Images (user messages and tool results) and provider-run tools such as `web_search_20250305` reach Anthropic upstreams intact; tool-result images reach OpenAI-dialect upstreams in the user message right behind the tool message
+
+**Next up (Phase 1)**
+- **Codex (OpenAI Responses API) translation.** Codex speaks the Responses API upstream, so an Anthropic or OpenAI Chat client routed to it still gets Responses events. It needs a third decoder/encoder pair on the same canonical events (`WireFormat::OpenAiResponses`, `/v1/responses` as a client dialect). Tracked in `docs/sdk/dialect-translation.md`.
+- **Images through Kiro and Codex.** Neither request builder forwards images yet (user images or tool-result images). Kiro takes `userInputMessage.images`; verifying it needs a Kiro account. Codex goes with the Responses work above.
 
 **Extensibility**
 - Provider plugin system via WIT/WASM — implement the `provider` interface in any language that compiles to WASM, drop the `.wasm` file in `plugins/`, done

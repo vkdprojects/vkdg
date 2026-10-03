@@ -126,6 +126,7 @@ mod tests {
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
                     content: content.into(),
+                    images: vec![],
                     is_error: false,
                 }]),
             }],

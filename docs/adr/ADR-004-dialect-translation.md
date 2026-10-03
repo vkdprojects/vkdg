@@ -64,8 +64,9 @@ every chunk, including when both sides already speak the same dialect.
   Neither touches the router or another provider.
 - Translation costs one framing pass, a JSON parse per event and an encode; same-dialect
   traffic costs nothing. Measured numbers are in `docs/sdk/dialect-translation.md`.
-- Deliberate losses (signatures, redacted thinking, server-side tool blocks, choices beyond the
-  first) are listed in the fidelity matrix. They are dropped, never partially forwarded.
+- Deliberate losses are only what a dialect cannot hold (signatures across dialects, choices beyond
+  the first, provider-run tool blocks in the translated direction); they are listed in the fidelity
+  matrix, dropped rather than partially forwarded, and same-dialect traffic keeps them intact.
 - The Responses API (Codex) is not translated yet: `wire_format` is `None` for it.
 
 ## Reversible experiment

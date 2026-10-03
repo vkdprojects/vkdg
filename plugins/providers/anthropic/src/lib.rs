@@ -179,6 +179,7 @@ mod body_tests {
                     content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                         tool_use_id: "call_1".into(),
                         content: "one".into(),
+                        images: vec![],
                         is_error: false,
                     }]),
                 },
@@ -187,6 +188,7 @@ mod body_tests {
                     content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                         tool_use_id: "call_2".into(),
                         content: "two".into(),
+                        images: vec![],
                         is_error: false,
                     }]),
                 },

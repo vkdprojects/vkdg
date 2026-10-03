@@ -35,16 +35,7 @@ fn piece_to_wire(piece: &Piece<'_>) -> Value {
 fn block_to_wire(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
-        ContentBlock::Image { media_type, data } => match data {
-            ImageData::Base64 { data } => json!({
-                "type": "image",
-                "source": { "type": "base64", "media_type": media_type, "data": data },
-            }),
-            ImageData::Url { url } => json!({
-                "type": "image",
-                "source": { "type": "url", "url": url },
-            }),
-        },
+        ContentBlock::Image { media_type, data } => image_to_wire(media_type, data),
         ContentBlock::ToolUse { id, name, input } => {
             // `input` must be an object; a call replayed without arguments has none.
             let input = if input.is_null() {
@@ -57,8 +48,22 @@ fn block_to_wire(block: &ContentBlock) -> Value {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            images,
             is_error,
         } => {
+            // Text-only results keep the string form; with images the content is an
+            // array, and a text block is written only when there is text (Anthropic
+            // rejects empty ones).
+            let content = if images.is_empty() {
+                Value::String(content.clone())
+            } else {
+                let mut parts: Vec<Value> = Vec::with_capacity(images.len() + 1);
+                if !content.is_empty() {
+                    parts.push(json!({ "type": "text", "text": content }));
+                }
+                parts.extend(images.iter().map(|i| image_to_wire(&i.media_type, &i.data)));
+                Value::Array(parts)
+            };
             let mut v = json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use_id,
@@ -76,5 +81,18 @@ fn block_to_wire(block: &ContentBlock) -> Value {
         ContentBlock::RedactedThinking { data } => {
             json!({ "type": "redacted_thinking", "data": data })
         }
+    }
+}
+
+fn image_to_wire(media_type: &str, data: &ImageData) -> Value {
+    match data {
+        ImageData::Base64 { data } => json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": media_type, "data": data },
+        }),
+        ImageData::Url { url } => json!({
+            "type": "image",
+            "source": { "type": "url", "url": url },
+        }),
     }
 }

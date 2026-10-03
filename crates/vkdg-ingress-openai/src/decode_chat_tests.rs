@@ -455,16 +455,17 @@ fn each_tool_message_stays_its_own_tool_result() {
     );
 }
 
-// Defeat: flattening a tool result's image URL into the result text.
+// Defeat: silently dropping a part type a tool message cannot carry (audio), which would
+// hand the model a result that is not what the tool returned.
 #[test]
-fn tool_content_rejects_non_text_parts() {
+fn tool_content_rejects_parts_that_are_neither_text_nor_image() {
     let (field, message) = rejection(&with_messages(json!([
         {"role": "tool", "tool_call_id": "call_1", "content": [
-            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+            {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
         ]},
     ])));
     assert_eq!(field, "messages[0].content");
-    assert!(message.contains("image_url"), "{message}");
+    assert!(message.contains("input_audio"), "{message}");
 }
 
 // ── user content arrays ───────────────────────────────────────────────────────
@@ -539,4 +540,33 @@ fn unknown_user_part_is_rejected_naming_the_type() {
         assert_eq!(field, "messages[2].content");
         assert!(message.contains(kind), "{message}");
     }
+}
+
+// ── images inside tool results ────────────────────────────────────────────────
+
+// Defeat: rejecting or flattening an `image_url` part of a `tool` message (clients that
+// return screenshots send them this way), or leaving the data URL as an opaque string.
+#[test]
+fn tool_message_image_parts_become_result_images() {
+    let req = conversation(&with_messages(json!([
+        {"role": "user", "content": "look"},
+        {"role": "assistant", "content": null, "tool_calls": [
+            {"id": "call_1", "type": "function", "function": {"name": "screenshot", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": [
+            {"type": "text", "text": "page loaded"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}}
+        ]}
+    ])));
+    let result = &messages_json(&req)[2]["content"][0];
+    assert_eq!(result["type"], "tool_result");
+    assert_eq!(result["content"], "page loaded");
+    assert_eq!(
+        result["images"],
+        json!([
+            {"media_type": "image/png", "data": {"Base64": {"data": "AAAA"}}},
+            {"media_type": "", "data": {"Url": {"url": "https://x.test/a.png"}}}
+        ])
+    );
 }

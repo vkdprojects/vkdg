@@ -535,6 +535,7 @@ fn history_tool_results_capped_not_current() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
                 content: big_result.clone(),
+                images: vec![],
                 is_error: false,
             }]),
         },

@@ -243,6 +243,7 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C and sunny".into(),
+                images: vec![],
                 is_error: false,
             }]),
         },
@@ -293,6 +294,7 @@ fn a_result_only_turn_still_carries_the_tools() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C".into(),
+                images: vec![],
                 is_error: false,
             }]),
         },
@@ -311,6 +313,7 @@ fn orphan_tool_results_become_text_instead_of_a_rejected_request() {
         content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
             tool_use_id: "tu_gone".into(),
             content: "stale output".into(),
+            images: vec![],
             is_error: false,
         }]),
     }];
@@ -370,6 +373,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: long_content,
+                images: vec![],
                 is_error: false,
             }]),
         },
@@ -416,6 +420,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_2".into(),
                 content: short_content.clone(),
+                images: vec![],
                 is_error: false,
             }]),
         },
@@ -459,6 +464,7 @@ fn current_turn_tool_results_are_never_truncated() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: long_content,
+                images: vec![],
                 is_error: false,
             }]),
         },

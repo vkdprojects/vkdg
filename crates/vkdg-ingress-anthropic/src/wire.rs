@@ -13,7 +13,9 @@ pub struct AnthropicRequest {
     pub(crate) max_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: Option<bool>,
-    pub(crate) tools: Option<Vec<AnthropicTool>>,
+    /// Raw: a custom tool has an `input_schema`, a server tool (`web_search_20250305`)
+    /// a `type` and no schema; the decoder tells them apart and names the bad index.
+    pub(crate) tools: Option<Vec<serde_json::Value>>,
     pub(crate) thinking: Option<AnthropicThinking>,
     /// Kept as raw JSON: the shape depends on `type`, and a malformed value
     /// must be rejected with `tool_choice` named, not as a body parse error.

@@ -411,6 +411,7 @@ mod tests {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
                 content: "sunny, 22°C".into(),
+                images: vec![],
                 is_error: false,
             }]),
         });

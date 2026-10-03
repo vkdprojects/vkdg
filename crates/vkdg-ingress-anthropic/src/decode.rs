@@ -3,10 +3,14 @@
 use vkdg_core::VkdgError;
 use vkdg_operations::{
     validated_stop_sequences, validated_top_p, CapabilitySet, ContentBlock, ConversationRequest,
-    ImageData, Message, MessageContent, Operation, Role, Tool, ToolChoice,
+    ImageData, Message, MessageContent, Operation, Role, ServerTool, Tool, ToolChoice,
+    ToolResultImage,
 };
 
-use crate::wire::{AnthropicBlock, AnthropicContent, AnthropicToolResultContent};
+use crate::wire::{
+    AnthropicBlock, AnthropicContent, AnthropicImageSource, AnthropicTool,
+    AnthropicToolResultContent,
+};
 
 /// Parse raw bytes from an Anthropic Messages request into `(model_name, Operation)`.
 pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
@@ -63,16 +67,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         })
         .collect();
 
-    let tools: Vec<Tool> = req
-        .tools
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| Tool {
-            name: t.name,
-            description: t.description,
-            input_schema: t.input_schema,
-        })
-        .collect();
+    let (tools, server_tools) = split_tools(req.tools.unwrap_or_default())?;
 
     let (tool_choice, disable_parallel_tool_use) = match req.tool_choice {
         Some(raw) => {
@@ -81,10 +76,11 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         }
         None => (None, false),
     };
-    let tool_choice = ToolChoice::settle(tool_choice, &tools)?;
+    let tool_choice = ToolChoice::settle(tool_choice, &tools, &server_tools)?;
     // Without tools there is no tool call to serialise, and providers reject
     // parallel-call settings that come without tools.
-    let disable_parallel_tool_use = disable_parallel_tool_use && !tools.is_empty();
+    let disable_parallel_tool_use =
+        disable_parallel_tool_use && !(tools.is_empty() && server_tools.is_empty());
     let stop_sequences =
         validated_stop_sequences("stop_sequences", req.stop_sequences.unwrap_or_default())?;
     let top_p = validated_top_p(req.top_p)?;
@@ -121,6 +117,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         model: base_model.clone(),
         messages,
         tools,
+        server_tools,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
         stream: req.stream.unwrap_or(false),
@@ -137,6 +134,44 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
     Ok((base_model, operation))
 }
 
+/// Splits the wire `tools` into custom tools (they have an `input_schema`) and
+/// provider-run server tools (a `type` such as `web_search_20250305`, no schema),
+/// which are kept exactly as written.
+fn split_tools(raw: Vec<serde_json::Value>) -> Result<(Vec<Tool>, Vec<ServerTool>), VkdgError> {
+    let invalid = |index: usize, message: String| VkdgError::ConfigInvalid {
+        field: format!("tools[{index}]"),
+        message,
+    };
+    let mut tools = Vec::with_capacity(raw.len());
+    let mut server_tools = Vec::new();
+    for (index, value) in raw.into_iter().enumerate() {
+        if value.get("input_schema").is_some() {
+            let tool: AnthropicTool =
+                serde_json::from_value(value).map_err(|e| invalid(index, e.to_string()))?;
+            tools.push(Tool {
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+            });
+            continue;
+        }
+        let kind = value.get("type").and_then(serde_json::Value::as_str);
+        let name = value.get("name").and_then(serde_json::Value::as_str);
+        match (kind, name) {
+            (Some(kind), Some(name)) if kind != "custom" => server_tools.push(ServerTool {
+                name: name.to_owned(),
+                declaration: value,
+            }),
+            _ => {
+                return Err(invalid(
+                    index,
+                    "a tool needs an `input_schema`, or a server tool `type` and `name`".into(),
+                ))
+            }
+        }
+    }
+    Ok((tools, server_tools))
+}
 /// Decode the wire `tool_choice` object into the choice and the client's
 /// `disable_parallel_tool_use` flag.
 ///
@@ -190,22 +225,27 @@ fn system_text(system: AnthropicContent) -> String {
     }
 }
 
+/// The media type and data of an image `source` (`base64` or `url`).
+fn image_source(source: AnthropicImageSource) -> (String, ImageData) {
+    let data = match source.type_.as_str() {
+        "base64" => ImageData::Base64 {
+            data: source.data.unwrap_or_default(),
+        },
+        _ => ImageData::Url {
+            url: source.url.unwrap_or_default(),
+        },
+    };
+    let media_type = source.media_type.unwrap_or_else(|| "image/jpeg".into());
+    (media_type, data)
+}
+
 /// Convert an Anthropic wire block into a [`ContentBlock`].
 /// Returns `None` for unrecognised block types.
 fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
     match b.type_.as_str() {
         "text" => b.text.map(|t| ContentBlock::Text { text: t }),
         "image" => {
-            let source = b.source?;
-            let data = match source.type_.as_str() {
-                "base64" => ImageData::Base64 {
-                    data: source.data.unwrap_or_default(),
-                },
-                _ => ImageData::Url {
-                    url: source.url.unwrap_or_default(),
-                },
-            };
-            let media_type = source.media_type.unwrap_or_else(|| "image/jpeg".into());
+            let (media_type, data) = image_source(b.source?);
             Some(ContentBlock::Image { media_type, data })
         }
         "tool_use" => {
@@ -218,23 +258,32 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
         }
         "tool_result" => {
             let tool_use_id = b.tool_use_id.unwrap_or_default();
-            let content = match b.content {
-                Some(AnthropicToolResultContent::Text(s)) => s,
+            let (content, images) = match b.content {
+                Some(AnthropicToolResultContent::Text(s)) => (s, Vec::new()),
                 Some(AnthropicToolResultContent::Blocks(sub_blocks)) => {
-                    // Only text can ride in the string result; an image has no
-                    // text form, so it is dropped rather than described.
-                    sub_blocks
-                        .into_iter()
-                        .filter(|sub| sub.type_ == "text")
-                        .filter_map(|sub| sub.text)
-                        .collect::<Vec<_>>()
-                        .join("\n")
+                    // Text blocks join into the result text; image blocks stay images,
+                    // in order. Other block types (documents, search results) have no
+                    // neutral form yet and are skipped.
+                    let mut texts: Vec<String> = Vec::new();
+                    let mut images: Vec<ToolResultImage> = Vec::new();
+                    for sub in sub_blocks {
+                        match sub.type_.as_str() {
+                            "text" => texts.extend(sub.text),
+                            "image" => images.extend(sub.source.map(|s| {
+                                let (media_type, data) = image_source(s);
+                                ToolResultImage { media_type, data }
+                            })),
+                            _ => {}
+                        }
+                    }
+                    (texts.join("\n"), images)
                 }
-                None => String::new(),
+                None => (String::new(), Vec::new()),
             };
             Some(ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                images,
                 is_error: b.is_error.unwrap_or(false),
             })
         }

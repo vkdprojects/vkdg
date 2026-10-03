@@ -37,7 +37,7 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImageData {
     Base64 { data: String },
     Url { url: String },
@@ -60,7 +60,12 @@ pub enum ContentBlock {
     },
     ToolResult {
         tool_use_id: String,
+        /// The text of the result (text blocks joined with a newline).
         content: String,
+        /// Images the tool returned. Anthropic takes them inside the result; `OpenAI`
+        /// Chat has no place for them in a `tool` message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ToolResultImage>,
         #[serde(default)]
         is_error: bool,
     },
@@ -72,6 +77,13 @@ pub enum ContentBlock {
     RedactedThinking {
         data: String,
     },
+}
+
+/// An image a tool returned inside its result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultImage {
+    pub media_type: String,
+    pub data: ImageData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +108,17 @@ pub struct Tool {
     pub input_schema: serde_json::Value,
 }
 
+/// A tool the provider runs itself (Anthropic `web_search_20250305`, `code_execution`,
+/// ...), declared by an Anthropic client. It has no input schema and its calls never
+/// reach the client as tool calls, so it is kept as the client wrote it and forwarded
+/// only to Anthropic upstreams.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerTool {
+    pub name: String,
+    /// The complete declaration object, forwarded verbatim.
+    pub declaration: serde_json::Value,
+}
+
 // ── Conversation request ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -108,6 +131,9 @@ pub struct ConversationRequest {
     pub model: String,
     pub messages: Vec<Message>,
     pub tools: Vec<Tool>,
+    /// Provider-run tools the client declared (Anthropic clients only); see [`ServerTool`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub server_tools: Vec<ServerTool>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stream: bool,
@@ -161,20 +187,31 @@ impl ToolChoice {
     ///
     /// # Errors
     /// `ConfigInvalid { field: "tool_choice" }` for the two cases above.
-    pub fn settle(choice: Option<Self>, tools: &[Tool]) -> Result<Option<Self>, VkdgError> {
+    pub fn settle(
+        choice: Option<Self>,
+        tools: &[Tool],
+        server_tools: &[ServerTool],
+    ) -> Result<Option<Self>, VkdgError> {
         let invalid = |message: String| VkdgError::ConfigInvalid {
             field: "tool_choice".into(),
             message,
         };
         match choice {
             None => Ok(None),
-            Some(Self::Auto | Self::Disabled) if tools.is_empty() => Ok(None),
-            Some(Self::Required) if tools.is_empty() => {
+            Some(Self::Auto | Self::Disabled) if tools.is_empty() && server_tools.is_empty() => {
+                Ok(None)
+            }
+            Some(Self::Required) if tools.is_empty() && server_tools.is_empty() => {
                 Err(invalid("`required` needs at least one tool".into()))
             }
-            Some(Self::Named(name)) if !tools.iter().any(|t| t.name == name) => Err(invalid(
-                format!("names tool `{name}`, which is not in `tools`"),
-            )),
+            Some(Self::Named(name))
+                if !tools.iter().any(|t| t.name == name)
+                    && !server_tools.iter().any(|t| t.name == name) =>
+            {
+                Err(invalid(format!(
+                    "names tool `{name}`, which is not in `tools`"
+                )))
+            }
             other => Ok(other),
         }
     }
@@ -538,15 +575,15 @@ mod tests {
     #[test]
     fn settle_drops_no_op_choices_and_rejects_impossible_ones_when_there_are_no_tools() {
         assert_eq!(
-            ToolChoice::settle(Some(ToolChoice::Auto), &[]).unwrap(),
+            ToolChoice::settle(Some(ToolChoice::Auto), &[], &[]).unwrap(),
             None
         );
         assert_eq!(
-            ToolChoice::settle(Some(ToolChoice::Disabled), &[]).unwrap(),
+            ToolChoice::settle(Some(ToolChoice::Disabled), &[], &[]).unwrap(),
             None
         );
         for choice in [ToolChoice::Required, ToolChoice::Named("a".into())] {
-            let err = ToolChoice::settle(Some(choice), &[]).unwrap_err();
+            let err = ToolChoice::settle(Some(choice), &[], &[]).unwrap_err();
             assert!(
                 matches!(&err, VkdgError::ConfigInvalid { field, .. } if field == "tool_choice"),
                 "{err:?}"
@@ -560,14 +597,14 @@ mod tests {
     fn settle_requires_a_named_tool_to_exist() {
         let tools = [tool("read"), tool("write")];
         assert_eq!(
-            ToolChoice::settle(Some(ToolChoice::Named("write".into())), &tools).unwrap(),
+            ToolChoice::settle(Some(ToolChoice::Named("write".into())), &tools, &[]).unwrap(),
             Some(ToolChoice::Named("write".into()))
         );
-        assert!(ToolChoice::settle(Some(ToolChoice::Named("delete".into())), &tools).is_err());
+        assert!(ToolChoice::settle(Some(ToolChoice::Named("delete".into())), &tools, &[]).is_err());
         assert_eq!(
-            ToolChoice::settle(Some(ToolChoice::Required), &tools).unwrap(),
+            ToolChoice::settle(Some(ToolChoice::Required), &tools, &[]).unwrap(),
             Some(ToolChoice::Required)
         );
-        assert_eq!(ToolChoice::settle(None, &tools).unwrap(), None);
+        assert_eq!(ToolChoice::settle(None, &tools, &[]).unwrap(), None);
     }
 }

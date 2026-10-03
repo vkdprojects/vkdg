@@ -7,6 +7,7 @@ use vkdg_core::{Capability, CapabilitySet, VkdgError};
 use vkdg_operations::{
     validated_stop_sequences, validated_top_p, ContentBlock, ConversationRequest, ImageData,
     ImageGenerateRequest, Message, MessageContent, Operation, Role, Tool, ToolChoice,
+    ToolResultImage,
 };
 
 // ── OpenAI wire types (deserialization only) ──────────────────────────────────
@@ -153,11 +154,13 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
             }
             "tool" => {
                 // role:tool carries one tool result; adapters group consecutive ones.
+                let (content, images) = decode_tool_content(m.content, index)?;
                 messages.push(Message {
                     role: Role::Tool,
                     content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                         tool_use_id: m.tool_call_id.unwrap_or_default(),
-                        content: joined_text(m.content, index, false)?,
+                        content,
+                        images,
                         is_error: false,
                     }]),
                 });
@@ -181,7 +184,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
             input_schema: t.function.parameters,
         })
         .collect();
-    let tool_choice = ToolChoice::settle(decode_tool_choice(req.tool_choice)?, &tools)?;
+    let tool_choice = ToolChoice::settle(decode_tool_choice(req.tool_choice)?, &tools, &[])?;
 
     let mut required_capabilities = CapabilitySet::default();
     if let Some(rf) = req.response_format {
@@ -264,6 +267,33 @@ fn joined_text(
     }
 }
 
+/// A tool message: its text parts join into the result text and `image_url` parts
+/// become the result's images (Chat Completions says text only, but clients that
+/// return screenshots send images here).
+fn decode_tool_content(
+    content: OaiContent,
+    index: usize,
+) -> Result<(String, Vec<ToolResultImage>), VkdgError> {
+    let OaiContent::Blocks(parts) = content else {
+        return Ok((joined_text(content, index, false)?, Vec::new()));
+    };
+    let mut texts: Vec<String> = Vec::new();
+    let mut images: Vec<ToolResultImage> = Vec::new();
+    for part in parts {
+        if part.type_ == "image_url" {
+            let image = part
+                .image_url
+                .filter(|i| !i.url.is_empty())
+                .ok_or_else(|| content_error(index, "`image_url` part has no `url`".to_string()))?;
+            let (media_type, data) = image_parts(image.url);
+            images.push(ToolResultImage { media_type, data });
+        } else {
+            texts.push(part_text(part, index, false)?);
+        }
+    }
+    Ok((texts.join("\n"), images))
+}
+
 /// A user turn stays plain text unless it carries an image, so text-only clients
 /// see no change; with an image every part keeps its position as a block.
 fn decode_user_content(content: OaiContent, index: usize) -> Result<MessageContent, VkdgError> {
@@ -306,19 +336,21 @@ fn decode_user_content(content: OaiContent, index: usize) -> Result<MessageConte
 
 /// `data:<media-type>;base64,<payload>` becomes inline base64; any other URL is
 /// passed through with no media type (the provider fetches or sniffs it).
-fn image_block(url: String) -> ContentBlock {
+fn image_parts(url: String) -> (String, ImageData) {
     match base64_data_url(&url) {
-        Some((media_type, data)) => ContentBlock::Image {
-            media_type: media_type.to_owned(),
-            data: ImageData::Base64 {
+        Some((media_type, data)) => (
+            media_type.to_owned(),
+            ImageData::Base64 {
                 data: data.to_owned(),
             },
-        },
-        None => ContentBlock::Image {
-            media_type: String::new(),
-            data: ImageData::Url { url },
-        },
+        ),
+        None => (String::new(), ImageData::Url { url }),
     }
+}
+
+fn image_block(url: String) -> ContentBlock {
+    let (media_type, data) = image_parts(url);
+    ContentBlock::Image { media_type, data }
 }
 
 fn base64_data_url(url: &str) -> Option<(&str, &str)> {

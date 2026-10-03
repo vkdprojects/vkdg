@@ -74,28 +74,48 @@ fn assistant_message(turn: &Turn<'_>) -> Option<Value> {
 }
 
 fn user_turn(turn: &Turn<'_>, messages: &mut Vec<Value>) {
+    // Chat Completions `tool` messages carry text only, so the images a tool returned
+    // go in the user message right behind them, each batch labelled with its call.
+    let mut result_images: Vec<Value> = Vec::new();
     let mut parts: Vec<Value> = Vec::new();
     for piece in &turn.pieces {
         match piece {
             Piece::Block(ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                images,
                 ..
-            }) => messages.push(tool_message(tool_use_id, content)),
+            }) => {
+                if images.is_empty() {
+                    messages.push(tool_message(tool_use_id, content));
+                    continue;
+                }
+                let pointer;
+                let text = if content.is_empty() {
+                    pointer = image_pointer(images.len());
+                    pointer.as_str()
+                } else {
+                    content
+                };
+                messages.push(tool_message(tool_use_id, text));
+                result_images.push(text_part(&format!(
+                    "[{} returned by tool call {tool_use_id}]",
+                    if images.len() == 1 { "image" } else { "images" }
+                )));
+                result_images.extend(images.iter().map(|i| image_part(&i.media_type, &i.data)));
+            }
             Piece::MissingResult(id) => messages.push(tool_message(id, MISSING_RESULT_TEXT)),
             Piece::Text(t) => parts.push(text_part(t)),
             Piece::Rendered(t) => parts.push(text_part(t)),
             Piece::Block(ContentBlock::Text { text }) => parts.push(text_part(text)),
             Piece::Block(ContentBlock::Image { media_type, data }) => {
-                let url = match data {
-                    ImageData::Base64 { data } => format!("data:{media_type};base64,{data}"),
-                    ImageData::Url { url } => url.clone(),
-                };
-                parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+                parts.push(image_part(media_type, data));
             }
             Piece::Block(_) => {}
         }
     }
+    result_images.append(&mut parts);
+    let parts = result_images;
     // A lone text part is the plain-string form every compatible server accepts.
     match parts.as_slice() {
         [] => {}
@@ -104,6 +124,22 @@ fn user_turn(turn: &Turn<'_>, messages: &mut Vec<Value>) {
         }
         _ => messages.push(json!({ "role": "user", "content": parts })),
     }
+}
+
+fn image_pointer(count: usize) -> String {
+    if count == 1 {
+        "[the tool returned an image, shown in the next message]".to_owned()
+    } else {
+        format!("[the tool returned {count} images, shown in the next message]")
+    }
+}
+
+fn image_part(media_type: &str, data: &ImageData) -> Value {
+    let url = match data {
+        ImageData::Base64 { data } => format!("data:{media_type};base64,{data}"),
+        ImageData::Url { url } => url.clone(),
+    };
+    json!({ "type": "image_url", "image_url": { "url": url } })
 }
 
 fn tool_message(tool_call_id: &str, content: &str) -> Value {

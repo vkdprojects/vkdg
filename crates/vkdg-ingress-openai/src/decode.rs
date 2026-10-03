@@ -1,11 +1,12 @@
 //! Decode `OpenAI` Chat Completions and Images API wire requests into internal `Operation` types.
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use vkdg_core::{Capability, CapabilitySet, VkdgError};
 use vkdg_operations::{
-    ContentBlock, ConversationRequest, ImageGenerateRequest, Message, MessageContent, Operation,
-    Role, Tool,
+    validated_stop_sequences, validated_top_p, ContentBlock, ConversationRequest, ImageData,
+    ImageGenerateRequest, Message, MessageContent, Operation, Role, Tool, ToolChoice,
 };
 
 // ── OpenAI wire types (deserialization only) ──────────────────────────────────
@@ -16,12 +17,20 @@ struct OaiRequest {
     messages: Vec<OaiMessage>,
     stream: Option<bool>,
     tools: Option<Vec<OaiTool>>,
+    /// Deprecated in favour of `max_completion_tokens`, which wins when both are sent.
     max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
+    top_p: Option<f32>,
     n: Option<u32>,
     response_format: Option<OaiResponseFormat>,
     /// `minimal` | `low` | `medium` | `high`; reasoning models only.
     reasoning_effort: Option<String>,
+    /// String or object; parsed by `decode_tool_choice` so errors name the field.
+    tool_choice: Option<Value>,
+    parallel_tool_calls: Option<bool>,
+    /// String or array of strings; parsed by `decode_stop` so errors name the field.
+    stop: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +56,7 @@ struct OaiContentBlock {
     #[serde(rename = "type")]
     type_: String,
     text: Option<String>,
+    refusal: Option<String>,
     image_url: Option<OaiImageUrl>,
 }
 
@@ -67,6 +77,7 @@ struct OaiToolCall {
 #[derive(Debug, Deserialize)]
 struct OaiToolCallFunction {
     name: String,
+    #[serde(default)]
     arguments: String,
 }
 
@@ -94,6 +105,11 @@ struct OaiResponseFormat {
 // ── Decode ────────────────────────────────────────────────────────────────────
 
 /// Parse raw bytes from an `OpenAI` Chat Completions request into `(model_name, Operation)`.
+///
+/// # Errors
+/// `ConfigInvalid` naming the offending wire field (`tool_choice`, `stop`, `top_p`,
+/// `messages[i].role`, `messages[i].content`, ...) for anything the gateway cannot
+/// carry faithfully.
 pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
     let req: OaiRequest = serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
         field: "body".to_string(),
@@ -108,65 +124,52 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         });
     }
 
-    let mut system: Option<String> = None;
+    let mut instructions: Vec<String> = Vec::new();
     let mut messages: Vec<Message> = Vec::with_capacity(req.messages.len());
 
-    for m in req.messages {
+    for (index, m) in req.messages.into_iter().enumerate() {
+        if !matches!(
+            m.role.as_str(),
+            "system" | "developer" | "user" | "assistant" | "tool"
+        ) {
+            return Err(VkdgError::ConfigInvalid {
+                field: format!("messages[{index}].role"),
+                message: format!("unsupported role `{}`", m.role),
+            });
+        }
+        if m.role != "assistant" && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty()) {
+            return Err(VkdgError::ConfigInvalid {
+                field: format!("messages[{index}].tool_calls"),
+                message: format!("only assistant messages carry tool_calls, not `{}`", m.role),
+            });
+        }
+
         match m.role.as_str() {
-            "system" => {
-                // First system message wins; subsequent ones are discarded.
-                if system.is_none() {
-                    system = Some(oai_content_to_string(m.content));
+            "system" | "developer" => {
+                let text = joined_text(m.content, index, false)?;
+                if !text.is_empty() {
+                    instructions.push(text);
                 }
             }
             "tool" => {
-                // role:tool carries a tool result; map to ToolResult content block.
-                let tool_use_id = m.tool_call_id.unwrap_or_default();
-                let content_text = oai_content_to_string(m.content);
-                let block = ContentBlock::ToolResult {
-                    tool_use_id,
-                    content: content_text,
-                    is_error: false,
-                };
+                // role:tool carries one tool result; adapters group consecutive ones.
                 messages.push(Message {
                     role: Role::Tool,
-                    content: MessageContent::Blocks(vec![block]),
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: m.tool_call_id.unwrap_or_default(),
+                        content: joined_text(m.content, index, false)?,
+                        is_error: false,
+                    }]),
                 });
             }
-            role_str => {
-                let role = match role_str {
-                    "assistant" => Role::Assistant,
-                    _ => Role::User,
-                };
-
-                // assistant messages may carry tool_calls instead of (or in addition to) content.
-                if let Some(tool_calls) = m.tool_calls {
-                    let blocks: Vec<ContentBlock> = tool_calls
-                        .into_iter()
-                        .map(|tc| {
-                            let input: serde_json::Value =
-                                serde_json::from_str(&tc.function.arguments)
-                                    .unwrap_or(serde_json::Value::Null);
-                            ContentBlock::ToolUse {
-                                id: tc.id,
-                                name: tc.function.name,
-                                input,
-                            }
-                        })
-                        .collect();
-                    messages.push(Message {
-                        role,
-                        content: MessageContent::Blocks(blocks),
-                    });
-                } else {
-                    messages.push(Message {
-                        role,
-                        content: MessageContent::Text(oai_content_to_string(m.content)),
-                    });
-                }
-            }
+            "assistant" => messages.push(decode_assistant(m, index)?),
+            _ => messages.push(Message {
+                role: Role::User,
+                content: decode_user_content(m.content, index)?,
+            }),
         }
     }
+    let system = (!instructions.is_empty()).then(|| instructions.join("\n\n"));
 
     let tools: Vec<Tool> = req
         .tools
@@ -178,6 +181,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
             input_schema: t.function.parameters,
         })
         .collect();
+    let tool_choice = ToolChoice::settle(decode_tool_choice(req.tool_choice)?, &tools)?;
 
     let mut required_capabilities = CapabilitySet::default();
     if let Some(rf) = req.response_format {
@@ -190,7 +194,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         model: req.model.clone(),
         messages,
         tools,
-        max_tokens: req.max_tokens,
+        max_tokens: req.max_completion_tokens.or(req.max_tokens),
         temperature: req.temperature,
         stream: req.stream.unwrap_or(false),
         system,
@@ -203,27 +207,214 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
                 budget_tokens: None,
                 effort: Some(effort),
             }),
+        tool_choice,
+        stop_sequences: decode_stop(req.stop)?,
+        top_p: validated_top_p(req.top_p)?,
+        disable_parallel_tool_use: req.parallel_tool_calls == Some(false),
         ..Default::default()
     });
 
     Ok((req.model, operation))
 }
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn oai_content_to_string(content: OaiContent) -> String {
-    match content {
-        OaiContent::Text(s) => s,
-        OaiContent::Blocks(blocks) => blocks
-            .into_iter()
-            .filter_map(|b| match b.type_.as_str() {
-                "text" => b.text,
-                "image_url" => b.image_url.map(|u| u.url),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        OaiContent::Null => String::new(),
+// ── Chat helpers ──────────────────────────────────────────────────────────────
+
+fn content_error(index: usize, message: String) -> VkdgError {
+    VkdgError::ConfigInvalid {
+        field: format!("messages[{index}].content"),
+        message,
     }
+}
+
+fn unsupported_part(index: usize, kind: &str) -> VkdgError {
+    content_error(index, format!("unsupported content part type `{kind}`"))
+}
+
+/// Text of one `text` part, or of a `refusal` part when `accept_refusal`.
+fn part_text(
+    part: OaiContentBlock,
+    index: usize,
+    accept_refusal: bool,
+) -> Result<String, VkdgError> {
+    match part.type_.as_str() {
+        "text" => part
+            .text
+            .ok_or_else(|| content_error(index, "`text` part has no `text`".to_string())),
+        "refusal" if accept_refusal => part
+            .refusal
+            .ok_or_else(|| content_error(index, "`refusal` part has no `refusal`".to_string())),
+        other => Err(unsupported_part(index, other)),
+    }
+}
+
+/// Content that may only hold text (system, developer, tool, assistant); parts join with `\n`.
+fn joined_text(
+    content: OaiContent,
+    index: usize,
+    accept_refusal: bool,
+) -> Result<String, VkdgError> {
+    match content {
+        OaiContent::Text(s) => Ok(s),
+        OaiContent::Null => Ok(String::new()),
+        OaiContent::Blocks(parts) => Ok(parts
+            .into_iter()
+            .map(|p| part_text(p, index, accept_refusal))
+            .collect::<Result<Vec<_>, _>>()?
+            .join("\n")),
+    }
+}
+
+/// A user turn stays plain text unless it carries an image, so text-only clients
+/// see no change; with an image every part keeps its position as a block.
+fn decode_user_content(content: OaiContent, index: usize) -> Result<MessageContent, VkdgError> {
+    let parts = match content {
+        OaiContent::Text(s) => return Ok(MessageContent::Text(s)),
+        OaiContent::Null => return Ok(MessageContent::Text(String::new())),
+        OaiContent::Blocks(parts) => parts,
+    };
+    let blocks = parts
+        .into_iter()
+        .map(|part| match part.type_.as_str() {
+            "text" => part_text(part, index, false).map(|text| ContentBlock::Text { text }),
+            "image_url" => {
+                let image = part
+                    .image_url
+                    .filter(|i| !i.url.is_empty())
+                    .ok_or_else(|| {
+                        content_error(index, "`image_url` part has no `url`".to_string())
+                    })?;
+                Ok(image_block(image.url))
+            }
+            other => Err(unsupported_part(index, other)),
+        })
+        .collect::<Result<Vec<_>, VkdgError>>()?;
+    if blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }))
+    {
+        return Ok(MessageContent::Blocks(blocks));
+    }
+    let texts: Vec<String> = blocks
+        .into_iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    Ok(MessageContent::Text(texts.join("\n")))
+}
+
+/// `data:<media-type>;base64,<payload>` becomes inline base64; any other URL is
+/// passed through with no media type (the provider fetches or sniffs it).
+fn image_block(url: String) -> ContentBlock {
+    match base64_data_url(&url) {
+        Some((media_type, data)) => ContentBlock::Image {
+            media_type: media_type.to_owned(),
+            data: ImageData::Base64 {
+                data: data.to_owned(),
+            },
+        },
+        None => ContentBlock::Image {
+            media_type: String::new(),
+            data: ImageData::Url { url },
+        },
+    }
+}
+
+fn base64_data_url(url: &str) -> Option<(&str, &str)> {
+    let (header, payload) = url.strip_prefix("data:")?.split_once(',')?;
+    let mut params = header.split(';');
+    let media_type = params.next().filter(|m| !m.is_empty())?;
+    params
+        .any(|p| p.eq_ignore_ascii_case("base64"))
+        .then_some((media_type, payload))
+}
+
+fn decode_assistant(m: OaiMessage, index: usize) -> Result<Message, VkdgError> {
+    let text = joined_text(m.content, index, true)?;
+    let tool_calls = m.tool_calls.unwrap_or_default();
+    if tool_calls.is_empty() {
+        return Ok(Message {
+            role: Role::Assistant,
+            content: MessageContent::Text(text),
+        });
+    }
+    let mut blocks = Vec::with_capacity(tool_calls.len() + 1);
+    if !text.is_empty() {
+        blocks.push(ContentBlock::Text { text });
+    }
+    blocks.extend(tool_calls.into_iter().map(|tc| ContentBlock::ToolUse {
+        id: tc.id,
+        input: tool_call_input(&tc.function.arguments),
+        name: tc.function.name,
+    }));
+    Ok(Message {
+        role: Role::Assistant,
+        content: MessageContent::Blocks(blocks),
+    })
+}
+
+/// Tool call arguments as the JSON object the call replays as.
+///
+/// Deliberately lenient: clients replay model output verbatim, and models do emit
+/// empty, truncated, or non-object `arguments`. Rejecting that would wedge the
+/// session on every later turn, so anything that is not a JSON object becomes `{}`.
+/// The result is never `Value::Null`, which providers reject as a tool input.
+fn tool_call_input(arguments: &str) -> Value {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(object @ Value::Object(_)) => object,
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn decode_tool_choice(raw: Option<Value>) -> Result<Option<ToolChoice>, VkdgError> {
+    let invalid = |message: String| VkdgError::ConfigInvalid {
+        field: "tool_choice".to_string(),
+        message,
+    };
+    match raw {
+        None => Ok(None),
+        Some(Value::String(mode)) => match mode.as_str() {
+            "auto" => Ok(Some(ToolChoice::Auto)),
+            "none" => Ok(Some(ToolChoice::Disabled)),
+            "required" => Ok(Some(ToolChoice::Required)),
+            other => Err(invalid(format!(
+                "unsupported value `{other}`; expected auto, none, required, or a function object"
+            ))),
+        },
+        Some(Value::Object(obj)) => match obj.get("type").and_then(Value::as_str) {
+            Some("function") => obj
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(|name| Some(ToolChoice::Named(name.to_owned())))
+                .ok_or_else(|| invalid("`function.name` must be a non-empty string".to_string())),
+            Some(other) => Err(invalid(format!("unsupported type `{other}`"))),
+            None => Err(invalid("object needs a string `type`".to_string())),
+        },
+        Some(_) => Err(invalid("must be a string or a function object".to_string())),
+    }
+}
+
+fn decode_stop(raw: Option<Value>) -> Result<Vec<String>, VkdgError> {
+    let invalid = |message: &str| VkdgError::ConfigInvalid {
+        field: "stop".to_string(),
+        message: message.to_string(),
+    };
+    let sequences = match raw {
+        None => Vec::new(),
+        Some(Value::String(s)) => vec![s],
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::String(s) => Ok(s),
+                _ => Err(invalid("every entry must be a string")),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(invalid("must be a string or an array of strings")),
+    };
+    validated_stop_sequences("stop", sequences)
 }
 
 // ── OpenAI Responses API wire types ──────────────────────────────────────────
@@ -423,118 +614,6 @@ mod tests {
 
     fn as_bytes(s: &str) -> &[u8] {
         s.as_bytes()
-    }
-
-    // Defeat: mapping role:user content to wrong type or losing the text.
-    #[test]
-    fn decode_text_message() {
-        let body = as_bytes(r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}"#);
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].role, Role::User);
-        assert!(matches!(&req.messages[0].content, MessageContent::Text(t) if t == "hello"));
-    }
-
-    // Defeat: treating role:system as a regular message instead of extracting to system field.
-    #[test]
-    fn decode_system_as_field() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","messages":[{"role":"system","content":"be nice"},{"role":"user","content":"hi"}]}"#,
-        );
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert_eq!(req.system, Some("be nice".to_string()));
-        // system message must NOT appear in messages[]
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].role, Role::User);
-    }
-
-    // Defeat: losing tool_call_id or mapping to wrong ContentBlock variant.
-    #[test]
-    fn decode_tool_message() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","messages":[{"role":"tool","tool_call_id":"call_123","content":"42"}]}"#,
-        );
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert_eq!(req.messages.len(), 1);
-        assert_eq!(req.messages[0].role, Role::Tool);
-        let MessageContent::Blocks(blocks) = &req.messages[0].content else {
-            panic!("expected Blocks")
-        };
-        assert!(matches!(
-            &blocks[0],
-            ContentBlock::ToolResult { tool_use_id, content, .. }
-                if tool_use_id == "call_123" && content == "42"
-        ));
-    }
-
-    // Defeat: ignoring tool_calls field or mapping to wrong ContentBlock variant.
-    #[test]
-    fn decode_assistant_with_tool_calls() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","messages":[{"role":"assistant","tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]}]}"#,
-        );
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert_eq!(req.messages.len(), 1);
-        let MessageContent::Blocks(blocks) = &req.messages[0].content else {
-            panic!("expected Blocks")
-        };
-        assert!(matches!(
-            &blocks[0],
-            ContentBlock::ToolUse { id, name, .. }
-                if id == "call_abc" && name == "get_weather"
-        ));
-    }
-
-    // Defeat: silently accepting n>1 and producing invalid downstream behaviour.
-    #[test]
-    fn decode_reject_n_greater_than_1() {
-        let body =
-            as_bytes(r#"{"model":"gpt-4o","n":2,"messages":[{"role":"user","content":"hi"}]}"#);
-        let err = decode_request(body).unwrap_err();
-        assert!(matches!(&err, VkdgError::ConfigInvalid { field, .. } if field == "n"));
-    }
-
-    // Defeat: dropping the stream flag so callers always get buffered responses.
-    #[test]
-    fn decode_stream_flag() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
-        );
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert!(req.stream);
-    }
-
-    // Defeat: ignoring response_format so json_object requests get no JsonSchema capability.
-    #[test]
-    fn decode_response_format_json_schema_capability() {
-        let body = as_bytes(
-            r#"{"model":"gpt-4o","response_format":{"type":"json_object"},"messages":[{"role":"user","content":"hi"}]}"#,
-        );
-        let (_model, op) = decode_request(body).unwrap();
-        let Operation::Conversation(req) = op else {
-            panic!("expected Conversation")
-        };
-        assert!(
-            req.required_capabilities
-                .0
-                .contains(&Capability::JsonSchema),
-            "json_object response_format must insert Capability::JsonSchema"
-        );
     }
 
     // Defeat: decode_image_generate returns Ok for a body with missing prompt,

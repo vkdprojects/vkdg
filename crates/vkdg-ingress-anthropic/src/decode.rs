@@ -2,8 +2,8 @@
 
 use vkdg_core::VkdgError;
 use vkdg_operations::{
-    CapabilitySet, ContentBlock, ConversationRequest, ImageData, Message, MessageContent,
-    Operation, Role, Tool,
+    validated_stop_sequences, validated_top_p, CapabilitySet, ContentBlock, ConversationRequest,
+    ImageData, Message, MessageContent, Operation, Role, Tool, ToolChoice,
 };
 
 use crate::wire::{AnthropicBlock, AnthropicContent, AnthropicToolResultContent};
@@ -74,6 +74,21 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         })
         .collect();
 
+    let (tool_choice, disable_parallel_tool_use) = match req.tool_choice {
+        Some(raw) => {
+            let (choice, disable_parallel) = decode_tool_choice(raw)?;
+            (Some(choice), disable_parallel)
+        }
+        None => (None, false),
+    };
+    let tool_choice = ToolChoice::settle(tool_choice, &tools)?;
+    // Without tools there is no tool call to serialise, and providers reject
+    // parallel-call settings that come without tools.
+    let disable_parallel_tool_use = disable_parallel_tool_use && !tools.is_empty();
+    let stop_sequences =
+        validated_stop_sequences("stop_sequences", req.stop_sequences.unwrap_or_default())?;
+    let top_p = validated_top_p(req.top_p)?;
+
     // Merge thinking from the wire field and from the model suffix.
     // Suffix wins for effort; wire field wins for budget_tokens.
     let thinking = match (
@@ -112,11 +127,55 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         system: req.system.map(system_text),
         required_capabilities: CapabilitySet::default(),
         thinking,
+        tool_choice,
+        stop_sequences,
+        top_p,
+        disable_parallel_tool_use,
         ..Default::default()
     });
 
     Ok((base_model, operation))
 }
+
+/// Decode the wire `tool_choice` object into the choice and the client's
+/// `disable_parallel_tool_use` flag.
+///
+/// Anthropic defines the flag for `auto`, `any` and `tool`; for `none` no tool
+/// is called, so a well-formed flag there carries no meaning and is dropped.
+/// An absent or `null` flag is `false`.
+fn decode_tool_choice(raw: serde_json::Value) -> Result<(ToolChoice, bool), VkdgError> {
+    let invalid = |message: &str| VkdgError::ConfigInvalid {
+        field: "tool_choice".to_owned(),
+        message: message.to_owned(),
+    };
+    let serde_json::Value::Object(object) = raw else {
+        return Err(invalid("must be an object with a `type`"));
+    };
+    let disable_parallel = match object.get("disable_parallel_tool_use") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("`disable_parallel_tool_use` must be a boolean")),
+    };
+    let kind = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid("`type` must be a string"))?;
+    match kind {
+        "auto" => Ok((ToolChoice::Auto, disable_parallel)),
+        "any" => Ok((ToolChoice::Required, disable_parallel)),
+        "none" => Ok((ToolChoice::Disabled, false)),
+        "tool" => match object.get("name").and_then(serde_json::Value::as_str) {
+            Some(name) if !name.is_empty() => {
+                Ok((ToolChoice::Named(name.to_owned()), disable_parallel))
+            }
+            _ => Err(invalid("`type: tool` needs a non-empty string `name`")),
+        },
+        other => Err(invalid(&format!(
+            "unknown type `{other}`; expected auto, any, none or tool"
+        ))),
+    }
+}
+
 /// Flatten `system` to text. Block arrays keep their order, joined by a blank
 /// line; non-text blocks carry no system text and are skipped.
 fn system_text(system: AnthropicContent) -> String {
@@ -152,7 +211,9 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
         "tool_use" => {
             let id = b.id.unwrap_or_default();
             let name = b.name.unwrap_or_default();
-            let input = b.input.unwrap_or(serde_json::Value::Null);
+            let input = b
+                .input
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             Some(ContentBlock::ToolUse { id, name, input })
         }
         "tool_result" => {
@@ -160,11 +221,14 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
             let content = match b.content {
                 Some(AnthropicToolResultContent::Text(s)) => s,
                 Some(AnthropicToolResultContent::Blocks(sub_blocks)) => {
-                    let sub: Vec<ContentBlock> = sub_blocks
+                    // Only text can ride in the string result; an image has no
+                    // text form, so it is dropped rather than described.
+                    sub_blocks
                         .into_iter()
-                        .filter_map(anthropic_block_to_content)
-                        .collect();
-                    serde_json::to_string(&sub).unwrap_or_default()
+                        .filter(|sub| sub.type_ == "text")
+                        .filter_map(|sub| sub.text)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 }
                 None => String::new(),
             };

@@ -2,6 +2,9 @@ mod decode;
 mod encode;
 mod wire;
 
+#[cfg(test)]
+mod decode_request_tests;
+
 pub use decode::decode_request;
 pub use encode::{encode_event, events_to_sse_stream, vkdg_error_to_anthropic_response};
 

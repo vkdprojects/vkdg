@@ -15,6 +15,11 @@ pub struct AnthropicRequest {
     pub(crate) stream: Option<bool>,
     pub(crate) tools: Option<Vec<AnthropicTool>>,
     pub(crate) thinking: Option<AnthropicThinking>,
+    /// Kept as raw JSON: the shape depends on `type`, and a malformed value
+    /// must be rejected with `tool_choice` named, not as a body parse error.
+    pub(crate) tool_choice: Option<serde_json::Value>,
+    pub(crate) stop_sequences: Option<Vec<String>>,
+    pub(crate) top_p: Option<f32>,
 }
 
 /// `{"type":"enabled","budget_tokens":N}`, `{"type":"adaptive"}` or

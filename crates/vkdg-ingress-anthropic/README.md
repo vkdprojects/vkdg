@@ -15,6 +15,7 @@ Input adapter for the Anthropic Messages protocol. Decodes wire requests → typ
 - A decode error returns an HTTP response with a valid Anthropic body, never a generic 500 without a body
 - `encode_event` for `Completed` always emits `[DONE]` as the final frame
 - `handle_messages` returns 501 when `AppState` has no `PipelineState` configured
+- Decode carries `tool_choice` (`auto`/`any`/`none`/`tool`, plus `disable_parallel_tool_use`), `stop_sequences` and `top_p`; invalid values are a `400` naming the field. A `tool_result` with array content decodes to the text of its text blocks; its image blocks are dropped (the operation type holds tool results as text)
 
 ## Focal test
 

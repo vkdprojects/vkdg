@@ -3,6 +3,9 @@
 pub mod decode;
 pub mod encode;
 
+#[cfg(test)]
+mod decode_chat_tests;
+
 pub use decode::{decode_image_generate, decode_request, decode_responses_request};
 pub use encode::{
     encode_event_to_oai_chunk, encode_event_to_responses_chunk, events_to_sse_stream,

@@ -4922,10 +4922,8 @@ dependencies = [
 name = "vkdg-provider-github-copilot"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
  "http",
- "serde_json",
  "vkdg-connections",
  "vkdg-operations",
  "vkdg-provider-sdk",
@@ -4942,7 +4940,6 @@ dependencies = [
 name = "vkdg-provider-kimi-coding"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
  "http",
  "reqwest 0.12.28",

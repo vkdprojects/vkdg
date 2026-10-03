@@ -781,12 +781,15 @@ mod tests {
             .unwrap()
             .with_cache_ttl(Duration::from_secs(60));
         let (key, raw) = store.create(NewKey::named("k")).unwrap();
-        assert!(store
-            .authenticate(&raw)
-            .unwrap()
-            .unwrap()
-            .allowed_models
-            .is_empty());
+        assert_eq!(
+            store
+                .authenticate(&raw)
+                .unwrap()
+                .unwrap()
+                .allowed_models
+                .len(),
+            0
+        );
         let updated = store
             .update(
                 &key.id,

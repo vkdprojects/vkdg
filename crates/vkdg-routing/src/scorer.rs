@@ -88,6 +88,11 @@ pub struct CandidateSignals {
 }
 
 impl CandidateSignals {
+    // A ranking score in [0, 1] needs no single-rounding accuracy, and the release
+    // binaries are portable baseline builds (no `target-cpu`, so no FMA instruction):
+    // `mul_add` there is a libm call per term and slower than multiply plus add. The
+    // Rust std docs say the same: it is only faster with a dedicated `fma` instruction.
+    #[allow(clippy::suboptimal_flops)]
     pub fn score(&self, w: &ScoringWeights) -> f32 {
         let health = self.health.clamp(0.0, 1.0);
         let quota = self.quota_headroom.unwrap_or(0.5).clamp(0.0, 1.0);

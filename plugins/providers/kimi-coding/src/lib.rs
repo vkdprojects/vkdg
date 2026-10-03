@@ -29,6 +29,10 @@ impl ProviderAdapter for KimiCodingAdapter {
         "Kimi Coding"
     }
 
+    fn default_models(&self) -> Vec<String> {
+        vec!["kimi-*".into()]
+    }
+
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
         vkdg_provider_sdk::ProviderMeta {
             icon_char: 'K',

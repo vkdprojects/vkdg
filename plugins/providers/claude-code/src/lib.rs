@@ -29,6 +29,10 @@ impl ProviderAdapter for ClaudeCodeAdapter {
         "Claude Code"
     }
 
+    fn default_models(&self) -> Vec<String> {
+        vec!["claude-*".into()]
+    }
+
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
         vkdg_provider_sdk::ProviderMeta {
             icon_char: 'C',
@@ -95,6 +99,66 @@ fn claude_redirect_uri() -> String {
 const CLAUDE_TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const CLAUDE_AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 const CLAUDE_BOOTSTRAP_URL: &str = "https://api.anthropic.com/api/claude_cli/bootstrap";
+const CLAUDE_SCOPES: [&str; 5] = [
+    "org:create_api_key",
+    "user:profile",
+    "user:inference",
+    "user:sessions:claude_code",
+    "user:mcp_servers",
+];
+
+/// `N` random bytes, base64url without padding.
+fn random_b64url<const N: usize>() -> String {
+    use base64::Engine as _;
+    use rand::RngCore;
+
+    let mut bytes = [0u8; N];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// The only non-default redirect claude.ai accepts for this client is the
+/// loopback `/callback` the official CLI listens on. The console passes its own
+/// origin there so the code is captured without copy-paste; anything else could
+/// hand the authorization code to a host the operator does not control.
+fn validated_loopback_redirect(uri: &str) -> Result<String, ProviderError> {
+    let reject = || {
+        ProviderError::Config(format!(
+            "redirect_uri must be http://localhost[:port]/callback or http://127.0.0.1[:port]/callback, got '{uri}'"
+        ))
+    };
+    let url = reqwest::Url::parse(uri).map_err(|_| reject())?;
+    let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1"));
+    let plain = url.scheme() == "http"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path() == "/callback"
+        && url.query().is_none()
+        && url.fragment().is_none();
+    if loopback && plain {
+        Ok(url.to_string())
+    } else {
+        Err(reject())
+    }
+}
+
+/// Split what the user pasted into `(code, state)`: the `code#state` string the
+/// manual callback page shows, a full callback URL, or a bare code.
+fn split_pasted_code(pasted: &str) -> Result<(String, String), ProviderError> {
+    let pasted = pasted.trim();
+    if pasted.starts_with("http://") || pasted.starts_with("https://") {
+        let url = reqwest::Url::parse(pasted).map_err(|e| ProviderError::Http(e.to_string()))?;
+        let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        let code = pairs
+            .get("code")
+            .cloned()
+            .unwrap_or_else(|| pasted.to_owned());
+        let state = pairs.get("state").cloned().unwrap_or_default();
+        return Ok((code, state));
+    }
+    let (code, state) = pasted.split_once('#').unwrap_or((pasted, ""));
+    Ok((code.to_owned(), state.to_owned()))
+}
 
 impl OAuthProvider for ClaudeCodeAdapter {
     fn login_methods(&self) -> Vec<vkdg_provider_sdk::LoginMethod> {
@@ -110,56 +174,45 @@ impl OAuthProvider for ClaudeCodeAdapter {
     }
 
     fn oauth_config(&self) -> OAuthConfig {
-        let mut extra_auth_params = HashMap::new();
-        // prompt=login forces re-authentication on every login so that
-        // multi-account setups never silently reuse an existing session.
-        extra_auth_params.insert("prompt".into(), "login".into());
         OAuthConfig {
             flow: OAuthFlow::AuthorizationCodePkce,
             authorize_url: Some(CLAUDE_AUTHORIZE_URL.into()),
             token_url: CLAUDE_TOKEN_URL.into(),
             client_id: std::env::var("CLAUDE_OAUTH_CLIENT_ID")
                 .unwrap_or_else(|_| CLAUDE_CLIENT_ID.into()),
-            scopes: vec![
-                "org:create_api_key".into(),
-                "user:profile".into(),
-                "user:inference".into(),
-                "user:sessions:claude_code".into(),
-                "user:mcp_servers".into(),
-            ],
+            scopes: CLAUDE_SCOPES.iter().map(|s| (*s).to_owned()).collect(),
             redirect_uri: Some(claude_redirect_uri()),
-            extra_auth_params,
+            extra_auth_params: HashMap::new(),
         }
     }
 
     fn start_pkce_login<'a>(
         &'a self,
         _method: &'a str,
-        _params: &'a vkdg_provider_sdk::LoginParams,
+        params: &'a vkdg_provider_sdk::LoginParams,
     ) -> BoxFuture<'a, Result<vkdg_provider_sdk::PkceAuthorization, ProviderError>> {
-        Box::pin(async {
+        Box::pin(async move {
             use base64::Engine as _;
-            use rand::RngCore;
             use sha2::{Digest, Sha256};
 
-            // Generate a cryptographically random code verifier (RFC 7636 §4.1).
-            let mut verifier_bytes = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut verifier_bytes);
-            let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(verifier_bytes);
+            let redirect_uri = match params.get("redirect_uri").filter(|u| !u.is_empty()) {
+                Some(uri) => validated_loopback_redirect(uri)?,
+                None => claude_redirect_uri(),
+            };
+
+            // Code verifier (RFC 7636 §4.1).
+            let verifier = random_b64url::<32>();
 
             // S256 challenge = BASE64URL(SHA256(verifier)).
             let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(Sha256::digest(verifier.as_bytes()));
 
-            // OAuth `state` — random anti-CSRF nonce.
-            let mut state_bytes = [0u8; 16];
-            rand::thread_rng().fill_bytes(&mut state_bytes);
-            let state = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(state_bytes);
+            // OAuth `state`. claude.ai rejects Authorize with "Invalid request
+            // format" unless it has the same 32 bytes of entropy the official CLI sends.
+            let state = random_b64url::<32>();
 
             let client_id =
                 std::env::var("CLAUDE_OAUTH_CLIENT_ID").unwrap_or_else(|_| CLAUDE_CLIENT_ID.into());
-
-            let scopes = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers";
 
             let mut url = reqwest::Url::parse(CLAUDE_AUTHORIZE_URL)
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
@@ -167,16 +220,16 @@ impl OAuthProvider for ClaudeCodeAdapter {
                 .append_pair("code", "true")
                 .append_pair("client_id", &client_id)
                 .append_pair("response_type", "code")
-                .append_pair("redirect_uri", &claude_redirect_uri())
-                .append_pair("scope", scopes)
+                .append_pair("redirect_uri", &redirect_uri)
+                .append_pair("scope", &CLAUDE_SCOPES.join(" "))
                 .append_pair("code_challenge", &challenge)
                 .append_pair("code_challenge_method", "S256")
-                .append_pair("state", &state)
-                .append_pair("prompt", "login");
+                .append_pair("state", &state);
 
             let mut login_state = HashMap::new();
             login_state.insert("code_verifier".into(), verifier);
             login_state.insert("state".into(), state);
+            login_state.insert("redirect_uri".into(), redirect_uri);
 
             Ok(vkdg_provider_sdk::PkceAuthorization {
                 authorize_url: url.to_string(),
@@ -192,36 +245,20 @@ impl OAuthProvider for ClaudeCodeAdapter {
         code: &'a str,
     ) -> BoxFuture<'a, Result<vkdg_provider_sdk::LoginResult, ProviderError>> {
         Box::pin(async move {
-            let verifier = state
-                .get("code_verifier")
-                .map(String::as_str)
-                .unwrap_or_default();
-            let original_state = state.get("state").map(String::as_str).unwrap_or_default();
-
-            // OmniRoute: the user may paste the full callback URL; strip to code+state.
-            let (auth_code, code_state) = if code.contains('#') {
-                let parts: Vec<&str> = code.splitn(2, '#').collect();
-                (parts[0], parts.get(1).copied().unwrap_or(""))
-            } else if code.starts_with("https://") {
-                // Full callback URL: parse code from query string.
-                let parsed =
-                    reqwest::Url::parse(code).map_err(|e| ProviderError::Http(e.to_string()))?;
-                let pairs: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
-                let c = pairs
-                    .get("code")
-                    .cloned()
-                    .unwrap_or_else(|| code.to_owned());
-                let s = pairs.get("state").cloned().unwrap_or_default();
-                return finish_exchange(verifier.to_owned(), original_state.to_owned(), c, s).await;
-            } else {
-                (code, "")
-            };
-
+            let verifier = state.get("code_verifier").cloned().unwrap_or_default();
+            let original_state = state.get("state").cloned().unwrap_or_default();
+            // Must repeat the authorize `redirect_uri` verbatim.
+            let redirect_uri = state
+                .get("redirect_uri")
+                .cloned()
+                .unwrap_or_else(claude_redirect_uri);
+            let (auth_code, code_state) = split_pasted_code(code)?;
             finish_exchange(
-                verifier.to_owned(),
-                original_state.to_owned(),
-                auth_code.to_owned(),
-                code_state.to_owned(),
+                verifier,
+                original_state,
+                redirect_uri,
+                auth_code,
+                code_state,
             )
             .await
         })
@@ -274,6 +311,7 @@ impl OAuthProvider for ClaudeCodeAdapter {
 async fn finish_exchange(
     verifier: String,
     original_state: String,
+    redirect_uri: String,
     auth_code: String,
     code_state: String,
 ) -> Result<vkdg_provider_sdk::LoginResult, ProviderError> {
@@ -293,7 +331,7 @@ async fn finish_exchange(
             "state": effective_state,
             "grant_type": "authorization_code",
             "client_id": client_id,
-            "redirect_uri": claude_redirect_uri(),
+            "redirect_uri": redirect_uri,
             "code_verifier": verifier,
         }))
         .send()
@@ -365,6 +403,9 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
+/// First system block Anthropic requires on subscription OAuth requests.
+const CLAUDE_CODE_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 fn build_body(req: &ConversationRequest) -> Bytes {
     let model = vkdg_provider_sdk::upstream_model(req, "claude-opus-4-5").to_owned();
 
@@ -394,9 +435,14 @@ fn build_body(req: &ConversationRequest) -> Bytes {
     let mut body = Map::new();
     body.insert("model".into(), Value::String(model));
     body.insert("messages".into(), Value::Array(messages));
+    // A subscription (OAuth) token is only accepted for Claude Code traffic:
+    // without this exact first block Anthropic answers 429 rate_limit_error. The
+    // client's own system prompt follows it untouched.
+    let mut system = vec![json!({ "type": "text", "text": CLAUDE_CODE_IDENTITY })];
     if let Some(sys) = &req.system {
-        body.insert("system".into(), Value::String(sys.clone()));
+        system.push(json!({ "type": "text", "text": sys }));
     }
+    body.insert("system".into(), Value::Array(system));
     if let Some(max) = req.max_tokens {
         body.insert("max_tokens".into(), json!(max));
     }
@@ -405,6 +451,15 @@ fn build_body(req: &ConversationRequest) -> Bytes {
     }
     if req.stream {
         body.insert("stream".into(), Value::Bool(true));
+    }
+    // Extended thinking: both fields are required when the key is present, and
+    // 1024 is Anthropic's minimum budget.
+    if let Some(thinking) = &req.thinking {
+        let budget = thinking.budget_tokens.unwrap_or(1024);
+        body.insert(
+            "thinking".into(),
+            json!({ "type": "enabled", "budget_tokens": budget }),
+        );
     }
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req
@@ -424,4 +479,227 @@ fn build_body(req: &ConversationRequest) -> Bytes {
     }
 
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+
+    fn b64u_decode(s: &str) -> Vec<u8> {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(s)
+            .expect("base64url")
+    }
+
+    fn start(
+        params: &[(&str, &str)],
+    ) -> Result<vkdg_provider_sdk::PkceAuthorization, ProviderError> {
+        let params: vkdg_provider_sdk::LoginParams = params
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        futures::executor::block_on(ClaudeCodeAdapter.start_pkce_login("pkce", &params))
+    }
+
+    fn query(url: &str) -> HashMap<String, String> {
+        reqwest::Url::parse(url)
+            .expect("authorize url")
+            .query_pairs()
+            .into_owned()
+            .collect()
+    }
+
+    /// claude.ai answers "Invalid request format" on Authorize when `state`
+    /// carries less entropy than the official CLI sends (32 bytes, 43 chars).
+    /// Observed against the live endpoint: 22-char state rejected, 43-char accepted.
+    #[test]
+    fn state_has_32_bytes_and_challenge_is_s256_of_verifier() {
+        let auth = start(&[]).unwrap();
+        let q = query(&auth.authorize_url);
+
+        assert_eq!(b64u_decode(&q["state"]).len(), 32, "state: {}", q["state"]);
+        assert_eq!(auth.state["state"], q["state"]);
+
+        let verifier = &auth.state["code_verifier"];
+        let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(q["code_challenge"], expected);
+        assert_eq!(q["code_challenge_method"], "S256");
+    }
+
+    /// `prompt=login` bounces a signed-in browser to the login page.
+    #[test]
+    fn authorize_url_does_not_force_reauthentication() {
+        let q = query(&start(&[]).unwrap().authorize_url);
+        assert!(!q.contains_key("prompt"), "prompt={:?}", q.get("prompt"));
+    }
+
+    #[test]
+    fn default_redirect_is_the_manual_code_page() {
+        let auth = start(&[]).unwrap();
+        let q = query(&auth.authorize_url);
+        assert_eq!(q["redirect_uri"], CLAUDE_REDIRECT_URI_DEFAULT);
+        assert_eq!(auth.state["redirect_uri"], CLAUDE_REDIRECT_URI_DEFAULT);
+    }
+
+    /// The token exchange must repeat the authorize `redirect_uri` verbatim, so
+    /// the one used at start has to travel in the login state.
+    #[test]
+    fn loopback_redirect_is_used_and_remembered_for_the_exchange() {
+        for uri in [
+            "http://localhost:9090/callback",
+            "http://127.0.0.1:54545/callback",
+        ] {
+            let auth = start(&[("redirect_uri", uri)]).unwrap();
+            assert_eq!(query(&auth.authorize_url)["redirect_uri"], uri);
+            assert_eq!(auth.state["redirect_uri"], uri);
+        }
+    }
+
+    /// A browser-supplied redirect must not be able to send the authorization
+    /// code to a host the operator does not control.
+    #[test]
+    fn only_loopback_callback_redirects_are_accepted() {
+        for uri in [
+            "https://evil.example/callback",
+            "http://localhost.evil.example:9090/callback",
+            "http://localhost@evil.example/callback",
+            "https://localhost:9090/callback",
+            "http://localhost:9090/other",
+            "http://localhost:9090/callback?next=https://evil.example",
+            "http://localhost:9090/callback#frag",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(
+                matches!(
+                    start(&[("redirect_uri", uri)]),
+                    Err(ProviderError::Config(_))
+                ),
+                "{uri} must be rejected"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::split_pasted_code;
+
+    /// The manual page shows `code#state`; users also paste the whole callback
+    /// URL or just the code. All three must yield the same pair.
+    #[test]
+    fn pasted_code_forms_yield_code_and_state() {
+        for (pasted, code, state) in [
+            ("abc123#st4te", "abc123", "st4te"),
+            ("  abc123#st4te\n", "abc123", "st4te"),
+            (
+                "http://localhost:9090/callback?code=abc123&state=st4te",
+                "abc123",
+                "st4te",
+            ),
+            (
+                "https://platform.claude.com/oauth/code/callback?code=abc123&state=st4te",
+                "abc123",
+                "st4te",
+            ),
+            ("abc123", "abc123", ""),
+        ] {
+            let (c, s) = split_pasted_code(pasted).unwrap();
+            assert_eq!((c.as_str(), s.as_str()), (code, state), "{pasted:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod body_tests {
+    use super::*;
+    use vkdg_operations::Message;
+
+    const IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+    fn body(system: Option<&str>) -> Value {
+        let req = ConversationRequest {
+            model: "claude-sonnet-4-5".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            system: system.map(str::to_owned),
+            ..Default::default()
+        };
+        serde_json::from_slice(&build_body(&req)).unwrap()
+    }
+
+    /// Anthropic answers an OAuth subscription token with `429 rate_limit_error`
+    /// unless the first system block is exactly the Claude Code identity; with it
+    /// the same request returns 200 (checked live against api.anthropic.com).
+    /// The gateway then reported "no eligible connection" because the 429 put the
+    /// connection in cooldown.
+    #[test]
+    fn system_starts_with_the_claude_code_identity_block() {
+        let v = body(None);
+        assert_eq!(v["system"], json!([{ "type": "text", "text": IDENTITY }]));
+    }
+
+    #[test]
+    fn the_clients_system_prompt_follows_the_identity_block_unchanged() {
+        let v = body(Some("Be brief."));
+        assert_eq!(
+            v["system"],
+            json!([
+                { "type": "text", "text": IDENTITY },
+                { "type": "text", "text": "Be brief." },
+            ])
+        );
+    }
+
+    fn body_with_thinking(thinking: Option<vkdg_operations::ThinkingRequest>) -> Value {
+        let req = ConversationRequest {
+            model: "claude-sonnet-4-5".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            max_tokens: Some(4000),
+            thinking,
+            ..Default::default()
+        };
+        serde_json::from_slice(&build_body(&req)).unwrap()
+    }
+
+    // The client asked for extended thinking and the plugin dropped it, so the
+    // reply had no thinking block and the budget was never honoured.
+    #[test]
+    fn requested_thinking_budget_reaches_anthropic() {
+        let v = body_with_thinking(Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: Some(2048),
+            effort: None,
+        }));
+        assert_eq!(
+            v["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 2048 })
+        );
+    }
+
+    #[test]
+    fn no_thinking_request_sends_no_thinking_field() {
+        assert!(body_with_thinking(None).get("thinking").is_none());
+    }
+
+    // An OpenAI-style effort has no budget; Anthropic's minimum budget keeps the
+    // request valid instead of sending `thinking` without `budget_tokens`.
+    #[test]
+    fn effort_without_budget_uses_the_minimum_budget() {
+        let v = body_with_thinking(Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: None,
+            effort: Some("high".into()),
+        }));
+        assert_eq!(
+            v["thinking"],
+            json!({ "type": "enabled", "budget_tokens": 1024 })
+        );
+    }
 }

@@ -47,6 +47,20 @@ impl ProviderAdapter for KiroAdapter {
         "Kiro / Amazon Q"
     }
 
+    fn default_models(&self) -> Vec<String> {
+        [
+            "claude-*",
+            "gpt-5.6-*",
+            "minimax-*",
+            "deepseek-*",
+            "glm-*",
+            "qwen3-*",
+            "auto",
+        ]
+        .map(String::from)
+        .into()
+    }
+
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
         vkdg_provider_sdk::ProviderMeta {
             icon_char: 'K',

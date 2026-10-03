@@ -103,6 +103,17 @@ pub trait ProviderAdapter: Send + Sync {
         &[]
     }
 
+    /// Model patterns for the connection created automatically when an account
+    /// of this provider is connected (`claude-*`, `gpt-*`, exact ids). Choose
+    /// patterns that only this provider serves: the router round-robins across
+    /// every connection whose patterns match, so `*` would also receive other
+    /// providers' models. The default `*` is for plugins that do not say.
+    /// Return an empty list when the provider cannot serve requests yet: no
+    /// connection is created and the operator adds one by hand.
+    fn default_models(&self) -> Vec<String> {
+        vec!["*".to_owned()]
+    }
+
     /// Metadata for the admin console UI. Defaults work for any plugin that
     /// only implements `id()` and `display_name()`.
     fn meta(&self) -> ProviderMeta {

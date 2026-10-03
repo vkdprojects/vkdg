@@ -29,6 +29,10 @@ impl ProviderAdapter for GitHubCopilotAdapter {
         "GitHub Copilot"
     }
 
+    fn default_models(&self) -> Vec<String> {
+        ["gpt-*", "o1-*", "o3-*", "o4-*"].map(String::from).into()
+    }
+
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
         vkdg_provider_sdk::ProviderMeta {
             icon_char: 'G',

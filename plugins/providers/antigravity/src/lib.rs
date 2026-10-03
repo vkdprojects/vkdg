@@ -31,6 +31,12 @@ impl ProviderAdapter for AntigravityAdapter {
         "Antigravity (Google Cloud Code)"
     }
 
+    /// `prepare` is not implemented yet (Phase E), so a connection here would
+    /// only fail requests for `gemini-*`: the operator adds one when it works.
+    fn default_models(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
         vkdg_provider_sdk::ProviderMeta {
             icon_char: 'A',

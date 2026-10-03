@@ -14,9 +14,7 @@ use vkdg_core::{AttemptState, ConnectionId, VkdgError};
 use vkdg_operations::Operation;
 use vkdg_routing::{EligibilityFilter, RouteId, RouteResult, RoutingHints};
 
-use super::helpers::{
-    error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs,
-};
+use super::helpers::{error_response, has_tool_calls, is_multiturn, unix_secs};
 use super::phases::{
     post_response_accounting, prepare_operation, relay_on_rotation, resolve_combo_and_session,
 };
@@ -314,7 +312,12 @@ pub(super) async fn run_pipeline_inner(
             .status(http::StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
-            .unwrap_or_else(|_| error_response(&VkdgError::Internal("response build".into()))));
+            .unwrap_or_else(|_| {
+                error_response(
+                    &ctx.envelope.api_type,
+                    &VkdgError::Internal("response build".into()),
+                )
+            }));
     }
     // 5. Prepare operation (compression + system prompt + memory injection) ────
     let (op, compress_metrics) = prepare_operation(
@@ -334,7 +337,11 @@ pub(super) async fn run_pipeline_inner(
     let _dedup_guard = if let (Some(dedup), Operation::Conversation(conv_req)) =
         (&pipeline.dedup_table, &operation)
     {
-        let key = cache_key(&ctx.envelope.model_requested, conv_req);
+        let key = cache_key(
+            &ctx.envelope.model_requested,
+            &ctx.envelope.api_type,
+            conv_req,
+        );
         let (is_first, _notify) = dedup.register(&key);
         tracing::debug!(key = %key, is_first, "dedup registration");
         Some(DedupGuard {
@@ -352,12 +359,14 @@ pub(super) async fn run_pipeline_inner(
     } else {
         None
     };
+    // A streaming request never reads or writes the cache: the stored body is JSON,
+    // and a hit would hand a client that asked for SSE a plain body.
     let bypass_cache = ctx.envelope.cache_bypass
-        || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
+        || conv_req.map_or(true, |r| r.stream || is_multiturn(r) || has_tool_calls(r));
     let cache_key_val: Option<String> = if bypass_cache {
         None
     } else {
-        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
+        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, &ctx.envelope.api_type, r))
     };
     if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
         match cache.lookup(key).await {
@@ -370,7 +379,10 @@ pub(super) async fn run_pipeline_inner(
                     .header("x-vkdg-cache", "hit")
                     .body(axum::body::Body::from(body))
                     .unwrap_or_else(|_| {
-                        error_response(&VkdgError::Internal("cache response build".into()))
+                        error_response(
+                            &ctx.envelope.api_type,
+                            &VkdgError::Internal("cache response build".into()),
+                        )
                     }));
             }
             Ok(CacheResult::Miss) => {}
@@ -450,9 +462,21 @@ pub(super) async fn run_pipeline_inner(
     // 10. Build response ───────────────────────────────────────────────────────
     // `complete_body` is set in the Complete arm and passed to post_response_accounting.
     // Streaming leaves it None (Phase E: wrap stream on completion).
+    let relay = super::relay::plan(adapter.as_ref(), &config, &ctx.envelope.api_type);
     let mut complete_body: Option<Bytes> = None;
     let resp = match upstream_resp {
         UpstreamResponse::Complete { status, body } => {
+            // The client-facing body: translated when the upstream speaks the other
+            // dialect. What the cache stores and what the client gets are the same bytes.
+            let body = super::relay::relay_complete(
+                &relay,
+                body,
+                &ctx.envelope.api_type,
+                &vkdg_operations::StreamContext {
+                    model: &ctx.envelope.model_requested,
+                    request_id: &ctx.envelope.request_id,
+                },
+            )?;
             // 11. Cache store (fire-and-forget, non-streaming only) ────────────
             if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
                 let entry = CacheEntry {
@@ -487,41 +511,24 @@ pub(super) async fn run_pipeline_inner(
             builder
                 .body(axum::body::Body::from(body))
                 .unwrap_or_else(|_| {
-                    error_response(&VkdgError::Internal("response builder failed".into()))
+                    error_response(
+                        &ctx.envelope.api_type,
+                        &VkdgError::Internal("response builder failed".into()),
+                    )
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
-            // Providers whose wire protocol is not SSE (e.g. Kiro's AWS EventStream)
-            // are decoded to events and re-encoded in the client's dialect.
-            let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(
-                    body,
-                    decoder,
-                    &ctx.envelope.api_type,
-                    &vkdg_operations::StreamContext {
-                        model: &ctx.envelope.model_requested,
-                        request_id: &ctx.envelope.request_id,
-                    },
-                )
-            } else {
-                body
-            };
-
-            // Streaming responses are never cached — the body is a stream.
-            // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
-            let filtered_body = if ctx.envelope.include_think_tags {
-                body
-            } else {
-                filter_think_tags_stream(body)
-            };
-            // Guard: if upstream closes before [DONE], inject error event so
-            // clients can detect the incomplete response (instead of silent 200).
-            let guarded_body = crate::with_termination_guard(filtered_body);
-            // Keep the socket alive while the model thinks without emitting bytes.
-            let guarded_body = crate::sse::with_heartbeat(
-                guarded_body,
-                crate::sse::HEARTBEAT_INTERVAL,
-                crate::sse::COMMENT_PING,
+            // Translated or provider-decoded streams are re-encoded in the client's
+            // dialect; same-dialect streams pass through untouched.
+            let body = super::relay::into_client_stream(
+                relay,
+                body,
+                &ctx.envelope.api_type,
+                &vkdg_operations::StreamContext {
+                    model: &ctx.envelope.model_requested,
+                    request_id: &ctx.envelope.request_id,
+                },
+                ctx.envelope.include_think_tags,
             );
             let mut builder = axum::response::Response::builder()
                 .status(http::StatusCode::OK)
@@ -538,11 +545,12 @@ pub(super) async fn run_pipeline_inner(
                 }
             }
             builder
-                .body(axum::body::Body::from_stream(guarded_body))
+                .body(axum::body::Body::from_stream(body))
                 .unwrap_or_else(|_| {
-                    error_response(&VkdgError::Internal(
-                        "streaming response builder failed".into(),
-                    ))
+                    error_response(
+                        &ctx.envelope.api_type,
+                        &VkdgError::Internal("streaming response builder failed".into()),
+                    )
                 })
         }
     };
@@ -651,36 +659,34 @@ async fn fusion_one_target(
         .send(upstream_req, is_streaming)
         .await?;
 
+    let stream_ctx = vkdg_operations::StreamContext {
+        model: &envelope.model_requested,
+        request_id: &envelope.request_id,
+    };
+    let relay = super::relay::plan(adapter.as_ref(), &config, &envelope.api_type);
     let resp = match upstream_resp {
-        UpstreamResponse::Complete { status, body } => axum::response::Response::builder()
-            .status(http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from(body))
-            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+        UpstreamResponse::Complete { status, body } => {
+            let body = super::relay::relay_complete(&relay, body, &envelope.api_type, &stream_ctx)?;
+            axum::response::Response::builder()
+                .status(http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body))
+                .map_err(|e| VkdgError::Internal(e.to_string()))?
+        }
         UpstreamResponse::Streaming { status: _, body } => {
-            let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(
-                    body,
-                    decoder,
-                    &envelope.api_type,
-                    &vkdg_operations::StreamContext {
-                        model: &envelope.model_requested,
-                        request_id: &envelope.request_id,
-                    },
-                )
-            } else {
-                body
-            };
+            let body = super::relay::into_client_stream(
+                relay,
+                body,
+                &envelope.api_type,
+                &stream_ctx,
+                envelope.include_think_tags,
+            );
             axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
                 .header("cache-control", "no-cache")
                 .header("x-accel-buffering", "no")
-                .body(axum::body::Body::from_stream(crate::sse::with_heartbeat(
-                    body,
-                    crate::sse::HEARTBEAT_INTERVAL,
-                    crate::sse::COMMENT_PING,
-                )))
+                .body(axum::body::Body::from_stream(body))
                 .map_err(|e| VkdgError::Internal(e.to_string()))?
         }
     };

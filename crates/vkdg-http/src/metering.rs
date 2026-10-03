@@ -113,11 +113,21 @@ impl UsageMeter {
             .flatten()
         {
             let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-            let (read, write) = (
-                n("cache_read_input_tokens"),
-                n("cache_creation_input_tokens"),
-            );
-            let input = n("input_tokens").max(n("prompt_tokens")) + read + write;
+            let write = n("cache_creation_input_tokens");
+            // `OpenAI`'s `prompt_tokens` already counts the cached tokens
+            // (`prompt_tokens_details.cached_tokens`); Anthropic's `input_tokens`
+            // excludes them and reports them beside it. Cache creation sits outside
+            // both (the gateway's own extension field on the `OpenAI` shape).
+            let (input, read) = if usage.get("prompt_tokens").is_some() {
+                let cached = usage
+                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                (n("prompt_tokens") + write, cached)
+            } else {
+                let read = n("cache_read_input_tokens");
+                (n("input_tokens") + read + write, read)
+            };
             let output = n("output_tokens").max(n("completion_tokens"));
             self.usage.input = self.usage.input.max(input);
             self.usage.output = self.usage.output.max(output);
@@ -242,5 +252,56 @@ mod tests {
         );
         assert_eq!(meter(&["not json"]), TokenUsage::default());
         assert_eq!(meter(&[]), TokenUsage::default());
+    }
+}
+
+#[cfg(test)]
+mod openai_cache_tests {
+    use super::*;
+
+    fn meter(chunks: &[&str]) -> TokenUsage {
+        let mut m = UsageMeter::default();
+        for c in chunks {
+            m.feed(c.as_bytes());
+        }
+        m.finish()
+    }
+
+    // Refutes: treating the OpenAI shape like the Anthropic one. `prompt_tokens`
+    // already counts the cached tokens, so adding a cache read on top bills them twice,
+    // and ignoring `prompt_tokens_details.cached_tokens` bills them at the full price.
+    // Cache creation is outside `prompt_tokens` (the gateway's own extension field).
+    #[test]
+    fn openai_usage_reads_cached_tokens_without_double_counting() {
+        let u = meter(&[
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":112,\"completion_tokens\":3,\"total_tokens\":115,\"prompt_tokens_details\":{\"cached_tokens\":100},\"cache_creation_input_tokens\":20}}\n\n",
+            "data: [DONE]\n\n",
+        ]);
+        assert_eq!(
+            u,
+            TokenUsage {
+                input: 132,
+                output: 3,
+                cache_read: 100,
+                cache_write: 20,
+            }
+        );
+    }
+
+    // Same shape in a non-streaming body.
+    #[test]
+    fn openai_json_body_reads_cached_tokens() {
+        let u = meter(&[
+            "{\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":40}}}",
+        ]);
+        assert_eq!(
+            u,
+            TokenUsage {
+                input: 50,
+                output: 1,
+                cache_read: 40,
+                cache_write: 0,
+            }
+        );
     }
 }

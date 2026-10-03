@@ -35,11 +35,23 @@ fn test_registry() -> Arc<ProviderRegistry> {
     Arc::new(r)
 }
 
+/// The connection kind whose adapter speaks `adapter_id`'s dialect: Anthropic
+/// Messages for `anthropic`, `OpenAI` Chat for the rest. Tests state their real
+/// upstream dialect through the adapter they pass.
+fn provider_for(adapter_id: &str, base_url: String) -> ProviderKind {
+    if adapter_id == "anthropic" {
+        ProviderKind::AnthropicCompat { base_url }
+    } else {
+        ProviderKind::Custom { base_url }
+    }
+}
+
 fn make_pipeline(base_url: String, max_concurrent: usize) -> Arc<PipelineState> {
     let conn_id = ConnectionId("fake".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom { base_url },
+        // The fixtures of `make_pipeline` answer in Anthropic Messages.
+        provider: ProviderKind::AnthropicCompat { base_url },
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },
@@ -391,13 +403,13 @@ async fn pipeline_cancellation_releases_on_drop() {
 /// Helper: build a pipeline using a custom adapter and a single connection.
 fn make_pipeline_with<A: vkdg_http::provider::ProviderAdapter + 'static>(
     base_url: String,
-    _adapter: A,
+    adapter: &A,
     model_pattern: &str,
 ) -> Arc<PipelineState> {
     let conn_id = ConnectionId("fake".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom { base_url },
+        provider: provider_for(adapter.id(), base_url),
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },
@@ -432,16 +444,14 @@ fn make_pipeline_with<A: vkdg_http::provider::ProviderAdapter + 'static>(
 fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'static>(
     first_url: String,
     second_url: String,
-    _adapter: A,
+    adapter: &A,
     model_pattern: &str,
 ) -> Arc<PipelineState> {
     let id1 = ConnectionId("conn-1".into());
     let id2 = ConnectionId("conn-2".into());
     let cfg1 = ConnectionConfig {
         id: id1.clone(),
-        provider: ProviderKind::Custom {
-            base_url: first_url,
-        },
+        provider: provider_for(adapter.id(), first_url),
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },
@@ -454,9 +464,7 @@ fn make_pipeline_two_connections<A: vkdg_http::provider::ProviderAdapter + 'stat
     };
     let cfg2 = ConnectionConfig {
         id: id2.clone(),
-        provider: ProviderKind::Custom {
-            base_url: second_url,
-        },
+        provider: provider_for(adapter.id(), second_url),
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },
@@ -497,7 +505,7 @@ async fn smoke_pipeline_openai_streaming_ok() {
     })
     .await;
 
-    let pipeline = make_pipeline_with(fake.base_url.clone(), OpenAIAdapter, "gpt-*");
+    let pipeline = make_pipeline_with(fake.base_url.clone(), &OpenAIAdapter, "gpt-*");
     let (ctx, op) = make_ctx_streaming("gpt-4o", ApiType::AnthropicMessages);
 
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;
@@ -518,8 +526,30 @@ async fn smoke_pipeline_openai_streaming_ok() {
         .await
         .unwrap();
     let s = String::from_utf8_lossy(&body);
-    assert!(s.contains("hello openai"), "body must contain content: {s}");
-    assert!(s.contains("[DONE]"), "body must contain [DONE]: {s}");
+    // An Anthropic client over an OpenAI upstream gets Anthropic SSE, not the
+    // upstream's chunks: framed events, the text, usage, and no OpenAI sentinel.
+    assert!(s.contains("event: message_start"), "{s}");
+    assert!(
+        s.contains("\"text\":\"hello openai\""),
+        "body must contain content: {s}"
+    );
+    assert!(s.contains("event: message_stop"), "{s}");
+    assert!(
+        !s.contains("[DONE]"),
+        "OpenAI sentinel leaked to an Anthropic client: {s}"
+    );
+    assert!(
+        !s.contains("chat.completion.chunk"),
+        "upstream chunks leaked: {s}"
+    );
+    let delta = s
+        .split("\n\n")
+        .find(|frame| frame.starts_with("event: message_delta"))
+        .unwrap_or_else(|| panic!("no message_delta in {s}"));
+    assert!(
+        delta.contains("\"input_tokens\":10") && delta.contains("\"output_tokens\":5"),
+        "usage must reach the Anthropic client: {delta}"
+    );
     assert_eq!(fake.call_count(), 1, "upstream must be called exactly once");
 }
 
@@ -542,7 +572,7 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
     let pipeline = make_pipeline_two_connections(
         fake1.base_url.clone(),
         fake2.base_url.clone(),
-        AnthropicAdapter,
+        &AnthropicAdapter,
         "claude-*",
     );
 
@@ -579,7 +609,7 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
 async fn sole_connection_429_reaches_the_client_as_429() {
     std::env::set_var("VKDG_SMOKE_KEY", "test-token");
     let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk429).await;
-    let pipeline = make_pipeline_with(fake.base_url.clone(), AnthropicAdapter, "claude-*");
+    let pipeline = make_pipeline_with(fake.base_url.clone(), &AnthropicAdapter, "claude-*");
     let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
 
     let resp = run_conversation_pipeline(pipeline, ctx, op).await;
@@ -596,7 +626,7 @@ async fn sole_connection_429_reaches_the_client_as_429() {
 async fn request_during_cooldown_gets_429_with_retry_after_not_502() {
     std::env::set_var("VKDG_SMOKE_KEY", "test-token");
     let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk429).await;
-    let pipeline = make_pipeline_with(fake.base_url.clone(), AnthropicAdapter, "claude-*");
+    let pipeline = make_pipeline_with(fake.base_url.clone(), &AnthropicAdapter, "claude-*");
 
     let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
     let first = run_conversation_pipeline(Arc::clone(&pipeline), ctx, op).await;
@@ -643,7 +673,7 @@ async fn session_stickiness_stale_pin_falls_through_to_routing() {
     let conn_id = ConnectionId("real-conn".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: fake.base_url.clone(),
         },
         auth: AuthKind::ApiKey {
@@ -722,7 +752,7 @@ async fn auto_routing_zero_config_routes_without_explicit_route() {
     let conn_id = ConnectionId("auto-conn".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: fake.base_url.clone(),
         },
         auth: AuthKind::ApiKey {

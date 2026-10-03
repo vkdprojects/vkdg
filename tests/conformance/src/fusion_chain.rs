@@ -73,7 +73,7 @@ fn make_two_connection_pipeline(
     let id2 = ConnectionId("conn-2".into());
     let cfg1 = ConnectionConfig {
         id: id1.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: first_url,
         },
         auth: AuthKind::ApiKey {
@@ -88,7 +88,7 @@ fn make_two_connection_pipeline(
     };
     let cfg2 = ConnectionConfig {
         id: id2.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: second_url,
         },
         auth: AuthKind::ApiKey {

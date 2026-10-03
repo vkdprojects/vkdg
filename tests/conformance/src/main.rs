@@ -1,5 +1,6 @@
 mod admission;
 mod capability;
+mod dialect_translation;
 mod fake_upstream;
 mod fusion_chain;
 mod ingress_anthropic;

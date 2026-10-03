@@ -305,7 +305,8 @@ Want it bundled with VKDG for everyone?
 ## Reference
 
 - WIT interface: [`wit/provider.wit`](../../wit/provider.wit)
-- OpenAI-compat shared module: [`crates/vkdg-provider-sdk/src/openai_compat.rs`](../../crates/vkdg-provider-sdk/src/openai_compat.rs)
+- OpenAI-compat shared module: [`crates/vkdg-provider-sdk/src/openai_compat/`](../../crates/vkdg-provider-sdk/src/openai_compat/mod.rs)
+- Anthropic Messages shared body builder: [`crates/vkdg-provider-sdk/src/anthropic_messages/`](../../crates/vkdg-provider-sdk/src/anthropic_messages/mod.rs)
 - `ProviderAdapter` trait: [`crates/vkdg-provider-sdk/src/request.rs`](../../crates/vkdg-provider-sdk/src/request.rs)
 - `OAuthProvider` trait: [`crates/vkdg-provider-sdk/src/oauth.rs`](../../crates/vkdg-provider-sdk/src/oauth.rs)
 - Built-in examples: `plugins/providers/anthropic/`, `plugins/providers/groq/`, `plugins/providers/claude-code/`

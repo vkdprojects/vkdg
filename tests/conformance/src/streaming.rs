@@ -38,7 +38,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
     let conn_id = ConnectionId("stream-bp".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom { base_url },
+        provider: ProviderKind::AnthropicCompat { base_url },
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },

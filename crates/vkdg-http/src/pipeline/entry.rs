@@ -73,7 +73,7 @@ pub async fn run_conversation_pipeline(
     let pending = pending_log(&pipeline, &ctx, &outcome, final_attempt, &operation);
     let mut response = match outcome {
         Ok(resp) => resp,
-        Err(e) => error_response(&e),
+        Err(e) => error_response(&ctx.envelope.api_type, &e),
     };
     if let Some(pending) = pending {
         response.extensions_mut().insert(pending);

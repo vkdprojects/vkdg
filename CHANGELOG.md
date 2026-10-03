@@ -57,6 +57,50 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- **An OpenAI client over an Anthropic provider (and the reverse) got the other dialect's body.** A client
+  calling `/v1/chat/completions` that was routed to Claude Code received `{"type":"message","content":[...]}`
+  instead of a `chat.completion` (and an Anthropic client over an OpenAI-compatible provider received
+  `chat.completion` chunks), in streaming and not. Providers now declare the dialect they speak
+  (`ProviderAdapter::wire_format`: Anthropic, OpenAI Chat) and the gateway translates the response to the
+  client's dialect through canonical events: text, reasoning (`reasoning_content`), tool calls, usage,
+  stop reasons and errors. Same-dialect traffic passes through untouched and unparsed. Cached tokens are
+  converted both ways (`prompt_tokens` includes them, Anthropic's `input_tokens` does not) and cache
+  creation never inflates `prompt_tokens`. An empty, truncated, malformed, oversize (event 1 MiB, tool
+  arguments 8 MiB, body 32 MiB) or foreign-dialect upstream answer is a `502` with a fixed message, never the
+  upstream payload and never a clean empty completion. See `docs/sdk/dialect-translation.md` and ADR-004.
+- **Errors now match the client's dialect.** Pipeline errors were always Anthropic-shaped, even for OpenAI
+  clients (SDKs showed an opaque parse failure). They use one renderer shared with the stream encoders
+  (`{"error":{"message","type","param","code"}}` for OpenAI Chat, `{"type":"error",...}` for Anthropic,
+  same statuses and `retry-after`), and a stream cut mid-way ends with the dialect's own error frame.
+- **Stream and cache fixes found on the way:** a stream whose decoder flush produced events skipped the
+  encoder's closing frame and the Kiro context-usage event; the OpenAI stream encoder reported `stop`
+  after tool calls when no stop event arrived; the response cache stored the raw upstream body and
+  ignored the client dialect, so a hit could serve a body in the wrong dialect (the key now includes it).
+  The usage meter counted OpenAI cached tokens twice.
+- **Request fidelity between OpenAI and Anthropic clients and upstreams.** Requests were decoded
+  lossily and re-encoded the same way, so tool-using clients broke across dialects:
+  - OpenAI ingress now reads `tool_choice`, `parallel_tool_calls`, `stop`, `top_p` and
+    `max_completion_tokens` (preferred over `max_tokens`), keeps the assistant text that accompanies
+    `tool_calls`, joins every `system`/`developer` message instead of keeping the first, and decodes
+    `image_url` parts as images instead of flattening the URL into the prompt text. Invalid values answer
+    `400` naming the field (`tool_choice`, `stop`, `top_p`, `messages[i].role`, `messages[i].content`);
+    more than 16 stop strings, one over 256 bytes, or a forced tool the request never declared are refused.
+  - Anthropic ingress now reads `tool_choice` (with `disable_parallel_tool_use`), `stop_sequences` and
+    `top_p`. A `tool_result` whose content is an array reaches the model as its text, not as escaped JSON.
+  - Anthropic upstreams (`anthropic`, `claude-code`) get Anthropic's own block shapes (images were sent in
+    gateway-internal form), one user turn of `tool_result` blocks in call order for parallel results,
+    an error result for a tool call that has none, and no orphaned `tool_result`. `max_tokens`
+    defaults to 8192 when the client sent none (Anthropic requires it). Extended-thinking limits are
+    applied instead of forwarded into a 400: `temperature` other than 1 and `top_p` below 0.95 are dropped,
+    `thinking` is not sent with a forced tool or when continuing a tool turn whose assistant message has no
+    signed thinking block, and `max_tokens` grows by the budget when it would not exceed it.
+  - OpenAI upstreams (`openai`, `github-copilot`, `kimi-coding`, every OpenAI-compatible provider) share one
+    body builder: `tool_choice`, `parallel_tool_calls: false`, `stop`, `top_p`, assistant text beside tool
+    calls, one `tool` message per result placed behind its call, and images. api.openai.com gets
+    `max_completion_tokens`; compatible endpoints keep `max_tokens`; never both.
+  - Not forwarded on purpose: Codex (Responses API) and Kiro ignore `tool_choice`, `stop`, `top_p` and the
+    parallel-call limit. `tool_result` images are dropped on Anthropic ingress (the operation type carries
+    tool results as text).
 - **Claude Code requests always failed upstream.** Anthropic answers a subscription OAuth token with
   `429 rate_limit_error` unless the first system block is the Claude Code identity; the gateway then put
   the connection in cooldown and the client only saw "no eligible connection". The plugin now sends that

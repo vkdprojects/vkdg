@@ -4,12 +4,11 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
 
-// Incremental SSE parser — buffers bytes across arbitrary TCP read boundaries.
+// Incremental SSE parser — the owned-event view of `vkdg_provider_sdk::SseFramer`.
 //
-// A complete SSE event is terminated by a blank line (\n\n or \r\n\r\n).
-// The parser does not require chunks to align with event or even character
-// boundaries; it accumulates raw bytes and only interprets them once a full
-// event has been received.
+// Framing (line endings, partial UTF-8, comments, the per-event size bound) lives
+// in exactly one place, the framer. This type only turns its borrowed frames into
+// owned events and applies the optional think-tag strip.
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,8 +21,7 @@ pub struct SseEvent {
 // ── Parser ────────────────────────────────────────────────────────────────────
 
 pub struct SseParser {
-    // Raw byte buffer — accumulated until a complete event is delimited.
-    buf: Vec<u8>,
+    framer: vkdg_provider_sdk::SseFramer,
     /// Whether to strip <think>...</think> blocks from text delta events.
     /// Default: true (most clients don't want to see reasoning tokens).
     pub strip_think_tags: bool,
@@ -32,7 +30,7 @@ pub struct SseParser {
 impl SseParser {
     pub fn new() -> Self {
         Self {
-            buf: Vec::new(),
+            framer: vkdg_provider_sdk::SseFramer::new(),
             strip_think_tags: true,
         }
     }
@@ -45,25 +43,21 @@ impl SseParser {
     }
 
     /// Push a chunk of bytes (any size, any alignment) and return all complete
-    /// SSE events that can be extracted from the buffer.
+    /// SSE events that can be extracted from the buffer. An event larger than the
+    /// framer's limit is dropped (and logged), never buffered without bound.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        self.buf.extend_from_slice(chunk);
+        let strip = self.strip_think_tags;
         let mut events = Vec::new();
-
-        // Scan for \n\n or \r\n\r\n — end-of-event delimiters.
-        while let Some(end) = find_event_end(&self.buf) {
-            let event_bytes = self.buf[..end.start].to_vec();
-            // Drain consumed bytes (including the delimiter).
-            self.buf.drain(..end.end);
-
-            if let Some(mut event) = parse_event_bytes(&event_bytes) {
-                if self.strip_think_tags {
-                    event.data = strip_think_tags(&event.data);
-                }
-                events.push(event);
+        self.framer.push(chunk, |frame| match frame {
+            Ok(frame) => {
+                let data = frame.data.into_owned();
+                events.push(SseEvent {
+                    event_type: frame.event.map(str::to_owned),
+                    data: if strip { strip_think_tags(&data) } else { data },
+                });
             }
-        }
-
+            Err(error) => tracing::warn!(%error, "dropping oversized SSE event"),
+        });
         events
     }
 }
@@ -72,87 +66,6 @@ impl Default for SseParser {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// ── Internals ─────────────────────────────────────────────────────────────────
-
-struct EventEnd {
-    /// Byte index where the event content ends (before the delimiter).
-    start: usize,
-    /// Byte index after the delimiter — next event starts here.
-    end: usize,
-}
-
-/// Find the first \n\n or \r\n\r\n in `buf`.
-fn find_event_end(buf: &[u8]) -> Option<EventEnd> {
-    let len = buf.len();
-    let mut i = 0;
-    while i < len {
-        // Check for \n\n
-        if buf[i] == b'\n' && i + 1 < len && buf[i + 1] == b'\n' {
-            return Some(EventEnd {
-                start: i,
-                end: i + 2,
-            });
-        }
-        // Check for \r\n\r\n
-        if buf[i] == b'\r'
-            && i + 3 < len
-            && buf[i + 1] == b'\n'
-            && buf[i + 2] == b'\r'
-            && buf[i + 3] == b'\n'
-        {
-            return Some(EventEnd {
-                start: i,
-                end: i + 4,
-            });
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Parse raw event bytes (everything before the \n\n delimiter) into an `SseEvent`.
-///
-/// Lines that fail UTF-8 decoding are skipped — the buffer only retains
-/// partial multi-byte sequences until more bytes arrive via `push`.
-fn parse_event_bytes(raw: &[u8]) -> Option<SseEvent> {
-    let text = match std::str::from_utf8(raw) {
-        Ok(s) => s,
-        Err(e) => {
-            // Valid prefix only — partial UTF-8 at the end means the event
-            // boundary detection fired on a comment or short line; use what
-            // is valid (the invalid suffix cannot form a field anyway).
-            let valid_up_to = e.valid_up_to();
-            std::str::from_utf8(&raw[..valid_up_to]).ok()?
-        }
-    };
-
-    let mut event_type: Option<String> = None;
-    let mut data_parts: Vec<&str> = Vec::new();
-
-    for line in text.lines() {
-        // Skip comment lines.
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("event:") {
-            event_type = Some(rest.trim_start().to_string());
-        } else if let Some(rest) = line.strip_prefix("data:") {
-            data_parts.push(rest.trim_start());
-        } else if line == "data" {
-            // bare "data" field with empty value
-            data_parts.push("");
-        }
-        // id: and retry: fields are parsed but not exposed in SseEvent for now.
-    }
-
-    if data_parts.is_empty() {
-        return None;
-    }
-
-    let data = data_parts.join("\n");
-    Some(SseEvent { event_type, data })
 }
 
 /// Remove <think>...</think> blocks from SSE data.
@@ -174,66 +87,65 @@ pub fn strip_think_tags(data: &str) -> String {
 
 // ── Stream termination guard ──────────────────────────────────────────────────
 
-/// The SSE error event injected when upstream closes without terminating.
-/// Carries both dialects' terminators so any client can see the stream ended.
-const STREAM_INTERRUPTED_EVENT: &str =
-    "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"upstream closed mid-stream\"}}\n\ndata: [DONE]\n\n";
-
 /// True when this chunk ends the stream in either client dialect.
 ///
-/// `OpenAI` sends a `[DONE]` sentinel; Anthropic sends `message_stop` and no
-/// sentinel at all. Recognising only `[DONE]` made every successful Anthropic
-/// response end with a spurious error event.
+/// `OpenAI` ends with a `[DONE]` sentinel; Anthropic ends with `message_stop`, or with
+/// an `error` event after a failure. Recognising only `[DONE]` made every successful
+/// Anthropic response end with a spurious error event.
 fn is_terminal_chunk(chunk: &[u8]) -> bool {
-    chunk.windows(6).any(|w| w == b"[DONE]")
-        || chunk
-            .windows(b"message_stop".len())
-            .any(|w| w == b"message_stop")
+    let contains = |needle: &[u8]| chunk.windows(needle.len()).any(|w| w == needle);
+    contains(b"[DONE]") || contains(b"message_stop") || contains(b"event: error")
 }
 
-/// Wrap a byte stream and inject an error event if it ends without terminating.
+/// Wrap a byte stream and end it with the client dialect's error frame if it
+/// finishes (or errors) without a terminal event.
 ///
-/// Detects upstream TCP closure mid-stream: if the inner stream ends (or errors)
-/// before a terminal event, appends a well-formed SSE error event so clients can
+/// Detects upstream TCP closure mid-stream: the client gets a well-formed error
+/// frame (Anthropic `event: error`, or `OpenAI`'s error object and `[DONE]`) so it can
 /// tell an incomplete response from a complete one.
 pub fn with_termination_guard(
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
+    client: &vkdg_core::ApiType,
 ) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
+    let interrupted = Bytes::from(vkdg_operations::stream_error_frame(
+        client,
+        &vkdg_core::VkdgError::UpstreamError {
+            code: 502,
+            message: "upstream stream ended before completion".into(),
+            retry_after: None,
+        },
+    ));
     Box::pin(futures::stream::unfold(
         (inner, false, false),
-        |(mut stream, mut saw_done, mut finished)| async move {
-            if finished {
-                return None;
-            }
-            match stream.next().await {
-                Some(Ok(chunk)) => {
-                    if is_terminal_chunk(&chunk) {
-                        saw_done = true;
-                    }
-                    Some((Ok(chunk), (stream, saw_done, finished)))
+        move |(mut stream, mut saw_done, mut finished)| {
+            let interrupted = interrupted.clone();
+            async move {
+                if finished {
+                    return None;
                 }
-                None => {
-                    finished = true;
-                    if saw_done {
-                        None
-                    } else {
-                        // Upstream closed without [DONE] — inject error event.
-                        tracing::warn!(
-                            "upstream closed SSE stream before [DONE]; injecting error event"
-                        );
-                        Some((
-                            Ok(Bytes::from_static(STREAM_INTERRUPTED_EVENT.as_bytes())),
-                            (stream, true, finished),
-                        ))
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        if is_terminal_chunk(&chunk) {
+                            saw_done = true;
+                        }
+                        Some((Ok(chunk), (stream, saw_done, finished)))
                     }
-                }
-                Some(Err(e)) => {
-                    finished = true;
-                    tracing::warn!(error = %e, "SSE stream error; injecting error event");
-                    Some((
-                        Ok(Bytes::from_static(STREAM_INTERRUPTED_EVENT.as_bytes())),
-                        (stream, true, finished),
-                    ))
+                    None => {
+                        finished = true;
+                        if saw_done {
+                            None
+                        } else {
+                            tracing::warn!(
+                                "upstream closed SSE stream before its terminal event; injecting error frame"
+                            );
+                            Some((Ok(interrupted), (stream, true, finished)))
+                        }
+                    }
+                    Some(Err(e)) => {
+                        finished = true;
+                        tracing::warn!(error = %e, "SSE stream error; injecting error frame");
+                        Some((Ok(interrupted), (stream, true, finished)))
+                    }
                 }
             }
         },
@@ -483,16 +395,22 @@ mod tests {
         ];
         let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
             Box::pin(stream::iter(chunks));
-        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+        let guarded: Vec<_> =
+            with_termination_guard(inner, &vkdg_core::ApiType::OpenAiChatCompletions)
+                .collect()
+                .await;
 
         // Last chunk must contain the error event.
         let last = guarded.last().unwrap().as_ref().unwrap();
         let text = std::str::from_utf8(last).unwrap();
         assert!(
-            text.contains("overloaded_error") || text.contains("upstream closed"),
-            "missing [DONE] must produce error event, got: {text}"
+            text.contains("upstream stream ended before completion"),
+            "missing [DONE] must produce an error object, got: {text}"
         );
-        assert!(text.contains("[DONE]"), "error event must end with [DONE]");
+        assert!(
+            text.ends_with("data: [DONE]\n\n"),
+            "an OpenAI client's error frame ends with [DONE]: {text}"
+        );
     }
 
     // Plausible wrong impl: termination guard adds error event even for complete streams.
@@ -507,7 +425,10 @@ mod tests {
         ];
         let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
             Box::pin(stream::iter(chunks));
-        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+        let guarded: Vec<_> =
+            with_termination_guard(inner, &vkdg_core::ApiType::OpenAiChatCompletions)
+                .collect()
+                .await;
 
         // Must have exactly 2 chunks (no extra error event injected).
         assert_eq!(
@@ -537,7 +458,9 @@ mod tests {
         ];
         let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
             Box::pin(stream::iter(chunks));
-        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+        let guarded: Vec<_> = with_termination_guard(inner, &vkdg_core::ApiType::AnthropicMessages)
+            .collect()
+            .await;
 
         let text: String = guarded
             .iter()
@@ -545,7 +468,7 @@ mod tests {
             .map(|b| String::from_utf8_lossy(b).to_string())
             .collect();
         assert!(
-            !text.contains("overloaded_error"),
+            !text.contains("event: error"),
             "a stream ending in message_stop is complete: {text}"
         );
         assert_eq!(
@@ -571,14 +494,17 @@ mod tests {
         ];
         let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
             Box::pin(stream::iter(chunks));
-        let guarded: Vec<_> = with_termination_guard(inner).collect().await;
+        let guarded: Vec<_> = with_termination_guard(inner, &vkdg_core::ApiType::AnthropicMessages)
+            .collect()
+            .await;
 
         // Guard swallows the Err and replaces it with an Ok error-event chunk.
         let last = guarded.last().unwrap().as_ref().unwrap();
         let text = std::str::from_utf8(last).unwrap();
         assert!(
-            text.contains("overloaded_error") || text.contains("upstream closed"),
-            "stream error must produce error event, got: {text}"
+            text.starts_with("event: error\n")
+                && text.contains("upstream stream ended before completion"),
+            "an Anthropic client gets an `event: error` frame, got: {text}"
         );
     }
 

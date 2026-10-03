@@ -221,6 +221,7 @@ pub async fn create_key(
 
 /// Body of `PATCH /admin/v1/keys/{id}`. Absent fields are unchanged; `null`
 /// clears an optional limit.
+#[allow(clippy::option_option)] // intentional: None = absent, Some(None) = explicit null (patch semantics)
 #[derive(Deserialize, Default)]
 pub struct UpdateKeyBody {
     pub name: Option<String>,
@@ -237,6 +238,7 @@ pub struct UpdateKeyBody {
 }
 
 /// Distinguishes an absent field (`None`) from an explicit `null` (`Some(None)`).
+#[allow(clippy::option_option)] // intentional: return type encodes absent vs explicit null
 fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -315,13 +317,8 @@ pub async fn regenerate_key(
         Err(e) => store_failure(&e),
     }
 }
-
-async fn set_disabled(
-    state: AdminState,
-    headers: HeaderMap,
-    id: String,
-    disabled: bool,
-) -> Response {
+#[allow(clippy::needless_pass_by_value)] // helper called with owned values from axum extractors
+fn set_disabled(state: AdminState, headers: HeaderMap, id: String, disabled: bool) -> Response {
     if get_session(&state, &headers).is_none() {
         return unauthorized();
     }
@@ -341,7 +338,7 @@ pub async fn disable_key(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    set_disabled(state, headers, id, true).await
+    set_disabled(state, headers, id, true)
 }
 
 /// `POST /admin/v1/keys/{id}/enable`: undoes a disable. Never un-revokes.
@@ -350,7 +347,7 @@ pub async fn enable_key(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    set_disabled(state, headers, id, false).await
+    set_disabled(state, headers, id, false)
 }
 
 pub async fn revoke_key(
@@ -394,6 +391,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 

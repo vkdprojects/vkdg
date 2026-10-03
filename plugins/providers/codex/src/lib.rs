@@ -1,5 +1,5 @@
 //! VKDG provider plugin: codex
-//! OpenAI Responses API format over OAuth 2.0 (Authorization Code + PKCE).
+//! `OpenAI` Responses API format over OAuth 2.0 (Authorization Code + PKCE).
 
 use std::collections::HashMap;
 
@@ -21,12 +21,18 @@ impl ProviderAdapter for CodexAdapter {
         Some(self)
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "codex"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "OpenAI Codex"
+    }
+
+    fn default_models(&self) -> Vec<String> {
+        ["gpt-*", "o1-*", "o3-*", "o4-*", "codex-*"]
+            .map(String::from)
+            .into()
     }
 
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
@@ -46,9 +52,8 @@ impl ProviderAdapter for CodexAdapter {
         credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
         let token = credential.token.as_str();
-        let req = match operation {
-            Operation::Conversation(r) => r,
-            _ => return Err(ProviderError::UnsupportedOperation),
+        let Operation::Conversation(req) = operation else {
+            return Err(ProviderError::UnsupportedOperation);
         };
 
         let body = build_responses_body(req);
@@ -155,7 +160,7 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-/// Converts a ConversationRequest into the Codex Responses API body shape.
+/// Converts a `ConversationRequest` into the Codex Responses API body shape.
 /// Key differences from Chat Completions (which Codex /v1/responses rejects):
 /// - `input` not `messages`; system messages stay in `input` as `developer` role
 ///   for prompt-cache eligibility (`instructions` is not cached on GPT-5 models)
@@ -199,6 +204,7 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
+                            ..
                         } => Some(json!({
                             "type": "function_call_output",
                             "call_id": tool_use_id, "output": content
@@ -217,18 +223,17 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
                         input.push(tr.clone());
                     }
                     continue;
-                } else {
-                    let parts: Vec<Value> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => {
-                                Some(json!({ "type": "input_text", "text": text }))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    json!({ "type": "message", "role": role, "content": parts })
                 }
+                let parts: Vec<Value> = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::Text { text } => {
+                            Some(json!({ "type": "input_text", "text": text }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                json!({ "type": "message", "role": role, "content": parts })
             }
         };
         input.push(item);
@@ -251,7 +256,10 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
     body.insert("store".into(), Value::Bool(false));
     // Always stream; the /responses endpoint is SSE-first.
     body.insert("stream".into(), Value::Bool(true));
-    // max_tokens and max_output_tokens are stripped: Codex rejects both.
+    // Not forwarded, on purpose: `tool_choice`, `stop_sequences`, `top_p` and
+    // `disable_parallel_tool_use` (the Responses API has no `stop`; the others
+    // are untested against this OAuth backend, and this adapter's wire behavior is
+    // unchanged). `max_tokens` and `max_output_tokens` are stripped: Codex rejects both.
     if let Some(temp) = req.temperature {
         body.insert("temperature".into(), json!(temp));
     }
@@ -308,6 +316,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         });
         let cred = Credential {
             token: "t".into(),

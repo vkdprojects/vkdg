@@ -6,7 +6,7 @@
 //! provider was reached.
 //!
 //! Anthropic reports `usage.input_tokens` in `message_start` and a growing
-//! `usage.output_tokens` in `message_delta`; OpenAI reports
+//! `usage.output_tokens` in `message_delta`; `OpenAI` reports
 //! `usage.prompt_tokens` / `completion_tokens` in the body or the final stream
 //! chunk. Counts only grow, so the meter keeps the largest value seen per field.
 
@@ -47,6 +47,10 @@ pub struct UsageMeter {
     body: Vec<u8>,
     sse: Option<bool>,
     usage: TokenUsage,
+    /// Stop reason from the final `message_delta` SSE event.
+    stop_reason: Option<String>,
+    /// Kiro context window usage percentage, from `vkdg_context_usage` SSE events.
+    context_usage_pct: Option<f64>,
 }
 
 /// Non-streaming bodies larger than this are not metered from their JSON: the
@@ -82,6 +86,17 @@ impl UsageMeter {
         self.usage
     }
 
+    /// Stop reason extracted from the stream (`end_turn`, `max_tokens`, etc.).
+    /// `None` until a `message_delta` event carrying one is observed.
+    pub fn stop_reason(&self) -> Option<String> {
+        self.stop_reason.clone()
+    }
+
+    /// Kiro context window usage; `None` when the provider did not report it.
+    pub fn context_usage_pct(&self) -> Option<f64> {
+        self.context_usage_pct
+    }
+
     fn observe_line(&mut self, line: &[u8]) {
         let Some(data) = line.strip_prefix(b"data:") else {
             return;
@@ -98,16 +113,42 @@ impl UsageMeter {
             .flatten()
         {
             let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-            let (read, write) = (
-                n("cache_read_input_tokens"),
-                n("cache_creation_input_tokens"),
-            );
-            let input = n("input_tokens").max(n("prompt_tokens")) + read + write;
+            let write = n("cache_creation_input_tokens");
+            // `OpenAI`'s `prompt_tokens` already counts the cached tokens
+            // (`prompt_tokens_details.cached_tokens`); Anthropic's `input_tokens`
+            // excludes them and reports them beside it. Cache creation sits outside
+            // both (the gateway's own extension field on the `OpenAI` shape).
+            let (input, read) = if usage.get("prompt_tokens").is_some() {
+                let cached = usage
+                    .pointer("/prompt_tokens_details/cached_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                (n("prompt_tokens") + write, cached)
+            } else {
+                let read = n("cache_read_input_tokens");
+                (n("input_tokens") + read + write, read)
+            };
             let output = n("output_tokens").max(n("completion_tokens"));
             self.usage.input = self.usage.input.max(input);
             self.usage.output = self.usage.output.max(output);
             self.usage.cache_read = self.usage.cache_read.max(read);
             self.usage.cache_write = self.usage.cache_write.max(write);
+        }
+        // Anthropic `message_delta` carries the stop reason.
+        if let Some(sr) = v
+            .get("delta")
+            .and_then(|d| d.get("stop_reason"))
+            .and_then(Value::as_str)
+        {
+            if !sr.is_empty() {
+                self.stop_reason = Some(sr.to_owned());
+            }
+        }
+        // VKDG vendor event: Kiro context window usage percentage.
+        if v.get("type").and_then(Value::as_str) == Some("vkdg_context_usage") {
+            if let Some(pct) = v.get("pct").and_then(Value::as_f64) {
+                self.context_usage_pct = Some(pct);
+            }
         }
     }
 }
@@ -211,5 +252,56 @@ mod tests {
         );
         assert_eq!(meter(&["not json"]), TokenUsage::default());
         assert_eq!(meter(&[]), TokenUsage::default());
+    }
+}
+
+#[cfg(test)]
+mod openai_cache_tests {
+    use super::*;
+
+    fn meter(chunks: &[&str]) -> TokenUsage {
+        let mut m = UsageMeter::default();
+        for c in chunks {
+            m.feed(c.as_bytes());
+        }
+        m.finish()
+    }
+
+    // Refutes: treating the OpenAI shape like the Anthropic one. `prompt_tokens`
+    // already counts the cached tokens, so adding a cache read on top bills them twice,
+    // and ignoring `prompt_tokens_details.cached_tokens` bills them at the full price.
+    // Cache creation is outside `prompt_tokens` (the gateway's own extension field).
+    #[test]
+    fn openai_usage_reads_cached_tokens_without_double_counting() {
+        let u = meter(&[
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":112,\"completion_tokens\":3,\"total_tokens\":115,\"prompt_tokens_details\":{\"cached_tokens\":100},\"cache_creation_input_tokens\":20}}\n\n",
+            "data: [DONE]\n\n",
+        ]);
+        assert_eq!(
+            u,
+            TokenUsage {
+                input: 132,
+                output: 3,
+                cache_read: 100,
+                cache_write: 20,
+            }
+        );
+    }
+
+    // Same shape in a non-streaming body.
+    #[test]
+    fn openai_json_body_reads_cached_tokens() {
+        let u = meter(&[
+            "{\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":40}}}",
+        ]);
+        assert_eq!(
+            u,
+            TokenUsage {
+                input: 50,
+                output: 1,
+                cache_read: 40,
+                cache_write: 0,
+            }
+        );
     }
 }

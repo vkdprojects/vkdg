@@ -33,6 +33,7 @@ fn make_conversation_op(n_messages: usize) -> vkdg_operations::Operation {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     })
 }
 
@@ -98,7 +99,7 @@ fn bench_admission_routing(c: &mut Criterion) {
                 )
                 .await;
             criterion::black_box(result)
-        })
+        });
     });
 }
 
@@ -115,7 +116,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
     let chunks: Vec<Vec<u8>> = (0..100).map(|_| chunk.clone()).collect();
 
     let mut group = c.benchmark_group("sse_parse");
-    for n in [10usize, 100].iter() {
+    for n in &[10usize, 100] {
         group.bench_with_input(BenchmarkId::from_parameter(n), n, |b, &n| {
             b.iter(|| {
                 let mut parser = SseParser::new();
@@ -124,7 +125,7 @@ fn bench_sse_parsing(c: &mut Criterion) {
                     total += parser.push(ch).len();
                 }
                 criterion::black_box(total)
-            })
+            });
         });
     }
     group.finish();
@@ -157,7 +158,7 @@ fn bench_provider_prepare(c: &mut Criterion) {
     let credential = vkdg_connections::Credential::bearer("sk-bench-token");
 
     let mut group = c.benchmark_group("provider_prepare");
-    for n_messages in [1usize, 10, 50].iter() {
+    for n_messages in &[1usize, 10, 50] {
         let op = make_conversation_op(*n_messages);
         group.bench_with_input(
             BenchmarkId::from_parameter(n_messages),

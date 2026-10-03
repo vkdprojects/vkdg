@@ -5,41 +5,49 @@ use serde::{Deserialize, Serialize};
 // ── Request wire types ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicRequest {
+pub struct AnthropicRequest {
     pub(crate) model: String,
     pub(crate) messages: Vec<AnthropicMessage>,
-    pub(crate) system: Option<String>,
+    /// String, or an array of text blocks (the form Claude Code sends).
+    pub(crate) system: Option<AnthropicContent>,
     pub(crate) max_tokens: Option<u32>,
     pub(crate) temperature: Option<f32>,
     pub(crate) stream: Option<bool>,
-    pub(crate) tools: Option<Vec<AnthropicTool>>,
+    /// Raw: a custom tool has an `input_schema`, a server tool (`web_search_20250305`)
+    /// a `type` and no schema; the decoder tells them apart and names the bad index.
+    pub(crate) tools: Option<Vec<serde_json::Value>>,
     pub(crate) thinking: Option<AnthropicThinking>,
+    /// Kept as raw JSON: the shape depends on `type`, and a malformed value
+    /// must be rejected with `tool_choice` named, not as a body parse error.
+    pub(crate) tool_choice: Option<serde_json::Value>,
+    pub(crate) stop_sequences: Option<Vec<String>>,
+    pub(crate) top_p: Option<f32>,
 }
 
 /// `{"type":"enabled","budget_tokens":N}`, `{"type":"adaptive"}` or
 /// `{"type":"disabled"}`.
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicThinking {
+pub struct AnthropicThinking {
     #[serde(rename = "type")]
     pub(crate) kind: String,
     pub(crate) budget_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicMessage {
+pub struct AnthropicMessage {
     pub(crate) role: String,
     pub(crate) content: AnthropicContent,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub(crate) enum AnthropicContent {
+pub enum AnthropicContent {
     Text(String),
     Blocks(Vec<AnthropicBlock>),
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicBlock {
+pub struct AnthropicBlock {
     #[serde(rename = "type")]
     pub(crate) type_: String,
     // text block
@@ -51,21 +59,27 @@ pub(crate) struct AnthropicBlock {
     // tool_result block
     pub(crate) tool_use_id: Option<String>,
     pub(crate) content: Option<AnthropicToolResultContent>,
+    pub(crate) is_error: Option<bool>,
     // image block
     pub(crate) source: Option<AnthropicImageSource>,
+    // thinking block
+    pub(crate) thinking: Option<String>,
+    pub(crate) signature: Option<String>,
+    // redacted_thinking block
+    pub(crate) data: Option<String>,
 }
 
 /// The `content` field of a `tool_result` block may be a plain string or
 /// an array of sub-blocks (images, text, etc.).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-pub(crate) enum AnthropicToolResultContent {
+pub enum AnthropicToolResultContent {
     Text(String),
     Blocks(Vec<AnthropicBlock>),
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicImageSource {
+pub struct AnthropicImageSource {
     #[serde(rename = "type")]
     pub(crate) type_: String, // "base64" | "url"
     pub(crate) media_type: Option<String>,
@@ -74,7 +88,7 @@ pub(crate) struct AnthropicImageSource {
 }
 
 #[derive(Debug, Deserialize)]
-pub(crate) struct AnthropicTool {
+pub struct AnthropicTool {
     pub(crate) name: String,
     pub(crate) description: Option<String>,
     pub(crate) input_schema: serde_json::Value,
@@ -83,14 +97,14 @@ pub(crate) struct AnthropicTool {
 // ── Error wire types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
-pub(crate) struct AnthropicErrorBody {
+pub struct AnthropicErrorBody {
     #[serde(rename = "type")]
     pub(crate) type_: String,
     pub(crate) error: AnthropicErrorDetail,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct AnthropicErrorDetail {
+pub struct AnthropicErrorDetail {
     #[serde(rename = "type")]
     pub(crate) type_: String,
     pub(crate) message: String,

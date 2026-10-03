@@ -1,16 +1,9 @@
-use std::collections::VecDeque;
-use std::pin::Pin;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::response::Response;
-use bytes::Bytes;
-use futures::{Stream, StreamExt};
 use http::header;
-use serde_json::json;
-use vkdg_core::VkdgError;
+use vkdg_core::{ApiType, VkdgError};
 use vkdg_operations::{ContentBlock, MessageContent, Role};
-
-use crate::sse::{SseEvent, SseParser};
 
 // ── Cache bypass helpers ──────────────────────────────────────────────────────
 
@@ -25,7 +18,7 @@ pub(super) fn is_multiturn(op: &vkdg_operations::ConversationRequest) -> bool {
         > 1
 }
 
-/// True when any message in the conversation contains tool_use or tool_result
+/// True when any message in the conversation contains `tool_use` or `tool_result`
 /// content blocks.  Tool-call conversations are non-deterministic.
 pub(super) fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool {
     op.messages.iter().any(|m| {
@@ -41,166 +34,129 @@ pub(super) fn has_tool_calls(op: &vkdg_operations::ConversationRequest) -> bool 
 pub(super) fn unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
+}
+
+// ── Failover classification ───────────────────────────────────────────────────
+
+/// Upstream statuses that put the connection that answered into cooldown: rate
+/// limit (429), out of credits (402) and server-side failures (5xx).
+pub(super) fn cools_connection(code: u16) -> bool {
+    matches!(code, 402 | 429) || code >= 500
+}
+
+/// Upstream statuses worth one transparent retry on a sibling connection before
+/// any byte reaches the client: rate limit (429), overloaded (529) and out of
+/// credits (402) say "this account cannot serve right now", not "this request is
+/// bad". Other 5xx cool the connection but are not retried.
+pub(super) fn fails_over(code: u16) -> bool {
+    matches!(code, 402 | 429 | 529)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-pub(super) fn error_response(err: VkdgError) -> Response {
+/// The error response a client of `api_type` receives for `err`: status, JSON body
+/// and `retry-after` come from the one mapper in `vkdg-operations`, so the pipeline,
+/// the stream encoders and the ingress crates agree.
+pub(super) fn error_response(api_type: &ApiType, err: &VkdgError) -> Response {
     use axum::response::IntoResponse;
     use http::{HeaderMap, HeaderValue, StatusCode};
 
-    let (status, error_type) = match &err {
-        VkdgError::Unauthenticated => (StatusCode::UNAUTHORIZED, "authentication_error"),
-        VkdgError::Unauthorized => (StatusCode::FORBIDDEN, "permission_error"),
-        VkdgError::AdmissionRejected { .. } => {
-            (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error")
-        }
-        VkdgError::CapabilityUnsupported { .. } => {
-            (StatusCode::BAD_REQUEST, "invalid_request_error")
-        }
-        VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched => {
-            (StatusCode::BAD_GATEWAY, "api_error")
-        }
-        VkdgError::UpstreamError { code, .. } => {
-            let s = StatusCode::from_u16(*code).unwrap_or(StatusCode::BAD_GATEWAY);
-            (s, "api_error")
-        }
-        VkdgError::PluginError { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
-        VkdgError::ConfigInvalid { .. } => (StatusCode::BAD_REQUEST, "invalid_request_error"),
-        // The gateway's stored login for this connection is dead; the client's
-        // request is fine. Anthropic's `authentication_error` is the closest fit.
-        VkdgError::CredentialRevoked { .. } => (StatusCode::UNAUTHORIZED, "authentication_error"),
-        VkdgError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
-        VkdgError::BudgetExceeded { .. } => (StatusCode::PAYMENT_REQUIRED, "budget_exceeded_error"),
-    };
-
-    let body = json!({
-        "type": "error",
-        "error": { "type": error_type, "message": err.to_string() }
-    });
-    let json_bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    let mut h = HeaderMap::new();
-    h.insert(
+    let out = vkdg_operations::client_error(api_type, err);
+    let status = StatusCode::from_u16(out.status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut headers = HeaderMap::new();
+    headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    (status, h, json_bytes).into_response()
+    if let Some(secs) = out.retry_after {
+        headers.insert(header::RETRY_AFTER, HeaderValue::from(secs));
+    }
+    (status, headers, out.body).into_response()
 }
 
-// ── SSE think-tag filter ──────────────────────────────────────────────────────
+#[cfg(test)]
+mod error_response_tests {
+    use http::header::RETRY_AFTER;
+    use vkdg_core::{ApiType, VkdgError};
 
-/// Re-encode a parsed SseEvent back into raw SSE bytes.
-pub(super) fn sse_event_to_bytes(event: &SseEvent) -> Bytes {
-    let mut s = String::new();
-    if let Some(ref et) = event.event_type {
-        s.push_str("event: ");
-        s.push_str(et);
-        s.push('\n');
-    }
-    // Each \n in data must become a separate data: line per the SSE spec.
-    for line in event.data.split('\n') {
-        s.push_str("data: ");
-        s.push_str(line);
-        s.push('\n');
-    }
-    s.push('\n');
-    Bytes::from(s)
-}
+    use super::error_response;
 
-/// Wrap an upstream SSE byte stream with a think-tag filter.
-/// Parses each chunk through `SseParser` (strip_think_tags=true), re-encodes
-/// clean events back to SSE bytes.  Events spanning chunk boundaries are
-/// correctly handled by the parser's internal buffer.
-pub(super) fn filter_think_tags_stream(
-    body: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
-) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
-    // State: (upstream stream, sse parser, buffered re-encoded events)
-    let state = (body, SseParser::new(), VecDeque::<SseEvent>::new());
-    Box::pin(futures::stream::unfold(
-        state,
-        |(mut upstream, mut parser, mut pending)| async move {
-            loop {
-                // Drain any events already parsed from the last chunk.
-                if let Some(event) = pending.pop_front() {
-                    return Some((Ok(sse_event_to_bytes(&event)), (upstream, parser, pending)));
-                }
-                // Pull the next chunk from upstream.
-                match upstream.next().await {
-                    Some(Ok(chunk)) => {
-                        for e in parser.push(&chunk) {
-                            pending.push_back(e);
-                        }
-                        // Loop back to drain the newly queued events.
-                    }
-                    Some(Err(e)) => return Some((Err(e), (upstream, parser, pending))),
-                    None => return None,
-                }
-            }
-        },
-    ))
-}
-
-/// Decodes a provider-specific stream (e.g. AWS EventStream) and re-encodes it
-/// in the dialect the client spoke.
-///
-/// The encoder lives in `vkdg-operations` so a dialect is written in exactly one
-/// place. When upstream ends, `decoder.finish()` and the encoder's own close run
-/// before the stream terminates: providers that send no stop event (Kiro) still
-/// produce a well-formed terminal sequence.
-pub(super) fn decode_stream_to_sse(
-    body: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
-    decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
-    api_type: &vkdg_core::ApiType,
-    ctx: &vkdg_operations::StreamContext<'_>,
-) -> Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> {
-    struct State {
-        upstream: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>,
-        decoder: Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>,
-        encoder: Box<dyn vkdg_operations::StreamEncoder>,
-        pending: VecDeque<vkdg_operations::ConversationEvent>,
-        drained: bool,
+    async fn parts(
+        api_type: &ApiType,
+        err: &VkdgError,
+    ) -> (u16, Option<String>, serde_json::Value) {
+        let resp = error_response(api_type, err);
+        let status = resp.status().as_u16();
+        let retry = resp
+            .headers()
+            .get(RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap_or_default();
+        (
+            status,
+            retry,
+            serde_json::from_slice(&body).unwrap_or_default(),
+        )
     }
 
-    let state = State {
-        upstream: body,
-        decoder,
-        encoder: vkdg_operations::stream_encoder_for(api_type, ctx),
-        pending: VecDeque::new(),
-        drained: false,
-    };
-
-    Box::pin(futures::stream::unfold(Some(state), |state| async move {
-        let mut state = state?;
-        loop {
-            // Emit events already decoded from an earlier chunk.
-            while let Some(event) = state.pending.pop_front() {
-                let encoded = state.encoder.encode(&event);
-                if !encoded.is_empty() {
-                    return Some((Ok(Bytes::from(encoded)), Some(state)));
-                }
-            }
-            if state.drained {
-                return None;
-            }
-            match state.upstream.next().await {
-                Some(Ok(chunk)) => state.pending.extend(state.decoder.feed(chunk)),
-                Some(Err(e)) => return Some((Err(e), Some(state))),
-                None => {
-                    // Upstream closed: flush the decoder, then close the dialect.
-                    state.drained = true;
-                    state.pending.extend(state.decoder.finish());
-                    while let Some(event) = state.pending.pop_front() {
-                        let encoded = state.encoder.encode(&event);
-                        if !encoded.is_empty() {
-                            return Some((Ok(Bytes::from(encoded)), Some(state)));
-                        }
-                    }
-                    let tail = state.encoder.finish();
-                    return (!tail.is_empty()).then(|| (Ok(Bytes::from(tail)), None));
-                }
-            }
+    fn upstream(code: u16, retry_after: Option<u32>) -> VkdgError {
+        VkdgError::UpstreamError {
+            code,
+            message: "slow down".into(),
+            retry_after,
         }
-    }))
+    }
+
+    // Refutes: rendering every pipeline error as an Anthropic body. An OpenAI SDK
+    // reads `error.message` / `error.type` / `error.code`; the Anthropic shape
+    // (`{"type":"error",...}`) surfaces as an opaque parse failure.
+    #[tokio::test]
+    async fn openai_client_gets_an_openai_error_body() {
+        let (status, _, body) = parts(
+            &ApiType::OpenAiChatCompletions,
+            &VkdgError::NoEligibleConnection,
+        )
+        .await;
+        assert_eq!(status, 502);
+        assert!(
+            body.get("type").is_none(),
+            "Anthropic envelope leaked: {body}"
+        );
+        assert_eq!(body["error"]["message"], "no eligible connection", "{body}");
+        assert!(body["error"]["type"].is_string(), "{body}");
+        assert!(body["error"].get("code").is_some(), "{body}");
+    }
+
+    // Refutes: touching the Anthropic client's shape while fixing the OpenAI one.
+    #[tokio::test]
+    async fn anthropic_client_keeps_the_anthropic_error_body() {
+        let (status, _, body) = parts(
+            &ApiType::AnthropicMessages,
+            &VkdgError::NoEligibleConnection,
+        )
+        .await;
+        assert_eq!(status, 502);
+        assert_eq!(body["type"], "error", "{body}");
+        assert_eq!(body["error"]["message"], "no eligible connection", "{body}");
+    }
+
+    // Refutes: losing the status mapping (529 is the upstream's "overloaded", clients
+    // retry 429) or `retry-after` when the dialect changes.
+    #[tokio::test]
+    async fn upstream_status_and_retry_after_survive_in_both_dialects() {
+        for api_type in [ApiType::AnthropicMessages, ApiType::OpenAiChatCompletions] {
+            let (status, retry, _) = parts(&api_type, &upstream(529, Some(30))).await;
+            assert_eq!(
+                (status, retry.as_deref()),
+                (429, Some("30")),
+                "{api_type:?}"
+            );
+            let (status, retry, _) = parts(&api_type, &upstream(503, None)).await;
+            assert_eq!((status, retry), (503, None), "{api_type:?}");
+        }
+    }
 }

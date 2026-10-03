@@ -14,9 +14,7 @@ use vkdg_core::{AttemptState, ConnectionId, VkdgError};
 use vkdg_operations::Operation;
 use vkdg_routing::{EligibilityFilter, RouteId, RouteResult, RoutingHints};
 
-use super::helpers::{
-    error_response, filter_think_tags_stream, has_tool_calls, is_multiturn, unix_secs,
-};
+use super::helpers::{error_response, has_tool_calls, is_multiturn, unix_secs};
 use super::phases::{
     post_response_accounting, prepare_operation, relay_on_rotation, resolve_combo_and_session,
 };
@@ -24,12 +22,12 @@ use crate::upstream::{UpstreamRequest, UpstreamResponse};
 use crate::PipelineState;
 
 // ── Auto-route counter ────────────────────────────────────────────────────────
-/// Round-robin index for auto-route fallback (no explicit RouteConfig matched).
+/// Round-robin index for auto-route fallback (no explicit `RouteConfig` matched).
 static AUTO_ROUTE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ── RAII dedup guard ──────────────────────────────────────────────────────────
 /// Calls `DedupTable::complete` on drop so in-flight tracking is always cleaned
-/// up regardless of how run_pipeline_inner exits (normal return, early return,
+/// up regardless of how `run_pipeline_inner` exits (normal return, early return,
 /// or `?`-propagated error).
 struct DedupGuard {
     dedup: Arc<crate::DedupTable>,
@@ -81,7 +79,7 @@ pub(super) async fn run_pipeline_inner(
                     .iter()
                     .map(|m| match &m.content {
                         vkdg_operations::MessageContent::Text(s) => (s.len() as u64) / 4,
-                        _ => 50,
+                        vkdg_operations::MessageContent::Blocks(_) => 50,
                     })
                     .sum()
             } else {
@@ -97,11 +95,15 @@ pub(super) async fn run_pipeline_inner(
                 .provider_registry
                 .max_price(model)
                 .map_or(3_000_000, |p| p.input_per_mtok);
-            let estimated_cost_microdollars =
-                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000) as u64;
+            let estimated_cost_microdollars = u64::try_from(
+                (u128::from(estimated_tokens) * u128::from(per_mtok)).div_ceil(1_000_000),
+            )
+            .unwrap_or(u64::MAX);
             if estimated_cost_microdollars > max_cost {
                 return Err(VkdgError::BudgetExceeded {
+                    #[allow(clippy::cast_precision_loss)] // microdollar amounts; f64 precision sufficient
                     estimated_usd: estimated_cost_microdollars as f64 / 1_000_000.0,
+                    #[allow(clippy::cast_precision_loss)] // microdollar amounts; f64 precision sufficient
                     limit_usd: max_cost as f64 / 1_000_000.0,
                 });
             }
@@ -173,7 +175,7 @@ pub(super) async fn run_pipeline_inner(
         Err(VkdgError::NoRouteMatched) => {
             // Auto-route: find any healthy catalog connection that serves the model.
             let model = &ctx.envelope.model_requested;
-            let excluded_ids = filter.excluded_connections.to_vec();
+            let excluded_ids = filter.excluded_connections.clone();
             let candidates = pipeline.catalog.eligible(model, &excluded_ids);
             if candidates.is_empty() {
                 return Err(VkdgError::NoEligibleConnection);
@@ -193,7 +195,7 @@ pub(super) async fn run_pipeline_inner(
         Err(e) => return Err(e),
     };
     ctx.route_id = Some(route_result.route_id.0.clone());
-    ctx.excluded = route_result.excluded.clone();
+    ctx.excluded.clone_from(&route_result.excluded);
     // A combo id (`coding-fast`) is not a model any provider knows. A request
     // naming the combo itself is sent upstream as the combo's model, before any
     // dispatch branch, so fusion and chain targets get the same name. A request
@@ -201,7 +203,7 @@ pub(super) async fn run_pipeline_inner(
     if let (Some(id), Some(model)) = (&csr.combo_id, &csr.combo_model) {
         if *id == ctx.envelope.model_requested {
             if let Operation::Conversation(conv) = &mut operation {
-                conv.model = model.clone();
+                conv.model.clone_from(model);
             }
         }
     }
@@ -231,7 +233,7 @@ pub(super) async fn run_pipeline_inner(
             operation,
             route_result.fusion_targets,
             csr.compression_threshold,
-            &csr.effective_compressor_id,
+            csr.effective_compressor_id.as_deref(),
         )
         .await;
     }
@@ -243,7 +245,7 @@ pub(super) async fn run_pipeline_inner(
             operation,
             route_result.chain_steps,
             csr.compression_threshold,
-            &csr.effective_compressor_id,
+            csr.effective_compressor_id.as_deref(),
         )
         .await;
     }
@@ -310,7 +312,12 @@ pub(super) async fn run_pipeline_inner(
             .status(http::StatusCode::ACCEPTED)
             .header(header::CONTENT_TYPE, "application/json")
             .body(axum::body::Body::from(body))
-            .unwrap_or_else(|_| error_response(VkdgError::Internal("response build".into()))));
+            .unwrap_or_else(|_| {
+                error_response(
+                    &ctx.envelope.api_type,
+                    &VkdgError::Internal("response build".into()),
+                )
+            }));
     }
     // 5. Prepare operation (compression + system prompt + memory injection) ────
     let (op, compress_metrics) = prepare_operation(
@@ -318,7 +325,7 @@ pub(super) async fn run_pipeline_inner(
         operation,
         &ctx.envelope,
         csr.compression_threshold,
-        &csr.effective_compressor_id,
+        csr.effective_compressor_id.as_deref(),
     )
     .await;
     operation = op;
@@ -330,7 +337,11 @@ pub(super) async fn run_pipeline_inner(
     let _dedup_guard = if let (Some(dedup), Operation::Conversation(conv_req)) =
         (&pipeline.dedup_table, &operation)
     {
-        let key = cache_key(&ctx.envelope.model_requested, conv_req);
+        let key = cache_key(
+            &ctx.envelope.model_requested,
+            &ctx.envelope.api_type,
+            conv_req,
+        );
         let (is_first, _notify) = dedup.register(&key);
         tracing::debug!(key = %key, is_first, "dedup registration");
         Some(DedupGuard {
@@ -348,12 +359,14 @@ pub(super) async fn run_pipeline_inner(
     } else {
         None
     };
+    // A streaming request never reads or writes the cache: the stored body is JSON,
+    // and a hit would hand a client that asked for SSE a plain body.
     let bypass_cache = ctx.envelope.cache_bypass
-        || conv_req.map_or(true, |r| is_multiturn(r) || has_tool_calls(r));
-    let cache_key_val: Option<String> = if !bypass_cache {
-        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, r))
-    } else {
+        || conv_req.map_or(true, |r| r.stream || is_multiturn(r) || has_tool_calls(r));
+    let cache_key_val: Option<String> = if bypass_cache {
         None
+    } else {
+        conv_req.map(|r| cache_key(&ctx.envelope.model_requested, &ctx.envelope.api_type, r))
     };
     if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
         match cache.lookup(key).await {
@@ -366,7 +379,10 @@ pub(super) async fn run_pipeline_inner(
                     .header("x-vkdg-cache", "hit")
                     .body(axum::body::Body::from(body))
                     .unwrap_or_else(|_| {
-                        error_response(VkdgError::Internal("cache response build".into()))
+                        error_response(
+                            &ctx.envelope.api_type,
+                            &VkdgError::Internal("cache response build".into()),
+                        )
                     }));
             }
             Ok(CacheResult::Miss) => {}
@@ -415,19 +431,61 @@ pub(super) async fn run_pipeline_inner(
     // 9. Send ──────────────────────────────────────────────────────────────────
     let upstream_resp = match pipeline.http_client.send(upstream_req, is_streaming).await {
         Ok(r) => r,
-        Err(VkdgError::UpstreamError { code, message }) if code == 429 || code >= 500 => {
-            if let Some(conn_arc) = ctx
-                .connection_id
-                .as_ref()
-                .and_then(|id| pipeline.catalog.get(id))
-            {
-                if let Ok(mut conn) = conn_arc.try_write() {
-                    conn.record_upstream_error(code);
-                }
-            }
-            return Err(VkdgError::UpstreamError { code, message });
+        Err(VkdgError::UpstreamError {
+            code,
+            message,
+            retry_after,
+        }) if super::helpers::cools_connection(code) => {
+            cool_connection(pipeline, ctx.connection_id.as_ref(), code, retry_after).await;
+            return Err(VkdgError::UpstreamError {
+                code,
+                message,
+                retry_after,
+            });
         }
         Err(e) => return Err(e),
+    };
+
+    // 9b. Account failures reported inside a 200 ──────────────────────────────
+    // Kiro answers 200 and sends "throttled" / "out of credits" as the first
+    // frame of the stream; a dialect translator can find the same in a complete
+    // body. Both are found here, while nothing has reached the client, so the
+    // connection is cooled and the entry point can retry on a sibling. Once
+    // `mark_committed` runs below that is no longer possible.
+    let relay = super::relay::plan(adapter.as_ref(), &config, &ctx.envelope.api_type);
+    let upstream_resp = match upstream_resp {
+        UpstreamResponse::Streaming { status, body } => {
+            match super::relay::guard_first_event(adapter.as_ref(), body).await {
+                Ok(body) => UpstreamResponse::Streaming { status, body },
+                Err(error) => {
+                    return Err(account_failure(pipeline, ctx.connection_id.as_ref(), error).await)
+                }
+            }
+        }
+        // The client-facing body: translated when the upstream speaks the other
+        // dialect. What the cache stores and what the client gets are the same bytes.
+        UpstreamResponse::Complete { status, body } => {
+            match super::relay::relay_complete(
+                &relay,
+                body,
+                &ctx.envelope.api_type,
+                &vkdg_operations::StreamContext {
+                    model: &ctx.envelope.model_requested,
+                    request_id: &ctx.envelope.request_id,
+                },
+            ) {
+                Ok(body) => UpstreamResponse::Complete { status, body },
+                Err(e)
+                    if matches!(
+                        &e,
+                        VkdgError::UpstreamError { code, .. } if super::helpers::fails_over(*code)
+                    ) =>
+                {
+                    return Err(account_failure(pipeline, ctx.connection_id.as_ref(), e).await)
+                }
+                Err(e) => return Err(e),
+            }
+        }
     };
     ctx.transition(AttemptState::UpstreamOpen);
 
@@ -475,36 +533,25 @@ pub(super) async fn run_pipeline_inner(
             builder
                 .body(axum::body::Body::from(body))
                 .unwrap_or_else(|_| {
-                    error_response(VkdgError::Internal("response builder failed".into()))
+                    error_response(
+                        &ctx.envelope.api_type,
+                        &VkdgError::Internal("response builder failed".into()),
+                    )
                 })
         }
         UpstreamResponse::Streaming { status: _, body } => {
-            // Providers whose wire protocol is not SSE (e.g. Kiro's AWS EventStream)
-            // are decoded to events and re-encoded in the client's dialect.
-            let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(
-                    body,
-                    decoder,
-                    &ctx.envelope.api_type,
-                    &vkdg_operations::StreamContext {
-                        model: &ctx.envelope.model_requested,
-                        request_id: &ctx.envelope.request_id,
-                    },
-                )
-            } else {
-                body
-            };
-
-            // Streaming responses are never cached — the body is a stream.
-            // Filter think tags unless the client opted in via X-VKDG-Think-Tags: include.
-            let filtered_body = if !ctx.envelope.include_think_tags {
-                filter_think_tags_stream(body)
-            } else {
-                body
-            };
-            // Guard: if upstream closes before [DONE], inject error event so
-            // clients can detect the incomplete response (instead of silent 200).
-            let guarded_body = crate::with_termination_guard(filtered_body);
+            // Translated or provider-decoded streams are re-encoded in the client's
+            // dialect; same-dialect streams pass through untouched.
+            let body = super::relay::into_client_stream(
+                relay,
+                body,
+                &ctx.envelope.api_type,
+                &vkdg_operations::StreamContext {
+                    model: &ctx.envelope.model_requested,
+                    request_id: &ctx.envelope.request_id,
+                },
+                ctx.envelope.include_think_tags,
+            );
             let mut builder = axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
@@ -520,11 +567,12 @@ pub(super) async fn run_pipeline_inner(
                 }
             }
             builder
-                .body(axum::body::Body::from_stream(guarded_body))
+                .body(axum::body::Body::from_stream(body))
                 .unwrap_or_else(|_| {
-                    error_response(VkdgError::Internal(
-                        "streaming response builder failed".into(),
-                    ))
+                    error_response(
+                        &ctx.envelope.api_type,
+                        &VkdgError::Internal("streaming response builder failed".into()),
+                    )
                 })
         }
     };
@@ -540,6 +588,61 @@ pub(super) async fn run_pipeline_inner(
     Ok(resp)
 }
 
+// ── Cooldown ──────────────────────────────────────────────────────────────────
+
+/// Puts `connection_id` into cooldown for an upstream `code` (and the wait the
+/// upstream asked for, if any). Returns when it will be eligible again, or `None`
+/// when the connection left the catalog.
+///
+/// Waits for the connection's lock instead of skipping when a request is
+/// reserving a slot: a missed write would leave a limited connection eligible and
+/// its `retry-after` ignored.
+async fn cool_connection(
+    pipeline: &PipelineState,
+    connection_id: Option<&ConnectionId>,
+    code: u16,
+    retry_after: Option<u32>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let conn_arc = pipeline.catalog.get(connection_id?)?;
+    let until = conn_arc
+        .write()
+        .await
+        .record_upstream_error(code, retry_after);
+    Some(until)
+}
+
+/// Handles an account failure found inside an HTTP 200 (see step 9b): cools the
+/// connection and returns the error for the entry point to retry on a sibling.
+///
+/// Providers such as Kiro never say how long to wait, so an error without a
+/// `retry-after` gets the time the connection will stay out. If no sibling can
+/// serve the retry, that is what the client is told.
+async fn account_failure(
+    pipeline: &PipelineState,
+    connection_id: Option<&ConnectionId>,
+    error: VkdgError,
+) -> VkdgError {
+    let VkdgError::UpstreamError {
+        code,
+        message,
+        retry_after,
+    } = error
+    else {
+        return error;
+    };
+    let until = cool_connection(pipeline, connection_id, code, retry_after).await;
+    let retry_after = retry_after.or_else(|| {
+        until.map(|until| {
+            u32::try_from((until - chrono::Utc::now()).num_seconds().max(1)).unwrap_or(u32::MAX)
+        })
+    });
+    VkdgError::UpstreamError {
+        code,
+        message,
+        retry_after,
+    }
+}
+
 // ── Fusion dispatch ───────────────────────────────────────────────────────────
 
 /// Fan-out to all `fusion_targets` in parallel; return the first successful response.
@@ -550,7 +653,7 @@ async fn run_fusion_dispatch(
     mut operation: Operation,
     fusion_targets: Vec<ConnectionId>,
     compression_threshold: u32,
-    effective_compressor_id: &Option<String>,
+    effective_compressor_id: Option<&str>,
 ) -> Result<Response, VkdgError> {
     // Tag ctx with the primary target for tracing/decision-record.
     ctx.connection_id = Some(fusion_targets[0].clone());
@@ -633,26 +736,28 @@ async fn fusion_one_target(
         .send(upstream_req, is_streaming)
         .await?;
 
+    let stream_ctx = vkdg_operations::StreamContext {
+        model: &envelope.model_requested,
+        request_id: &envelope.request_id,
+    };
+    let relay = super::relay::plan(adapter.as_ref(), &config, &envelope.api_type);
     let resp = match upstream_resp {
-        UpstreamResponse::Complete { status, body } => axum::response::Response::builder()
-            .status(http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY))
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(axum::body::Body::from(body))
-            .map_err(|e| VkdgError::Internal(e.to_string()))?,
+        UpstreamResponse::Complete { status, body } => {
+            let body = super::relay::relay_complete(&relay, body, &envelope.api_type, &stream_ctx)?;
+            axum::response::Response::builder()
+                .status(http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::BAD_GATEWAY))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(body))
+                .map_err(|e| VkdgError::Internal(e.to_string()))?
+        }
         UpstreamResponse::Streaming { status: _, body } => {
-            let body = if let Some(decoder) = adapter.stream_decoder() {
-                super::helpers::decode_stream_to_sse(
-                    body,
-                    decoder,
-                    &envelope.api_type,
-                    &vkdg_operations::StreamContext {
-                        model: &envelope.model_requested,
-                        request_id: &envelope.request_id,
-                    },
-                )
-            } else {
-                body
-            };
+            let body = super::relay::into_client_stream(
+                relay,
+                body,
+                &envelope.api_type,
+                &stream_ctx,
+                envelope.include_think_tags,
+            );
             axum::response::Response::builder()
                 .status(http::StatusCode::OK)
                 .header(header::CONTENT_TYPE, "text/event-stream")
@@ -678,7 +783,7 @@ async fn run_prompt_chain(
     mut operation: Operation,
     steps: Vec<vkdg_routing::ChainStep>,
     compression_threshold: u32,
-    effective_compressor_id: &Option<String>,
+    effective_compressor_id: Option<&str>,
 ) -> Result<Response, VkdgError> {
     use vkdg_operations::{Message, MessageContent, Role};
     use vkdg_routing::InjectMode;
@@ -751,18 +856,17 @@ async fn run_prompt_chain(
         }
 
         // Resolve connection for this step.
-        let conn_id = match step.connection_id {
-            Some(id) => id,
-            None => {
-                // Auto-route: find any eligible catalog connection for the requested model.
-                let excluded_ids: Vec<ConnectionId> = vec![];
-                pipeline
-                    .catalog
-                    .eligible(&ctx.envelope.model_requested, &excluded_ids)
-                    .into_iter()
-                    .next()
-                    .ok_or(VkdgError::NoEligibleConnection)?
-            }
+        let conn_id = if let Some(id) = step.connection_id {
+            id
+        } else {
+            // Auto-route: find any eligible catalog connection for the requested model.
+            let excluded_ids: Vec<ConnectionId> = vec![];
+            pipeline
+                .catalog
+                .eligible(&ctx.envelope.model_requested, &excluded_ids)
+                .into_iter()
+                .next()
+                .ok_or(VkdgError::NoEligibleConnection)?
         };
 
         ctx.connection_id = Some(conn_id.clone());
@@ -840,11 +944,11 @@ mod tests {
 
     struct StubAdapter;
     impl ProviderAdapter for StubAdapter {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             // Registered under "openai" so Custom connections (adapter_id() = "openai") resolve it.
             "openai"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Stub"
         }
         fn prepare(
@@ -900,6 +1004,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         })
     }
 
@@ -1150,6 +1255,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         });
 
         let ctx = make_ctx("zero-budget");
@@ -1362,10 +1468,10 @@ mod tests {
     /// fails, so no network is needed.
     struct Recording(Arc<std::sync::Mutex<Vec<(String, String)>>>);
     impl ProviderAdapter for Recording {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "openai"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Recording"
         }
         fn prepare(
@@ -1428,7 +1534,7 @@ mod tests {
             Some(Arc::clone(&p.router)),
         )
         .unwrap();
-        svc.create(vkdg_combos::Combo {
+        svc.create(&vkdg_combos::Combo {
             id: "coding-fast".into(),
             match_patterns: vec![],
             strategy: StrategyKind::RoundRobin,
@@ -1453,5 +1559,183 @@ mod tests {
         assert!(seen.iter().all(|(_, m)| m == "m-real"), "{seen:?}");
         assert_ne!(seen[0].0, seen[1].0, "round_robin rotates: {seen:?}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Sends every request to the connection's own `base_url`, so each connection
+    /// can be pointed at its own local upstream.
+    struct ToBaseUrl;
+    impl ProviderAdapter for ToBaseUrl {
+        fn id(&self) -> &'static str {
+            "openai"
+        }
+        fn display_name(&self) -> &'static str {
+            "ToBaseUrl"
+        }
+        fn prepare(
+            &self,
+            _op: &Operation,
+            cfg: &vkdg_connections::ConnectionConfig,
+            _credential: &vkdg_provider_sdk::Credential,
+        ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            let vkdg_connections::ProviderKind::Custom { base_url } = &cfg.provider else {
+                return Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation);
+            };
+            Ok(PreparedRequest {
+                url: base_url.clone(),
+                headers: http::HeaderMap::new(),
+                body: Bytes::new(),
+                is_streaming: false,
+            })
+        }
+    }
+
+    /// A local upstream that answers every request with `status` (and
+    /// `retry-after`, when given). Returns its URL and a request counter.
+    async fn canned_upstream(
+        status: u16,
+        retry_after: Option<&'static str>,
+    ) -> (String, Arc<AtomicUsize>) {
+        use http_body_util::Full;
+        use hyper::service::service_fn;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        async move {
+                            let mut resp = hyper::Response::builder().status(status);
+                            if let Some(v) = retry_after {
+                                resp = resp.header("retry-after", v);
+                            }
+                            Ok::<_, std::convert::Infallible>(
+                                resp.body(Full::new(Bytes::from_static(
+                                    br#"{"id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}"#,
+                                )))
+                                .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (url, hits)
+    }
+
+    /// A route balancing `limited` and `healthy` with `power_of_two_choices`; each
+    /// serves the model under its own spelling (Kiro dots, Anthropic dashes).
+    fn two_upstream_pipeline(
+        limited_url: String,
+        healthy_url: String,
+        limited_first: bool,
+    ) -> Arc<PipelineState> {
+        std::env::set_var("VKDG_TEST_FAILOVER_KEY", "k");
+        let conn = |id: &str, url: String, models: &[&str]| vkdg_connections::ConnectionConfig {
+            id: ConnectionId(id.into()),
+            provider: vkdg_connections::ProviderKind::Custom { base_url: url },
+            auth: vkdg_connections::AuthKind::ApiKey {
+                env_var: "VKDG_TEST_FAILOVER_KEY".into(),
+            },
+            models: models.iter().map(|m| (*m).to_owned()).collect(),
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let mut conns = vec![
+            conn("limited", limited_url, &["claude-sonnet-4.6"]),
+            conn("healthy", healthy_url, &["claude-*"]),
+        ];
+        if !limited_first {
+            conns.reverse();
+        }
+        let route = RouteConfig {
+            id: RouteId("claude".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::PowerOfTwoChoices,
+            targets: conns.iter().map(|c| c.id.clone()).collect(),
+            plugin_hooks: vkdg_routing::PluginHooks::default(),
+        };
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(ToBaseUrl));
+        Arc::new(PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![route])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        ))
+    }
+
+    // Plausible wrong impl: either the 429 does not take the connection out for the
+    // advertised `retry-after` (it rejoins after the 300 s backoff ceiling and every
+    // later request burns a probe on the limited account), or the failover does not
+    // happen (the client sees the 429 while a healthy sibling serves the model).
+    // Both targets serve the model under different spellings (Kiro dots, Anthropic
+    // dashes) and the route balances them with power_of_two_choices; each direction
+    // is exercised: the limited account first in `targets`, then second.
+    #[tokio::test]
+    async fn a_429_with_retry_after_fails_over_and_keeps_the_limited_connection_out() {
+        const REQUESTS: usize = 32;
+        for limited_first in [true, false] {
+            let (limited_url, limited_hits) = canned_upstream(429, Some("18000")).await;
+            let (healthy_url, healthy_hits) = canned_upstream(200, None).await;
+            let p = two_upstream_pipeline(limited_url, healthy_url, limited_first);
+
+            // The client spells the model with dashes; "limited" lists it with a dot.
+            for i in 0..REQUESTS {
+                let resp = run_conversation_pipeline(
+                    Arc::clone(&p),
+                    make_ctx("claude-sonnet-4-6"),
+                    make_conv_op(),
+                )
+                .await;
+                assert_eq!(
+                    resp.status(),
+                    http::StatusCode::OK,
+                    "request {i} (limited_first={limited_first}) must be served by the healthy sibling"
+                );
+            }
+
+            assert_eq!(
+                limited_hits.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "limited_first={limited_first}: the limited connection must be probed exactly once \
+                 (0 = the strategy never tried it, >1 = its cooldown did not hold)"
+            );
+            assert_eq!(
+                healthy_hits.load(std::sync::atomic::Ordering::SeqCst),
+                REQUESTS,
+                "every request ends on the healthy connection, none lost to the 429"
+            );
+
+            let wait = p
+                .catalog
+                .secs_until_cooldown_ends("claude-sonnet-4-6")
+                .expect("the limited connection is cooling");
+            assert!(
+                (17_900..=18_001).contains(&wait),
+                "cooldown must follow retry-after: 18000, got {wait} s"
+            );
+            let healthy = p.catalog.get(&ConnectionId("healthy".into())).unwrap();
+            assert!(
+                healthy.read().await.state.is_healthy(),
+                "invariant 6: the 429 on one connection must not cool its sibling"
+            );
+        }
     }
 }

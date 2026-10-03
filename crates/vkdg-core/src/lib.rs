@@ -145,13 +145,23 @@ pub enum VkdgError {
     NoRouteMatched,
 
     #[error("upstream error {code}: {message}")]
-    UpstreamError { code: u16, message: String },
+    UpstreamError {
+        code: u16,
+        message: String,
+        /// Value of `retry-after` from the upstream, in seconds. Present on
+        /// 429/529; forwarded to the client so it knows when to retry.
+        retry_after: Option<u32>,
+    },
 
     #[error("plugin error ({plugin_id}): {message}")]
     PluginError { plugin_id: String, message: String },
 
     #[error("config invalid: {field}: {message}")]
     ConfigInvalid { field: String, message: String },
+
+    /// The request body is larger than `limits.max_body_bytes`.
+    #[error("request body exceeds {limit_bytes} bytes")]
+    BodyTooLarge { limit_bytes: u64 },
 
     /// The upstream rejected the stored refresh token outright (revoked, rotated
     /// by another client, or expired). Retrying cannot help; the account needs a
@@ -178,6 +188,7 @@ impl VkdgError {
             VkdgError::UpstreamError { code, .. } => *code,
             VkdgError::PluginError { .. } => 500,
             VkdgError::ConfigInvalid { .. } => 400,
+            VkdgError::BodyTooLarge { .. } => 413,
             // The client's request is fine; the gateway's stored login is dead.
             // 401 tells the operator to re-authenticate the account.
             VkdgError::CredentialRevoked { .. } => 401,

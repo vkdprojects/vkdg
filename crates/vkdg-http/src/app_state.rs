@@ -19,7 +19,7 @@ use vkdg_policy_compress::Compressor;
 use vkdg_provider_sdk::ProviderRegistry;
 
 /// Shared state for the full request pipeline.  Constructed by the binary and
-/// injected into AppState; optional so unit tests that only exercise admission
+/// injected into `AppState`; optional so unit tests that only exercise admission
 /// or routing can omit it.
 pub struct PipelineState {
     pub admission: Arc<AdmissionGuard>,
@@ -64,7 +64,7 @@ pub struct PipelineState {
 }
 
 impl PipelineState {
-    /// Construct a PipelineState with all optional fields set to None/false.
+    /// Construct a `PipelineState` with all optional fields set to None/false.
     /// Use in tests and partial pipelines; override optional fields by name afterwards.
     pub fn minimal(
         admission: Arc<AdmissionGuard>,
@@ -115,6 +115,7 @@ impl AppState {
         }
     }
 
+    #[must_use]
     pub fn with_pipeline(mut self, pipeline: Arc<PipelineState>) -> Self {
         self.pipeline = Some(pipeline);
         self

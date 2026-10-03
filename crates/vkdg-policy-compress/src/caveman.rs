@@ -1,6 +1,6 @@
 //! Caveman compressor: strip filler words and redundant phrases.
 //!
-//! Named after BurntSushi's caveman — regex approach to text compression.
+//! Named after `BurntSushi`'s caveman — regex approach to text compression.
 //! Applies 30+ regex rules targeting common AI-generated padding:
 //! - Preamble padding ("Certainly! I'd be happy to...")
 //! - Transition filler ("It's worth noting that...", "As mentioned above...")
@@ -18,7 +18,7 @@ use vkdg_operations::{ConversationRequest, MessageContent, Role};
 pub struct CavemanCompressor;
 
 impl Compressor for CavemanCompressor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "caveman"
     }
 
@@ -26,7 +26,9 @@ impl Compressor for CavemanCompressor {
         req.messages
             .iter()
             .map(|m| match &m.content {
-                MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
+                MessageContent::Text(s) => {
+                    u32::try_from(s.len()).unwrap_or(u32::MAX).saturating_div(4)
+                }
                 MessageContent::Blocks(_) => 50,
             })
             .sum()
@@ -39,7 +41,7 @@ impl Compressor for CavemanCompressor {
     ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
         let original_tokens = self.estimate_tokens(&req);
 
-        for msg in req.messages.iter_mut() {
+        for msg in &mut req.messages {
             // Only apply to user/assistant text — never to system or tool messages.
             if matches!(msg.role, Role::System | Role::Tool) {
                 continue;
@@ -132,6 +134,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         }
     }
 
@@ -143,7 +146,7 @@ mod tests {
         let (out, _metrics) = c.compress(req, 10000).unwrap();
         let text = match &out.messages[0].content {
             MessageContent::Text(t) => t.clone(),
-            _ => unreachable!(),
+            MessageContent::Blocks(_) => unreachable!(),
         };
         assert!(
             text.contains("The answer is 42"),
@@ -165,7 +168,7 @@ mod tests {
         let (out, _) = c.compress(req, 10000).unwrap();
         let sys_text = match &out.messages[1].content {
             MessageContent::Text(t) => t.clone(),
-            _ => unreachable!(),
+            MessageContent::Blocks(_) => unreachable!(),
         };
         assert_eq!(sys_text, original, "system message must be unchanged");
     }
@@ -204,7 +207,7 @@ mod tests {
         let (out, _) = c.compress(req, 10000).unwrap();
         let tool_text = match &out.messages[1].content {
             MessageContent::Text(t) => t.clone(),
-            _ => unreachable!(),
+            MessageContent::Blocks(_) => unreachable!(),
         };
         assert_eq!(tool_text, original, "tool message must be unchanged");
     }
@@ -217,7 +220,7 @@ mod tests {
         let (out, _) = c.compress(req, 10000).unwrap();
         let text = match &out.messages[0].content {
             MessageContent::Text(t) => t.clone(),
-            _ => unreachable!(),
+            MessageContent::Blocks(_) => unreachable!(),
         };
         assert!(text.contains("Rust is fast"), "content preserved: {text}");
         assert!(!text.contains("worth noting"), "filler stripped: {text}");

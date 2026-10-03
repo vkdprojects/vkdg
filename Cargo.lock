@@ -4506,6 +4506,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "tokio",
  "uuid",
@@ -4517,6 +4518,7 @@ dependencies = [
  "vkdg-operations",
  "vkdg-plugin-host",
  "vkdg-provider-sdk",
+ "vkdg-routing",
 ]
 
 [[package]]
@@ -4594,7 +4596,10 @@ name = "vkdg-config"
 version = "0.1.0"
 dependencies = [
  "notify",
+ "parking_lot",
+ "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.21",
@@ -4708,7 +4713,6 @@ name = "vkdg-ingress-anthropic"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
- "bytes",
  "futures",
  "http",
  "serde",
@@ -4865,11 +4869,14 @@ dependencies = [
 name = "vkdg-provider-claude-code"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "bytes",
  "futures",
  "http",
+ "rand 0.8.8",
  "reqwest 0.12.28",
  "serde_json",
+ "sha2 0.10.9",
  "vkdg-connections",
  "vkdg-operations",
  "vkdg-provider-sdk",
@@ -4915,10 +4922,8 @@ dependencies = [
 name = "vkdg-provider-github-copilot"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
  "http",
- "serde_json",
  "vkdg-connections",
  "vkdg-operations",
  "vkdg-provider-sdk",
@@ -4935,7 +4940,6 @@ dependencies = [
 name = "vkdg-provider-kimi-coding"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
  "http",
  "reqwest 0.12.28",

@@ -17,7 +17,7 @@ pub enum ProviderKind {
     Plugin {
         id: String,
     },
-    /// An OpenAI Chat Completions endpoint (`openai-compat` in config).
+    /// An `OpenAI` Chat Completions endpoint (`openai-compat` in config).
     Custom {
         base_url: String,
     },
@@ -42,7 +42,7 @@ impl ProviderKind {
 
     /// Returns the registry key used to look up a [`ProviderAdapter`] for this kind.
     /// `Custom` connections are bare OpenAI-compatible endpoints, so they use the
-    /// OpenAI adapter; `Plugin` connections address their own adapter by id.
+    /// `OpenAI` adapter; `Plugin` connections address their own adapter by id.
     pub fn adapter_id(&self) -> &str {
         match self {
             ProviderKind::Anthropic => "anthropic",
@@ -115,7 +115,7 @@ impl std::fmt::Debug for TokenState {
         f.debug_struct("TokenState")
             .field("expires_at", &self.expires_at)
             .field("generation", &self.generation)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -164,6 +164,23 @@ impl ConnectionState {
 
 // ── Connection ────────────────────────────────────────────────────────────────
 
+/// Longest cooldown an upstream `retry-after` can impose: 6 hours. Covers a
+/// subscription window that resets in hours; anything larger is treated as noise.
+pub const MAX_RETRY_AFTER_COOLDOWN_SECS: i64 = 6 * 60 * 60;
+
+/// `name` with every `.` replaced by `-`, borrowed when it has no dot.
+///
+/// Providers spell the same model with dots or dashes between version digits
+/// (`claude-sonnet-4.6` / `claude-sonnet-4-6`); this is the form eligibility
+/// compares in.
+fn canonical_model(name: &str) -> std::borrow::Cow<'_, str> {
+    if name.contains('.') {
+        std::borrow::Cow::Owned(name.replace('.', "-"))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    }
+}
+
 pub struct Connection {
     pub config: ConnectionConfig,
     pub state: ConnectionState,
@@ -200,25 +217,55 @@ impl Connection {
         })
     }
 
+    /// True when one of this connection's `models` patterns covers `model`.
+    ///
+    /// Kiro spells versions with dots (`claude-sonnet-4.6`) and Anthropic with
+    /// dashes (`claude-sonnet-4-6`); for eligibility they are the same model, so
+    /// patterns and the requested model are compared in their dash form. Glob
+    /// semantics (`*`, `?`) are those of [`vkdg_core::glob`] and are untouched.
     pub(crate) fn serves_model(&self, model: &str) -> bool {
-        vkdg_core::glob::matches_any(&self.config.models, model)
+        let model = canonical_model(model);
+        self.config
+            .models
+            .iter()
+            .any(|pattern| vkdg_core::glob::matches(&canonical_model(pattern), &model))
     }
 
-    /// Record a 429/5xx and move to `Cooldown` with exponential backoff.
+    /// Record a 429/5xx (or a 402 out-of-credits) and move to `Cooldown`.
     ///
-    /// Base: 1 s, doubling each failure up to 300 s, with deterministic jitter
-    /// (`failure_count % 5` seconds) to spread retries across connections.
+    /// The floor is exponential backoff: 1 s, doubling each failure up to 300 s,
+    /// with deterministic jitter (`failure_count % 5` seconds) to spread retries
+    /// across connections. When the upstream said how long to wait
+    /// (`retry_after`, seconds), the cooldown lasts at least that long, capped at
+    /// [`MAX_RETRY_AFTER_COOLDOWN_SECS`] so a bogus header cannot park a
+    /// connection for days. A subscription limit that resets in hours is thereby
+    /// not re-probed every five minutes.
+    ///
+    /// A 402 means the account is out of credits. Credits do not come back
+    /// within minutes, so it holds the connection for the full
+    /// [`MAX_RETRY_AFTER_COOLDOWN_SECS`] whatever `retry_after` says: a shorter
+    /// backoff would only spend a request re-probing a dead account.
     ///
     /// Returns the new `cooldown_until` timestamp.
-    pub fn record_upstream_error(&mut self, status_code: u16) -> DateTime<Utc> {
+    pub fn record_upstream_error(
+        &mut self,
+        status_code: u16,
+        retry_after: Option<u32>,
+    ) -> DateTime<Utc> {
         let failure_count = match &self.state {
             ConnectionState::Cooldown { failure_count, .. } => *failure_count + 1,
             _ => 1,
         };
         // 2^(n-1) seconds, capped at 300 s.
-        let base_secs = (2u32.pow(failure_count.saturating_sub(1).min(8))).min(300) as i64;
-        let jitter = (failure_count % 5) as i64;
-        let cooldown_secs = base_secs + jitter;
+        let base_secs = i64::from((2u32.pow(failure_count.saturating_sub(1).min(8))).min(300));
+        let jitter = i64::from(failure_count % 5);
+        let backoff_secs = base_secs + jitter;
+        let requested_secs = if status_code == 402 {
+            MAX_RETRY_AFTER_COOLDOWN_SECS
+        } else {
+            retry_after.map_or(0, |s| i64::from(s).min(MAX_RETRY_AFTER_COOLDOWN_SECS))
+        };
+        let cooldown_secs = backoff_secs.max(requested_secs);
         let until = chrono::Utc::now() + chrono::Duration::seconds(cooldown_secs);
         self.state = ConnectionState::Cooldown {
             until,
@@ -228,6 +275,7 @@ impl Connection {
             connection_id = %self.config.id.0,
             status_code,
             failure_count,
+            retry_after,
             cooldown_secs,
             "connection entering cooldown"
         );
@@ -245,7 +293,7 @@ impl Connection {
     }
 }
 
-/// RAII guard — decrements active_requests on drop.
+/// RAII guard — decrements `active_requests` on drop.
 pub struct ConnectionGuard {
     pub(crate) counter: Arc<AtomicU32>,
 }
@@ -283,8 +331,8 @@ mod tests {
     #[test]
     fn backoff_increases_with_failures() {
         let mut conn = make_connection();
-        let t1 = conn.record_upstream_error(429);
-        let t2 = conn.record_upstream_error(429);
+        let t1 = conn.record_upstream_error(429, None);
+        let t2 = conn.record_upstream_error(429, None);
         assert!(
             t2 > t1,
             "second failure must produce a later cooldown deadline"
@@ -326,7 +374,7 @@ mod tests {
     fn first_failure_produces_positive_cooldown() {
         let mut conn = make_connection();
         let now = chrono::Utc::now();
-        let until = conn.record_upstream_error(429);
+        let until = conn.record_upstream_error(429, None);
         assert!(until > now, "cooldown deadline must be in the future");
     }
 
@@ -410,5 +458,150 @@ mod tests {
             "connection whose cooldown has already expired must be eligible \
              for routing without a prior explicit recovery call"
         );
+    }
+
+    fn serving(patterns: &[&str]) -> Connection {
+        let mut conn = make_connection();
+        conn.config.models = patterns.iter().map(|p| (*p).to_owned()).collect();
+        conn
+    }
+
+    // Plausible wrong impl: comparing the raw strings, so a Kiro connection that
+    // lists `claude-sonnet-4.6` is skipped for a client asking `claude-sonnet-4-6`
+    // (and an Anthropic `-4-6` entry for a client asking `-4.6`): the route then
+    // has no eligible target even though both connections serve the model.
+    #[test]
+    fn dots_and_dashes_between_version_digits_are_the_same_model_both_ways() {
+        for (pattern, requested) in [
+            ("claude-sonnet-4.6", "claude-sonnet-4-6"),
+            ("claude-sonnet-4-6", "claude-sonnet-4.6"),
+            ("claude-sonnet-4.6", "claude-sonnet-4.6"),
+            ("claude-*", "claude-sonnet-4.6"),
+            ("claude-*", "claude-sonnet-4-6"),
+            ("claude-sonnet-4.*", "claude-sonnet-4-6"),
+            ("gpt-5.6-*", "gpt-5-6-mini"),
+            ("gpt-5-6-*", "gpt-5.6-mini"),
+        ] {
+            assert!(
+                serving(&[pattern]).serves_model(requested),
+                "pattern {pattern:?} must serve {requested:?}"
+            );
+        }
+    }
+
+    // Plausible wrong impl: normalising by turning the dot into a wildcard (or
+    // dropping version digits), which would let `4.6` serve `4-5`, `4x6` or `4.60`.
+    #[test]
+    fn normalising_dots_does_not_loosen_the_match() {
+        for (pattern, requested) in [
+            ("claude-sonnet-4.6", "claude-sonnet-4-5"),
+            ("claude-sonnet-4-6", "claude-sonnet-4.60"),
+            ("gpt-5.6-*", "gpt-5x6-mini"),
+            ("gpt-5.6-*", "gpt-5-7-mini"),
+            ("claude-*", "gpt-4.1"),
+            ("claude-sonnet-4.6", "claude-sonnet-4-6-20250101"),
+        ] {
+            assert!(
+                !serving(&[pattern]).serves_model(requested),
+                "pattern {pattern:?} must not serve {requested:?}"
+            );
+        }
+        // `?` stays exactly one character.
+        assert!(serving(&["o?-mini"]).serves_model("o3-mini"));
+        assert!(!serving(&["o?-mini"]).serves_model("o33-mini"));
+    }
+
+    fn secs_until(until: DateTime<Utc>, from: DateTime<Utc>) -> i64 {
+        (until - from).num_seconds()
+    }
+
+    // Plausible wrong impl: `retry_after` is ignored (the exponential backoff caps at
+    // 300 s), so a Claude subscription limit resetting in 5 h is re-probed every
+    // 5 minutes and burns a request each time.
+    #[test]
+    fn cooldown_lasts_at_least_the_upstream_retry_after() {
+        let mut conn = make_connection();
+        let before = chrono::Utc::now();
+        let until = conn.record_upstream_error(429, Some(18_000));
+        assert!(
+            secs_until(until, before) >= 18_000,
+            "a 429 carrying retry-after: 18000 must cool the connection for at least 18000 s"
+        );
+        assert!(!conn.state.is_healthy());
+        match conn.state {
+            ConnectionState::Cooldown {
+                until: stored,
+                failure_count,
+            } => {
+                assert_eq!(stored, until, "the returned deadline is the stored one");
+                assert_eq!(failure_count, 1);
+            }
+            other => panic!("expected Cooldown, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: trusting retry-after without a cap, so a hostile or
+    // buggy `retry-after: 4294967295` parks the connection for 136 years.
+    #[test]
+    fn retry_after_is_capped_at_six_hours() {
+        assert_eq!(MAX_RETRY_AFTER_COOLDOWN_SECS, 21_600);
+        let mut conn = make_connection();
+        let before = chrono::Utc::now();
+        let until = conn.record_upstream_error(429, Some(u32::MAX));
+        let after = chrono::Utc::now();
+        assert!(secs_until(until, before) >= 21_600, "cap is a floor here");
+        assert!(
+            until <= after + chrono::Duration::seconds(21_600),
+            "cooldown must not exceed 21600 s: until={until}"
+        );
+    }
+
+    // Plausible wrong impl: retry-after *replaces* the backoff instead of raising
+    // it, so a tiny `retry-after: 1` after eight straight failures shortens the
+    // cooldown to 1 s and a flapping upstream is hammered.
+    #[test]
+    fn backoff_stays_the_floor_when_retry_after_is_absent_or_smaller() {
+        // Ninth consecutive failure: 2^8 = 256 s base + 9 % 5 = 4 s jitter = 260 s.
+        for retry_after in [None, Some(0), Some(1)] {
+            let mut conn = make_connection();
+            conn.state = ConnectionState::Cooldown {
+                until: chrono::Utc::now(),
+                failure_count: 8,
+            };
+            let before = chrono::Utc::now();
+            let until = conn.record_upstream_error(503, retry_after);
+            assert!(
+                secs_until(until, before) >= 259,
+                "retry_after={retry_after:?} must not shorten the 260 s backoff"
+            );
+        }
+    }
+
+    // Plausible wrong impl: applying a default retry-after (or the cap) when the
+    // upstream sent none, turning a transient 429 into hours of outage.
+    #[test]
+    fn without_retry_after_the_first_cooldown_is_seconds_not_hours() {
+        let mut conn = make_connection();
+        let before = chrono::Utc::now();
+        let until = conn.record_upstream_error(429, None);
+        assert!(secs_until(until, before) <= 5);
+    }
+
+    // Plausible wrong impl: 402 (out of credits) treated like a transient 429, so a
+    // Kiro account with no credits left rejoins routing after seconds and every
+    // retry spends a request (and a failover hop) on a dead account.
+    #[test]
+    fn out_of_credits_holds_the_connection_for_the_maximum() {
+        for retry_after in [None, Some(30)] {
+            let mut conn = make_connection();
+            let before = chrono::Utc::now();
+            let until = conn.record_upstream_error(402, retry_after);
+            let after = chrono::Utc::now();
+            assert!(
+                secs_until(until, before) >= 21_600,
+                "402 with retry_after={retry_after:?} must cool for the full 6 h"
+            );
+            assert!(until <= after + chrono::Duration::seconds(21_600));
+        }
     }
 }

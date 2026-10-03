@@ -56,7 +56,7 @@ pub(super) async fn resolve_combo_and_session(
 
     ComboSessionResolution {
         combo_model: combo.as_ref().and_then(|c| c.model.clone()),
-        combo_id: combo.map(|c| c.id.clone()),
+        combo_id: combo.map(|c| c.id),
         effective_compressor_id,
         compression_threshold,
         session_preferred,
@@ -69,11 +69,11 @@ pub(super) async fn prepare_operation(
     mut operation: Operation,
     envelope: &RequestEnvelope,
     compression_threshold: u32,
-    effective_compressor_id: &Option<String>,
+    effective_compressor_id: Option<&str>,
 ) -> (Operation, Option<CompressionMetrics>) {
     let mut compression_metrics: Option<CompressionMetrics> = None;
     // Context compression (pre-dispatch)
-    let skip_compression = effective_compressor_id.as_deref() == Some("none");
+    let skip_compression = effective_compressor_id == Some("none");
     if !skip_compression {
         if let Some(compressor) = &pipeline.compressor {
             if let Operation::Conversation(conv_req) = &operation {
@@ -128,7 +128,7 @@ pub(super) async fn prepare_operation(
             .last()
             .and_then(|m| match &m.content {
                 MessageContent::Text(t) => Some(t.as_str()),
-                _ => None,
+                MessageContent::Blocks(_) => None,
             })
             .unwrap_or("");
         let memories = memory_store.retrieve(&envelope.tenant_id.0, query, 5).await;
@@ -182,18 +182,15 @@ pub(super) fn post_response_accounting(
     if let Some(body) = response_body {
         if pipeline.eval_enabled {
             let metrics = vkdg_eval::LatencyMetrics {
-                latency_ms: start_time.elapsed().as_millis() as u32,
+                latency_ms: u32::try_from(start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
                 ttft_ms: None, // Phase E: track TTFT in streaming
-                token_count: (body.len() / 4) as u32,
+                token_count: u32::try_from(body.len() / 4).unwrap_or(u32::MAX),
             };
             let eval = vkdg_eval::EvalScorer::score(
                 &ctx.envelope.request_id.0.to_string(),
-                ctx.connection_id
-                    .as_ref()
-                    .map(|c| c.0.as_str())
-                    .unwrap_or(""),
+                ctx.connection_id.as_ref().map_or("", |c| c.0.as_str()),
                 &String::from_utf8_lossy(body),
-                metrics,
+                &metrics,
             );
             tracing::debug!(
                 score = eval.score,
@@ -231,7 +228,7 @@ pub(super) fn post_response_accounting(
 
     // Latency recording (unconditional)
     if let (Some(tracker), Some(conn_id)) = (&pipeline.latency_tracker, &ctx.connection_id) {
-        let latency_ms = start_time.elapsed().as_millis() as u32;
+        let latency_ms = u32::try_from(start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let tracker = Arc::clone(tracker);
         let conn_id = conn_id.clone();
         tokio::spawn(async move {
@@ -284,7 +281,7 @@ pub fn relay_on_rotation(
             };
             let content = match &m.content {
                 MessageContent::Text(t) => t.chars().take(200).collect::<String>(),
-                _ => "[non-text content]".into(),
+                MessageContent::Blocks(_) => "[non-text content]".into(),
             };
             format!("{role}: {content}")
         })

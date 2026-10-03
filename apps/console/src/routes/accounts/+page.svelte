@@ -3,13 +3,15 @@
   import { AlertDialog } from 'bits-ui';
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api.js';
-  import type { Account } from '$lib/api.js';
+  import type { Account, ConnectionOutcome, ConnectionSummary } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { AccountCredits, Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
   import { formatRelativeTime } from '$lib/format.js';
+  import AccountRouting from './AccountRouting.svelte';
   import ConnectAccountModal from './ConnectAccountModal.svelte';
 
   let accounts = $state<Account[]>([]);
+  let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
   let connectOpen = $state(false);
   let connectProvider = $state('kiro');
@@ -35,7 +37,9 @@
 
   async function refresh() {
     try {
-      accounts = (await api.listAccounts()).items;
+      const [accountList, connectionList] = await Promise.all([api.listAccounts(), api.listConnections()]);
+      accounts = accountList.items;
+      connections = connectionList.items;
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -52,8 +56,14 @@
     connectOpen = true;
   }
 
-  function onConnected(account: Account) {
-    toast.success(m.acct_connected({ label: account.label }));
+  function onConnected(account: Account, outcome: ConnectionOutcome) {
+    if (outcome.connection_error) {
+      toast.warning(m.acct_connection_failed({ error: outcome.connection_error }));
+    } else if (outcome.connection_id) {
+      toast.success(m.acct_connected_with_connection({ label: account.label, id: outcome.connection_id }));
+    } else {
+      toast.success(m.acct_connected({ label: account.label }));
+    }
     refresh();
   }
 
@@ -119,6 +129,12 @@
             {#if account.revoked_reason}
               <p class="reason">{account.revoked_reason}</p>
             {/if}
+
+            <AccountRouting
+              {account}
+              connections={connections.filter((c) => c.account_id === account.id)}
+              onchanged={refresh}
+            />
 
             <footer class="account-actions">
               <Button

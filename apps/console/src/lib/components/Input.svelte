@@ -8,6 +8,10 @@
     required?: boolean;
     disabled?: boolean;
     error?: string;
+    /** Helper text under the field, linked to it with aria-describedby. */
+    hint?: string;
+    /** Number inputs only. */
+    min?: number;
     autocomplete?: HTMLInputElement['autocomplete'];
   }
 
@@ -20,11 +24,15 @@
     required = false,
     disabled = false,
     error,
+    hint,
+    min,
     autocomplete,
   }: Props = $props();
 
   const inputId = $derived(id ?? `input-${Math.random().toString(36).slice(2)}`);
   const errorId = $derived(`${inputId}-error`);
+  const hintId = $derived(`${inputId}-hint`);
+  const describedBy = $derived(error ? errorId : hint ? hintId : undefined);
 </script>
 
 <div class="field">
@@ -39,12 +47,15 @@
     {required}
     {disabled}
     {autocomplete}
+    {min}
     aria-invalid={error ? 'true' : undefined}
-    aria-describedby={error ? errorId : undefined}
+    aria-describedby={describedBy}
     class:has-error={!!error}
   />
   {#if error}
     <p id={errorId} class="error" role="alert">{error}</p>
+  {:else if hint}
+    <p id={hintId} class="hint">{hint}</p>
   {/if}
 </div>
 
@@ -92,6 +103,12 @@
 
   input.has-error {
     border-color: var(--danger);
+  }
+
+  .hint {
+    font-size: 0.75rem;
+    color: var(--text-3);
+    margin: 0;
   }
 
   .error {

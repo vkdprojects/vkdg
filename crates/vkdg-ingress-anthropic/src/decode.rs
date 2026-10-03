@@ -1,22 +1,43 @@
 //! Decode Anthropic Messages API wire requests into internal `Operation` types.
 
-use bytes::Bytes;
-
 use vkdg_core::VkdgError;
 use vkdg_operations::{
-    CapabilitySet, ContentBlock, ConversationRequest, ImageData, Message, MessageContent,
-    Operation, Role, Tool,
+    validated_stop_sequences, validated_top_p, CapabilitySet, ContentBlock, ConversationRequest,
+    ImageData, Message, MessageContent, Operation, Role, ServerTool, Tool, ToolChoice,
+    ToolResultImage,
 };
 
-use crate::wire::{AnthropicBlock, AnthropicContent, AnthropicToolResultContent};
+use crate::wire::{
+    AnthropicBlock, AnthropicContent, AnthropicImageSource, AnthropicTool,
+    AnthropicToolResultContent,
+};
 
 /// Parse raw bytes from an Anthropic Messages request into `(model_name, Operation)`.
-pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
+pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
     let req: crate::wire::AnthropicRequest =
-        serde_json::from_slice(&body).map_err(|e| VkdgError::ConfigInvalid {
+        serde_json::from_slice(body).map_err(|e| VkdgError::ConfigInvalid {
             field: "body".to_string(),
             message: e.to_string(),
         })?;
+
+    // omp and other clients encode reasoning effort as a suffix on the model
+    // name: `claude-sonnet-4.6:max`, `claude-opus-5:high`, `...:off`.
+    // Strip it and carry it as ThinkingRequest.effort so the provider adapter
+    // can activate the right reasoning mode without changing the model id.
+    const KNOWN_EFFORTS: &[&str] = &["off", "min", "low", "medium", "high", "xhigh", "max"];
+    let (base_model, effort_suffix) = {
+        let m = &req.model;
+        if let Some(pos) = m.rfind(':') {
+            let suffix = &m[pos + 1..];
+            if KNOWN_EFFORTS.contains(&suffix) {
+                (m[..pos].to_owned(), Some(suffix.to_owned()))
+            } else {
+                (m.clone(), None)
+            }
+        } else {
+            (m.clone(), None)
+        }
+    };
 
     let messages: Vec<Message> = req
         .messages
@@ -46,35 +67,176 @@ pub fn decode_request(body: Bytes) -> Result<(String, Operation), VkdgError> {
         })
         .collect();
 
-    let tools: Vec<Tool> = req
-        .tools
-        .unwrap_or_default()
-        .into_iter()
-        .map(|t| Tool {
-            name: t.name,
-            description: t.description,
-            input_schema: t.input_schema,
-        })
-        .collect();
+    let (tools, server_tools) = split_tools(req.tools.unwrap_or_default())?;
+
+    let (tool_choice, disable_parallel_tool_use) = match req.tool_choice {
+        Some(raw) => {
+            let (choice, disable_parallel) = decode_tool_choice(raw)?;
+            (Some(choice), disable_parallel)
+        }
+        None => (None, false),
+    };
+    let tool_choice = ToolChoice::settle(tool_choice, &tools, &server_tools)?;
+    // Without tools there is no tool call to serialise, and providers reject
+    // parallel-call settings that come without tools.
+    let disable_parallel_tool_use =
+        disable_parallel_tool_use && !(tools.is_empty() && server_tools.is_empty());
+    let stop_sequences =
+        validated_stop_sequences("stop_sequences", req.stop_sequences.unwrap_or_default())?;
+    let top_p = validated_top_p(req.top_p)?;
+
+    // Merge thinking from the wire field and from the model suffix.
+    // Suffix wins for effort; wire field wins for budget_tokens.
+    let thinking = match (
+        req.thinking.filter(|t| t.kind != "disabled"),
+        effort_suffix.as_deref(),
+    ) {
+        (_, Some("off")) => None,
+        (Some(t), Some(e)) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: t.budget_tokens,
+            effort: Some(e.to_owned()),
+        }),
+        (Some(t), None) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: t.budget_tokens,
+            // `{type:"adaptive"}` without explicit effort → use "max" so the
+            // provider can activate the highest available reasoning mode.
+            effort: if t.budget_tokens.is_none() && t.kind == "adaptive" {
+                Some("max".to_owned())
+            } else {
+                None
+            },
+        }),
+        (None, Some(e)) => Some(vkdg_operations::ThinkingRequest {
+            budget_tokens: None,
+            effort: Some(e.to_owned()),
+        }),
+        (None, None) => None,
+    };
 
     let operation = Operation::Conversation(ConversationRequest {
-        model: req.model.clone(),
+        model: base_model.clone(),
         messages,
         tools,
+        server_tools,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
         stream: req.stream.unwrap_or(false),
-        system: req.system,
+        system: req.system.map(system_text),
         required_capabilities: CapabilitySet::default(),
-        thinking: req.thinking.filter(|t| t.kind != "disabled").map(|t| {
-            vkdg_operations::ThinkingRequest {
-                budget_tokens: t.budget_tokens,
-                effort: None,
-            }
-        }),
+        thinking,
+        tool_choice,
+        stop_sequences,
+        top_p,
+        disable_parallel_tool_use,
+        ..Default::default()
     });
 
-    Ok((req.model, operation))
+    Ok((base_model, operation))
+}
+
+/// Splits the wire `tools` into custom tools (they have an `input_schema`) and
+/// provider-run server tools (a `type` such as `web_search_20250305`, no schema),
+/// which are kept exactly as written.
+fn split_tools(raw: Vec<serde_json::Value>) -> Result<(Vec<Tool>, Vec<ServerTool>), VkdgError> {
+    let invalid = |index: usize, message: String| VkdgError::ConfigInvalid {
+        field: format!("tools[{index}]"),
+        message,
+    };
+    let mut tools = Vec::with_capacity(raw.len());
+    let mut server_tools = Vec::new();
+    for (index, value) in raw.into_iter().enumerate() {
+        if value.get("input_schema").is_some() {
+            let tool: AnthropicTool =
+                serde_json::from_value(value).map_err(|e| invalid(index, e.to_string()))?;
+            tools.push(Tool {
+                name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+            });
+            continue;
+        }
+        let kind = value.get("type").and_then(serde_json::Value::as_str);
+        let name = value.get("name").and_then(serde_json::Value::as_str);
+        match (kind, name) {
+            (Some(kind), Some(name)) if kind != "custom" => server_tools.push(ServerTool {
+                name: name.to_owned(),
+                declaration: value,
+            }),
+            _ => {
+                return Err(invalid(
+                    index,
+                    "a tool needs an `input_schema`, or a server tool `type` and `name`".into(),
+                ))
+            }
+        }
+    }
+    Ok((tools, server_tools))
+}
+/// Decode the wire `tool_choice` object into the choice and the client's
+/// `disable_parallel_tool_use` flag.
+///
+/// Anthropic defines the flag for `auto`, `any` and `tool`; for `none` no tool
+/// is called, so a well-formed flag there carries no meaning and is dropped.
+/// An absent or `null` flag is `false`.
+fn decode_tool_choice(raw: serde_json::Value) -> Result<(ToolChoice, bool), VkdgError> {
+    let invalid = |message: &str| VkdgError::ConfigInvalid {
+        field: "tool_choice".to_owned(),
+        message: message.to_owned(),
+    };
+    let serde_json::Value::Object(object) = raw else {
+        return Err(invalid("must be an object with a `type`"));
+    };
+    let disable_parallel = match object.get("disable_parallel_tool_use") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(flag)) => *flag,
+        Some(_) => return Err(invalid("`disable_parallel_tool_use` must be a boolean")),
+    };
+    let kind = object
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid("`type` must be a string"))?;
+    match kind {
+        "auto" => Ok((ToolChoice::Auto, disable_parallel)),
+        "any" => Ok((ToolChoice::Required, disable_parallel)),
+        "none" => Ok((ToolChoice::Disabled, false)),
+        "tool" => match object.get("name").and_then(serde_json::Value::as_str) {
+            Some(name) if !name.is_empty() => {
+                Ok((ToolChoice::Named(name.to_owned()), disable_parallel))
+            }
+            _ => Err(invalid("`type: tool` needs a non-empty string `name`")),
+        },
+        other => Err(invalid(&format!(
+            "unknown type `{other}`; expected auto, any, none or tool"
+        ))),
+    }
+}
+
+/// Flatten `system` to text. Block arrays keep their order, joined by a blank
+/// line; non-text blocks carry no system text and are skipped.
+fn system_text(system: AnthropicContent) -> String {
+    match system {
+        AnthropicContent::Text(s) => s,
+        AnthropicContent::Blocks(blocks) => blocks
+            .into_iter()
+            .filter(|b| b.type_ == "text")
+            .filter_map(|b| b.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
+}
+
+/// The media type and data of an image `source` (`base64` or `url`).
+fn image_source(source: AnthropicImageSource) -> (String, ImageData) {
+    let data = match source.type_.as_str() {
+        "base64" => ImageData::Base64 {
+            data: source.data.unwrap_or_default(),
+        },
+        _ => ImageData::Url {
+            url: source.url.unwrap_or_default(),
+        },
+    };
+    let media_type = source.media_type.unwrap_or_else(|| "image/jpeg".into());
+    (media_type, data)
 }
 
 /// Convert an Anthropic wire block into a [`ContentBlock`].
@@ -83,42 +245,58 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
     match b.type_.as_str() {
         "text" => b.text.map(|t| ContentBlock::Text { text: t }),
         "image" => {
-            let source = b.source?;
-            let data = match source.type_.as_str() {
-                "base64" => ImageData::Base64 {
-                    data: source.data.unwrap_or_default(),
-                },
-                _ => ImageData::Url {
-                    url: source.url.unwrap_or_default(),
-                },
-            };
-            let media_type = source.media_type.unwrap_or_else(|| "image/jpeg".into());
+            let (media_type, data) = image_source(b.source?);
             Some(ContentBlock::Image { media_type, data })
         }
         "tool_use" => {
             let id = b.id.unwrap_or_default();
             let name = b.name.unwrap_or_default();
-            let input = b.input.unwrap_or(serde_json::Value::Null);
+            let input = b
+                .input
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
             Some(ContentBlock::ToolUse { id, name, input })
         }
         "tool_result" => {
             let tool_use_id = b.tool_use_id.unwrap_or_default();
-            let content = match b.content {
-                Some(AnthropicToolResultContent::Text(s)) => s,
+            let (content, images) = match b.content {
+                Some(AnthropicToolResultContent::Text(s)) => (s, Vec::new()),
                 Some(AnthropicToolResultContent::Blocks(sub_blocks)) => {
-                    let sub: Vec<ContentBlock> = sub_blocks
-                        .into_iter()
-                        .filter_map(anthropic_block_to_content)
-                        .collect();
-                    serde_json::to_string(&sub).unwrap_or_default()
+                    // Text blocks join into the result text; image blocks stay images,
+                    // in order. Other block types (documents, search results) have no
+                    // neutral form yet and are skipped.
+                    let mut texts: Vec<String> = Vec::new();
+                    let mut images: Vec<ToolResultImage> = Vec::new();
+                    for sub in sub_blocks {
+                        match sub.type_.as_str() {
+                            "text" => texts.extend(sub.text),
+                            "image" => images.extend(sub.source.map(|s| {
+                                let (media_type, data) = image_source(s);
+                                ToolResultImage { media_type, data }
+                            })),
+                            _ => {}
+                        }
+                    }
+                    (texts.join("\n"), images)
                 }
-                None => String::new(),
+                None => (String::new(), Vec::new()),
             };
             Some(ContentBlock::ToolResult {
                 tool_use_id,
                 content,
+                images,
+                is_error: b.is_error.unwrap_or(false),
             })
         }
+        "thinking" => Some(ContentBlock::Thinking {
+            thinking: b.thinking.or(b.text).unwrap_or_default(),
+            signature: b.signature,
+        }),
+        "redacted_thinking" => Some(ContentBlock::RedactedThinking {
+            data: b
+                .data
+                .or(b.text)
+                .unwrap_or_else(|| b.input.as_ref().map(|v| v.to_string()).unwrap_or_default()),
+        }),
         _ => None,
     }
 }
@@ -127,7 +305,6 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
-    use bytes::Bytes;
     use http::{Method, Request, StatusCode};
     use vkdg_http::{AppState, ServerConfig};
 
@@ -139,12 +316,12 @@ mod tests {
         r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}"#
     }
 
-    async fn call_handler(state: AppState, body: &'static str) -> Response {
+    async fn call_handler(state: AppState, body: impl Into<axum::body::Body>) -> Response {
         let mut req = Request::builder()
             .method(Method::POST)
             .uri("/v1/messages")
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(body))
+            .body(body.into())
             .unwrap();
         // What `vkdg_http::require_api_key` attaches for an authenticated caller.
         req.extensions_mut().insert(vkdg_http::ClientIdentity {
@@ -192,8 +369,196 @@ mod tests {
     // losing required fields and producing a bad Operation.
     #[tokio::test]
     async fn decode_round_trips_model_name() {
-        let body = Bytes::from(valid_body());
+        let body = valid_body().as_bytes();
         let (model, _op) = decode_request(body).unwrap();
         assert_eq!(model, "claude-3-5-sonnet-20241022");
+    }
+
+    // Plausible wrong impl: `system` typed as a string rejects the block-array
+    // form Claude Code sends (400), or joins blocks out of order / drops one.
+    #[test]
+    fn system_block_array_is_accepted_in_order() {
+        let body = br#"{"model":"m","max_tokens":8,
+            "system":[{"type":"text","text":"You are Claude Code."},
+                      {"type":"text","text":"Project rules.","cache_control":{"type":"ephemeral"}}],
+            "messages":[{"role":"user","content":"hi"}]}"#;
+        let (_, op) = decode_request(body).expect("block-array system must decode");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        assert_eq!(
+            req.system.as_deref(),
+            Some("You are Claude Code.\n\nProject rules.")
+        );
+    }
+
+    /// `valid_body()` padded with whitespace to exactly `len` bytes.
+    fn padded_body(len: usize) -> Vec<u8> {
+        let mut b = valid_body().as_bytes().to_vec();
+        b.resize(len, b' ');
+        b
+    }
+
+    // Plausible wrong impl: oversize body mapped to a generic 400
+    // invalid_request_error, so clients can't tell "too big" from "malformed".
+    #[tokio::test]
+    async fn body_over_configured_limit_returns_413() {
+        let state = AppState::new(ServerConfig {
+            max_body_bytes: 256,
+            ..ServerConfig::default()
+        });
+        let resp = call_handler(state, padded_body(257)).await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = to_bytes(resp.into_body(), 4096).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["type"], "request_too_large");
+    }
+
+    // Plausible wrong impl: limit still hardcoded at 4 MiB, ignoring
+    // ServerConfig. A 5 MiB body under an 8 MiB limit must reach the pipeline
+    // (501 here, since pipeline=None), not be rejected as too large.
+    #[tokio::test]
+    async fn body_under_raised_limit_is_accepted() {
+        let state = AppState::new(ServerConfig {
+            max_body_bytes: 8 * 1024 * 1024,
+            ..ServerConfig::default()
+        });
+        let resp = call_handler(state, padded_body(5 * 1024 * 1024)).await;
+        assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    }
+
+    // Plausible wrong impl: `_ => None` arm in anthropic_block_to_content silently
+    // drops thinking blocks, producing an empty assistant message instead of
+    // preserving the reasoning trace.
+    #[test]
+    fn thinking_block_in_history_is_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "I need to...", "signature": "abc123"}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode thinking block");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks, got {:?}", msg.content)
+        };
+        assert_eq!(blocks.len(), 1, "thinking block must not be dropped");
+        match &blocks[0] {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
+                assert_eq!(thinking, "I need to...");
+                assert_eq!(signature.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected Thinking block, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: `_ => None` silently drops redacted_thinking blocks,
+    // losing the sealed reasoning trace from multi-turn conversation history.
+    #[test]
+    fn redacted_thinking_block_is_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "redacted_thinking", "data": "<redacted>"}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode redacted_thinking block");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks, got {:?}", msg.content)
+        };
+        assert_eq!(
+            blocks.len(),
+            1,
+            "redacted_thinking block must not be dropped"
+        );
+        match &blocks[0] {
+            ContentBlock::RedactedThinking { data } => {
+                assert_eq!(data, "<redacted>");
+            }
+            other => panic!("expected RedactedThinking block, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: tool_result is_error flag dropped during decode,
+    // causing downstream adapters to treat errors as successful tool outputs.
+    #[test]
+    fn tool_result_is_error_preserved() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "fn", "input": {}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "error text", "is_error": true}
+                ]}
+            ]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode is_error tool_result");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let msg = &req.messages[1];
+        let MessageContent::Blocks(blocks) = &msg.content else {
+            panic!("expected blocks")
+        };
+        match &blocks[0] {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "t1");
+                assert!(*is_error, "is_error must be true");
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    // Plausible wrong impl: `{type:"adaptive"}` without budget_tokens left with
+    // effort=None, making the provider skip reasoning entirely instead of using
+    // the highest available mode.
+    #[test]
+    fn adaptive_thinking_maps_to_max_effort() {
+        let body = br#"{
+            "model": "m",
+            "max_tokens": 8,
+            "thinking": {"type": "adaptive"},
+            "messages": [{"role": "user", "content": "hi"}]
+        }"#;
+        let (_, op) = decode_request(body).expect("must decode adaptive thinking");
+        let Operation::Conversation(req) = op else {
+            panic!("expected conversation")
+        };
+        let thinking = req.thinking.expect("thinking must be Some for adaptive");
+        assert_eq!(
+            thinking.effort.as_deref(),
+            Some("max"),
+            "adaptive without budget_tokens must map to effort=max"
+        );
+        assert!(
+            thinking.budget_tokens.is_none(),
+            "adaptive must not set budget_tokens"
+        );
     }
 }

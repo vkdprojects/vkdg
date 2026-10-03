@@ -42,7 +42,7 @@ impl Default for RoundRobinStrategy {
 
 #[async_trait]
 impl Strategy for RoundRobinStrategy {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "round_robin"
     }
 
@@ -71,7 +71,7 @@ pub struct FallbackChainStrategy;
 
 #[async_trait]
 impl Strategy for FallbackChainStrategy {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "fallback_chain"
     }
 
@@ -111,7 +111,7 @@ pub struct LowestLatencyStrategy;
 
 #[async_trait]
 impl Strategy for LowestLatencyStrategy {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "lowest_latency"
     }
 
@@ -162,7 +162,7 @@ impl Default for PowerOfTwoChoicesStrategy {
 
 #[async_trait]
 impl Strategy for PowerOfTwoChoicesStrategy {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "power_of_two_choices"
     }
 

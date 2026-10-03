@@ -4,8 +4,8 @@
 //! returns the most specific `ContentClass` it can recognise. Runs in O(n)
 //! over line count; never allocates beyond the line iterator.
 
-/// Classifies a text blob so the correct FilterPack can be applied.
-#[derive(Debug, Clone, PartialEq)]
+/// Classifies a text blob so the correct `FilterPack` can be applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentClass {
     CommandOutput,
     StackTrace,

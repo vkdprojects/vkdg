@@ -2,7 +2,7 @@
 //!
 //! RTK achieves 60-90% savings on tool outputs by:
 //! 1. Detecting the content class (command output, JSON, stack trace, file list, diff)
-//! 2. Dispatching to the matching FilterPack via PackRegistry
+//! 2. Dispatching to the matching `FilterPack` via `PackRegistry`
 //!
 //! Designed for CI/CD pipelines and code agents that produce long tool outputs.
 //! Never removes code blocks, line numbers, URLs, or identifiers.
@@ -33,7 +33,7 @@ impl Default for RtkCompressor {
 }
 
 impl Compressor for RtkCompressor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "rtk"
     }
 
@@ -41,15 +41,22 @@ impl Compressor for RtkCompressor {
         req.messages
             .iter()
             .map(|m| match &m.content {
-                MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
+                MessageContent::Text(s) => {
+                    u32::try_from(s.len()).unwrap_or(u32::MAX).saturating_div(4)
+                }
                 MessageContent::Blocks(blocks) => blocks
                     .iter()
                     .map(|b| match b {
-                        ContentBlock::ToolResult { content, .. } => {
-                            (content.len() as u32).saturating_div(4)
-                        }
-                        ContentBlock::Text { text } => (text.len() as u32).saturating_div(4),
-                        _ => 20,
+                        ContentBlock::ToolResult { content, .. } => u32::try_from(content.len())
+                            .unwrap_or(u32::MAX)
+                            .saturating_div(4),
+                        ContentBlock::Text { text } => u32::try_from(text.len())
+                            .unwrap_or(u32::MAX)
+                            .saturating_div(4),
+                        ContentBlock::Image { .. }
+                        | ContentBlock::ToolUse { .. }
+                        | ContentBlock::Thinking { .. }
+                        | ContentBlock::RedactedThinking { .. } => 20,
                     })
                     .sum(),
             })
@@ -63,7 +70,7 @@ impl Compressor for RtkCompressor {
     ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
         let original_tokens = self.estimate_tokens(&req);
 
-        for msg in req.messages.iter_mut() {
+        for msg in &mut req.messages {
             if matches!(msg.role, Role::System) {
                 continue;
             }
@@ -119,6 +126,8 @@ mod tests {
                 content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                     tool_use_id: "t1".into(),
                     content: content.into(),
+                    images: vec![],
+                    is_error: false,
                 }]),
             }],
             tools: vec![],
@@ -128,6 +137,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         }
     }
 
@@ -143,7 +153,7 @@ mod tests {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
                 _ => panic!("unexpected block type"),
             },
-            _ => panic!("unexpected content type"),
+            MessageContent::Text(_) => panic!("unexpected content type"),
         };
         // Short output should not grow
         assert!(
@@ -158,7 +168,7 @@ mod tests {
         let c = RtkCompressor::default();
         let trace = "Error: null pointer\n".to_string()
             + &(0..20)
-                .map(|i| format!("\tat frame{}()", i))
+                .map(|i| format!("\tat frame{i}()"))
                 .collect::<Vec<_>>()
                 .join("\n");
         let req = tool_result_req(&trace);
@@ -168,7 +178,7 @@ mod tests {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
                 _ => panic!(),
             },
-            _ => panic!(),
+            MessageContent::Text(_) => panic!(),
         };
         let frame_lines = content.lines().filter(|l| l.contains("\tat ")).count();
         assert!(
@@ -189,7 +199,7 @@ mod tests {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
                 _ => panic!(),
             },
-            _ => panic!(),
+            MessageContent::Text(_) => panic!(),
         };
         // Must still be valid JSON
         assert!(
@@ -213,7 +223,7 @@ mod tests {
         let (out, _) = c.compress(req, 10000).unwrap();
         match &out.messages[1].content {
             MessageContent::Text(t) => assert_eq!(*t, sys, "system message must be unchanged"),
-            _ => panic!("unexpected content type"),
+            MessageContent::Blocks(_) => panic!("unexpected content type"),
         }
     }
 
@@ -223,7 +233,7 @@ mod tests {
                 ContentBlock::ToolResult { content, .. } => content.clone(),
                 _ => panic!("unexpected block type"),
             },
-            _ => panic!("unexpected content type"),
+            MessageContent::Text(_) => panic!("unexpected content type"),
         }
     }
 
@@ -234,8 +244,7 @@ mod tests {
         let class = detect_class(ts_output);
         assert!(
             matches!(class, ContentClass::TypeScriptBuild),
-            "must detect TS build: {:?}",
-            class
+            "must detect TS build: {class:?}"
         );
     }
 
@@ -246,8 +255,7 @@ mod tests {
         let class = detect_class(git_out);
         assert!(
             matches!(class, ContentClass::GitStatus),
-            "must detect git status: {:?}",
-            class
+            "must detect git status: {class:?}"
         );
     }
 

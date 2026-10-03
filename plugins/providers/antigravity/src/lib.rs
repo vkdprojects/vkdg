@@ -1,7 +1,7 @@
 //! VKDG provider plugin: antigravity
 //! Google Cloud Code (Antigravity) — Authorization Code OAuth.
 //!
-//! prepare() is a stub; full proto API implementation is Phase E.
+//! `prepare()` is a stub; full proto API implementation is Phase E.
 
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ use vkdg_provider_sdk::{
     ProviderError, TokenPair,
 };
 
-/// Fallback client_id for Antigravity (Google Cloud Code native app).
+/// Fallback `client_id` for Antigravity (Google Cloud Code native app).
 const ANTIGRAVITY_CLIENT_ID_FALLBACK: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep";
 
 pub struct AntigravityAdapter;
@@ -23,12 +23,18 @@ impl ProviderAdapter for AntigravityAdapter {
         Some(self)
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "antigravity"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Antigravity (Google Cloud Code)"
+    }
+
+    /// `prepare` is not implemented yet (Phase E), so a connection here would
+    /// only fail requests for `gemini-*`: the operator adds one when it works.
+    fn default_models(&self) -> Vec<String> {
+        Vec::new()
     }
 
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {

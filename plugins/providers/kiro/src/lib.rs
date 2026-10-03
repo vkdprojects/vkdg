@@ -1,4 +1,4 @@
-//! VKDG provider plugin: kiro — Amazon Q Developer / CodeWhisperer.
+//! VKDG provider plugin: kiro — Amazon Q Developer / `CodeWhisperer`.
 //!
 //! Request shape follows AWS's own Smithy-generated client
 //! (`aws/amazon-q-developer-cli`, crate `amzn-codewhisperer-streaming-client`).
@@ -16,6 +16,7 @@ use vkdg_provider_sdk::{
 };
 
 pub mod auth;
+pub mod catalog;
 pub mod decode;
 pub mod endpoint;
 pub mod eventstream;
@@ -30,17 +31,35 @@ use crate::auth::{AUTH_API_KEY, AUTH_BUILDER_ID, AUTH_EXTERNAL_IDP};
 use crate::endpoint::EndpointKind;
 
 /// Identifies this gateway upstream.
-const USER_AGENT: &str = "vkdg/0.1.0";
+/// User-agent string sent to the Kiro upstream.
+/// Matches the Kiro IDE binary to avoid potential throttling of unknown clients.
+/// Source: kiro-account-manager kiroApi.ts (confirmed against live traffic).
+const USER_AGENT: &str =
+    "aws-sdk-js/1.0.34 KiroIDE-0.12.155 OS/macOS/15.0 lang/js pm/npm platform/darwin";
 
 pub struct KiroAdapter;
 
 impl ProviderAdapter for KiroAdapter {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "kiro"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "Kiro / Amazon Q"
+    }
+
+    fn default_models(&self) -> Vec<String> {
+        [
+            "claude-*",
+            "gpt-5.6-*",
+            "minimax-*",
+            "deepseek-*",
+            "glm-*",
+            "qwen3-*",
+            "auto",
+        ]
+        .map(String::from)
+        .into()
     }
 
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
@@ -67,14 +86,13 @@ impl ProviderAdapter for KiroAdapter {
         // A stored account records which login issued its token. A connection
         // authenticated by `auth: { type: api_key }` (a long-lived Kiro key in an
         // env var) has no account, so it is the API-key flow, not Builder ID.
-        let auth_method =
-            extra
-                .get("auth_method")
-                .map(String::as_str)
-                .unwrap_or(match config.auth {
-                    vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
-                    _ => AUTH_BUILDER_ID,
-                });
+        let auth_method = extra.get("auth_method").map_or(
+            match config.auth {
+                vkdg_connections::AuthKind::ApiKey { .. } => AUTH_API_KEY,
+                _ => AUTH_BUILDER_ID,
+            },
+            String::as_str,
+        );
         let profile_arn = extra.get("profile_arn").map(String::as_str);
 
         // The runtime region lives in the profile ARN; the OIDC region is only a
@@ -185,6 +203,10 @@ impl ProviderAdapter for KiroAdapter {
 
     fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
         Some(&usage::KiroUsage)
+    }
+
+    fn model_catalog(&self) -> Option<&dyn vkdg_provider_sdk::ModelCatalog> {
+        Some(&catalog::KiroModelCatalog)
     }
 }
 

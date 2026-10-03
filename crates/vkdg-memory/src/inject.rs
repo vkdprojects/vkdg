@@ -17,10 +17,7 @@ pub fn inject_memories(
         .map(|m| format!("- {}", m.fact))
         .collect::<Vec<_>>()
         .join("\n");
-    let prefix = format!(
-        "Relevant context from previous interactions:\n{}\n",
-        memory_block
-    );
+    let prefix = format!("Relevant context from previous interactions:\n{memory_block}\n");
     req.system = match req.system.take() {
         None => Some(prefix),
         Some(existing) => Some(format!("{prefix}\n{existing}")),
@@ -46,6 +43,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         }
     }
 

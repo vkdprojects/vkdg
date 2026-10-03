@@ -4,12 +4,13 @@ use crate::{
     router::AdminState,
 };
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     response::{IntoResponse, Response},
     Json,
 };
 use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
+use vkdg_config::schema::RouteDef;
 
 #[derive(Serialize)]
 struct RouteSummary {
@@ -68,7 +69,7 @@ pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) ->
         .map(|r| RouteSummary {
             id: r.id.0.clone(),
             match_models: r.match_models.clone(),
-            strategy: strategy_str(&r.strategy).to_string(),
+            strategy: strategy_str(&r.strategy),
             targets: r.targets.iter().map(|t| t.0.clone()).collect(),
         })
         .collect();
@@ -141,6 +142,187 @@ pub async fn preview_route(
     .into_response()
 }
 
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CreateRouteBody {
+    pub id: String,
+    pub match_models: Vec<String>,
+    /// `"round_robin"` | `"fallback_chain"` | `"lowest_latency"` | `"power_of_two_choices"`
+    pub strategy: String,
+    /// Connection ids.
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub hooks: vkdg_routing::PluginHooks,
+}
+
+impl CreateRouteBody {
+    fn into_def(self, id: String) -> RouteDef {
+        RouteDef {
+            id,
+            match_models: self.match_models,
+            strategy: self.strategy,
+            targets: self.targets,
+            hooks: self.hooks,
+        }
+    }
+}
+
+pub async fn create_route(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateRouteBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    if body.id.trim().is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "id must not be empty"),
+        )
+        .into_response();
+    }
+    if body.targets.is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "targets must not be empty"),
+        )
+        .into_response();
+    }
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    let id = body.id.clone();
+    let def = body.into_def(id.clone());
+    if let Err(e) = store.upsert_route(&def) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    match crate::handlers::connections::rebuild_and_push(&state) {
+        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(snap) => {
+            let route = snap.routes.iter().find(|r| r.id.0 == id);
+            match route {
+                None => AdminErrorResponse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    AdminError::new("not_found", "route missing after upsert"),
+                )
+                .into_response(),
+                Some(r) => (
+                    StatusCode::CREATED,
+                    Json(RouteSummary {
+                        id: r.id.0.clone(),
+                        match_models: r.match_models.clone(),
+                        strategy: strategy_str(&r.strategy),
+                        targets: r.targets.iter().map(|t| t.0.clone()).collect(),
+                    }),
+                )
+                    .into_response(),
+            }
+        }
+    }
+}
+
+pub async fn update_route(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<CreateRouteBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    if body.targets.is_empty() {
+        return AdminErrorResponse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            AdminError::new("validation_error", "targets must not be empty"),
+        )
+        .into_response();
+    }
+    // 404 if not in current snapshot
+    {
+        let snapshot = state.config_rx.borrow().clone();
+        if !snapshot.routes.iter().any(|r| r.id.0 == id) {
+            return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
+                .into_response();
+        }
+    }
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    let def = body.into_def(id.clone());
+    if let Err(e) = store.upsert_route(&def) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    match crate::handlers::connections::rebuild_and_push(&state) {
+        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Ok(snap) => {
+            let route = snap.routes.iter().find(|r| r.id.0 == id);
+            match route {
+                None => AdminErrorResponse(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    AdminError::new("not_found", "route missing after upsert"),
+                )
+                .into_response(),
+                Some(r) => Json(RouteSummary {
+                    id: r.id.0.clone(),
+                    match_models: r.match_models.clone(),
+                    strategy: strategy_str(&r.strategy),
+                    targets: r.targets.iter().map(|t| t.0.clone()).collect(),
+                })
+                .into_response(),
+            }
+        }
+    }
+}
+
+pub async fn delete_route(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
+            .into_response();
+    }
+    let Some(store) = &state.gateway_store else {
+        return AdminErrorResponse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            AdminError::new("no_store", "gateway store not available"),
+        )
+        .into_response();
+    };
+    if let Err(e) = store.delete_route(&id) {
+        return AdminErrorResponse(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            AdminError::new("store_error", e.to_string()),
+        )
+        .into_response();
+    }
+    if let Err(e) = crate::handlers::connections::rebuild_and_push(&state) {
+        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,7 +331,6 @@ mod tests {
     use axum::extract::State;
     use http::HeaderMap;
     use std::sync::Arc;
-    use std::time::Instant;
     use tokio::sync::watch;
     use vkdg_config::{
         schema::{AuthDef, ConnectionDef, RouteDef},
@@ -157,19 +338,21 @@ mod tests {
     };
 
     fn make_state_empty() -> AdminState {
-        let snap = ConfigSnapshot::default_empty();
-        let (_tx, rx) = watch::channel(Arc::new(snap));
+        let snap = vkdg_config::ConfigSnapshot::default_empty();
+        let (_tx, rx) = tokio::sync::watch::channel(std::sync::Arc::new(snap));
         AdminState {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
-            started_at: Arc::new(Instant::now()),
-            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            started_at: std::sync::Arc::new(std::time::Instant::now()),
+            key_store: std::sync::Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combos: None,
             reload_plugins: None,
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 
@@ -205,14 +388,16 @@ mod tests {
         AdminState {
             sessions: SessionStore::new("tok".into()),
             config_rx: rx,
-            started_at: Arc::new(Instant::now()),
-            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            started_at: std::sync::Arc::new(std::time::Instant::now()),
+            key_store: std::sync::Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
             request_log: RequestLog::new(),
             combos: None,
             reload_plugins: None,
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 

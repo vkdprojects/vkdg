@@ -1,7 +1,7 @@
 //! Data-plane client authentication.
 //!
 //! Every `/v1/*` route is wrapped once by [`require_api_key`]. It accepts the
-//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (OpenAI
+//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (`OpenAI`
 //! clients), checks the endpoint's scope, and puts the caller's identity in the
 //! request extensions as [`ClientIdentity`] for the ingress handlers.
 //!
@@ -292,7 +292,7 @@ fn metered(
         .filter(|_| log_history)
         .map(|p| {
             let id = p.record.request_id.clone();
-            p.log.push(p.record);
+            p.log.push(&p.record);
             (p.log, id, p.price)
         });
     if charge.is_none() && history.is_none() {
@@ -332,6 +332,8 @@ impl Metered {
             return;
         };
         let usage = self.meter.finish();
+        let stop_reason = self.meter.stop_reason();
+        let context_usage_pct = self.meter.context_usage_pct();
         let ended = self.ended;
         let write = move || {
             if let Some((store, key_id)) = charge {
@@ -340,7 +342,14 @@ impl Metered {
                 }
             }
             if let Some((log, id, price)) = history {
-                log.finish(&id, usage.billed(), ended, price.as_ref());
+                log.finish(
+                    &id,
+                    usage.billed(),
+                    ended,
+                    price.as_ref(),
+                    stop_reason,
+                    context_usage_pct,
+                );
             }
         };
         // SQLite is blocking; keep it off the async workers.
@@ -413,7 +422,7 @@ fn reject(path: &str, status: StatusCode, message: &str) -> Response {
     reject_as(path, status, kind, code, message)
 }
 
-/// `kind` is the Anthropic `error.type`; `code` the OpenAI `error.code`.
+/// `kind` is the Anthropic `error.type`; `code` the `OpenAI` `error.code`.
 fn reject_as(path: &str, status: StatusCode, kind: &str, code: &str, message: &str) -> Response {
     let body = if path.starts_with("/v1/messages") {
         json!({ "type": "error", "error": { "type": kind, "message": message } })
@@ -722,6 +731,14 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 cost_microdollars: None,
+                stop_reason: None,
+                error_message: None,
+                thinking_requested: None,
+                message_count: None,
+                state_transitions: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                context_usage_pct: None,
             },
             price,
         }

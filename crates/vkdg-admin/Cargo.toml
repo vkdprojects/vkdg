@@ -9,6 +9,7 @@ vkdg-core        = { workspace = true }
 vkdg-connections = { workspace = true }
 vkdg-plugin-host = { workspace = true }
 vkdg-config      = { workspace = true }
+vkdg-routing     = { workspace = true }
 axum             = { workspace = true }
 tokio            = { workspace = true }
 serde            = { workspace = true }
@@ -18,6 +19,7 @@ uuid             = { workspace = true }
 chrono           = { workspace = true }
 vkdg-combos     = { workspace = true }
 parking_lot      = { workspace = true }
+serde_yaml       = { workspace = true }
 vkdg-provider-sdk = { workspace = true }
 vkdg-governance  = { workspace = true }
 rusqlite         = { workspace = true }

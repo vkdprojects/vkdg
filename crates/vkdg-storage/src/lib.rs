@@ -81,7 +81,7 @@ impl JobStore for InMemoryJobStore {
                 record.state = state;
                 Ok(())
             }
-            None => anyhow::bail!("job {} not found", job_id),
+            None => anyhow::bail!("job {job_id} not found"),
         }
     }
 }

@@ -2,14 +2,14 @@
 //!
 //! A Kiro account has two independent regions: the OIDC region that issued the
 //! token, and the runtime region hosting the Q Developer profile. They differ for
-//! IAM Identity Center accounts (an IdC in `eu-north-1` still has its profile in
+//! IAM Identity Center accounts (an `IdC` in `eu-north-1` still has its profile in
 //! `us-east-1` or `eu-central-1`), so the runtime region is taken from the
 //! profile ARN and never from the OIDC region.
 
 /// Regions that host an Amazon Q Developer profile.
 pub const PROFILE_REGIONS: [&str; 2] = ["us-east-1", "eu-central-1"];
 
-/// CodeWhisperer home region, used when nothing better is known.
+/// `CodeWhisperer` home region, used when nothing better is known.
 pub const DEFAULT_REGION: &str = "us-east-1";
 
 /// True for a syntactically valid AWS region.
@@ -30,7 +30,7 @@ pub fn is_valid_region(region: &str) -> bool {
 ///
 /// These operations only exist on the AWS `q.*` hosts, which Kiro's own firewall
 /// doc calls legacy and slated for deprecation; the chat data plane has already
-/// moved to `runtime.{region}.kiro.dev` (see [`crate::endpoint`]). GovCloud has no
+/// moved to `runtime.{region}.kiro.dev` (see [`crate::endpoint`]). `GovCloud` has no
 /// `kiro.dev` DNS at all and uses the FIPS hosts.
 pub fn control_plane_host(region: &str) -> String {
     if let Some(gov) = region.strip_prefix("us-gov-") {
@@ -39,7 +39,7 @@ pub fn control_plane_host(region: &str) -> String {
     format!("https://q.{region}.amazonaws.com")
 }
 
-/// Region embedded in a CodeWhisperer profile ARN
+/// Region embedded in a `CodeWhisperer` profile ARN
 /// (`arn:aws:codewhisperer:{region}:...`).
 pub fn region_from_profile_arn(profile_arn: &str) -> Option<String> {
     let region = profile_arn
@@ -84,7 +84,7 @@ pub fn oidc_host(region: &str) -> String {
 ///
 /// Profile regions come first (EU-first for an EMEA account), then the account's
 /// own region as a forward-compatible fallback in case AWS ever co-locates the
-/// profile with the IdC.
+/// profile with the `IdC`.
 pub fn profile_discovery_regions(stored_region: Option<&str>) -> Vec<String> {
     let stored = stored_region
         .unwrap_or_default()

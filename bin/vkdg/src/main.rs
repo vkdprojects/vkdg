@@ -8,16 +8,11 @@ use anyhow::Result;
 use axum::routing::{get, post};
 use axum::Router;
 use clap::{Parser, Subcommand};
-use vkdg_config::{load_and_validate, ConfigSnapshot};
-use vkdg_connections::{
-    Account, AccountStore, AuthKind, ConnectionCatalog, ConnectionConfig, CredentialManager,
-    ProviderKind,
-};
-use vkdg_core::ConnectionId;
+use vkdg_config::{load_and_validate, ConfigSnapshot, GatewayStore};
+use vkdg_connections::{Account, AccountStore, ConnectionCatalog, CredentialManager};
 use vkdg_http::upstream::HttpClient;
 use vkdg_http::{AdmissionGuard, AppState, PipelineState, ServerConfig};
 use vkdg_observe::{init_tracing, DecisionRecordExporter, ObserveConfig};
-use vkdg_operations::CapabilitySet;
 use vkdg_provider_anthropic::AnthropicAdapter;
 use vkdg_provider_antigravity::AntigravityAdapter;
 use vkdg_provider_cerebras::provider as cerebras_provider;
@@ -39,7 +34,7 @@ use vkdg_provider_sdk::{
     ProviderRegistry,
 };
 use vkdg_provider_together::provider as together_provider;
-use vkdg_routing::{PluginHooks, RouteConfig, RouteId, Router as VkdgRouter, StrategyKind};
+use vkdg_routing::Router as VkdgRouter;
 
 // ── Clack visual language constants ──────────────────────────────────────────
 
@@ -48,7 +43,7 @@ const STEP_DONE: &str = "◇";
 const STEP_ERR: &str = "▲";
 // ── Embedded console assets ───────────────────────────────────────────────────
 
-/// SvelteKit console — embedded at compile time in release builds,
+/// `SvelteKit` console — embedded at compile time in release builds,
 /// served from the filesystem in debug builds for fast iteration.
 #[derive(rust_embed::RustEmbed, Clone)]
 #[folder = "../../apps/console/build/"]
@@ -70,10 +65,10 @@ enum Command {
         config: Option<String>,
         #[arg(long, default_value = "0.0.0.0:8080")]
         listen: String,
-        /// Bootstrap token (overrides VKDG_BOOTSTRAP_TOKEN env var).
+        /// Bootstrap token (overrides `VKDG_BOOTSTRAP_TOKEN` env var).
         #[arg(long)]
         token: Option<String>,
-        /// Suppress INFO logs (RUST_LOG=warn). Errors and warnings still show.
+        /// Suppress INFO logs (`RUST_LOG=warn`). Errors and warnings still show.
         #[arg(long)]
         quiet: bool,
     },
@@ -91,7 +86,7 @@ enum Command {
     Replay {
         /// Path to the YAML fixture file.
         fixture: String,
-        /// Override the gateway base URL (default: VKDG_BASE_URL or http://127.0.0.1:8080).
+        /// Override the gateway base URL (default: `VKDG_BASE_URL` or <http://127.0.0.1:8080>).
         #[arg(long)]
         base_url: Option<String>,
         /// Start an in-process mock gateway instead of connecting to a running instance.
@@ -294,7 +289,7 @@ async fn main() -> Result<()> {
         Command::Config {
             sub: ConfigSub::Check { path },
         } => {
-            vkdg_cli::commands::config_check::run(&path).await?;
+            vkdg_cli::commands::config_check::run(&path)?;
             // `config check` must refuse what `serve` would refuse: a provider
             // with no adapter (e.g. a typo, or a plugin that is not installed).
             let snap = load_and_validate(&path, 0)?;
@@ -330,7 +325,7 @@ async fn main() -> Result<()> {
         } => cmd_login(&provider, method.as_deref(), &opts, code, list_methods).await?,
         Command::Accounts { sub } => cmd_accounts(sub)?,
         Command::Keys { sub } => cmd_keys(sub)?,
-        Command::Admin { sub } => cmd_admin(sub)?,
+        Command::Admin { sub } => cmd_admin(&sub)?,
     }
     Ok(())
 }
@@ -356,7 +351,7 @@ async fn serve(
         ..Default::default()
     });
 
-    let server_config = ServerConfig {
+    let mut server_config = ServerConfig {
         listen_addr: listen.clone(),
         ..Default::default()
     };
@@ -376,7 +371,13 @@ async fn serve(
     };
     let credentials = Arc::new(build_credentials(account_store.as_ref(), &registry));
 
-    let mut admin_config_rx: Option<vkdg_config::ConfigRx> = None;
+    // ── GatewayStore + config bootstrap ───────────────────────────────────────
+    // Open (or create) the store always; it lives next to accounts.db.
+    let gateway_store = Arc::new(
+        GatewayStore::open(&AccountStore::default_path().with_file_name("gateway.db"))
+            .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?,
+    );
+
     // Next to accounts.db and keys.db, so history survives a restart or deploy.
     let request_log_path = AccountStore::default_path().with_file_name("requests.db");
     let request_log = match vkdg_admin::handlers::requests::RequestLog::open(
@@ -393,42 +394,101 @@ async fn serve(
     // Auth plugins, loaded once for both builders so a gateway started without
     // a config file has them too; plugin reloads swap this same registry.
     let hooks = Arc::new(build_hook_registry(&PluginStore::from_env()));
-    let mut pipeline = if let Some(path) = &config_path {
-        match load_and_validate(path, 1) {
-            Ok(snap) => {
-                tracing::info!(path = %path, version = snap.version, "loaded config from file");
-                let mut pipeline = build_pipeline_from_snapshot(
-                    &snap,
-                    max_concurrent,
-                    Arc::clone(&credentials),
-                    Arc::clone(&registry),
-                );
-                pipeline.hooks = Arc::clone(&hooks);
-                // Refuse to start on a route naming a hook that is not installed,
-                // exactly as a reload with one is refused.
-                unknown_hooks(&snap, &pipeline.hooks).map_err(anyhow::Error::msg)?;
-                unknown_providers(&snap, &pipeline.provider_registry)
-                    .map_err(anyhow::Error::msg)?;
-                // Install hot-reload watcher; errors on bad reloads are logged, not fatal.
-                let (tx, _rx) = vkdg_config::config_channel(snap);
-                admin_config_rx = Some(tx.subscribe());
-                spawn_config_applier(tx.subscribe(), &pipeline);
-                drop(vkdg_config::watch(path.clone(), tx, 1));
-                Some(pipeline)
-            }
-            // The operator asked for this file. Serving a different gateway (env
-            // routes, maybe an ANTHROPIC_API_KEY passthrough) would hide the
-            // mistake, so refuse to start, as `vkdg config check` would.
-            Err(e) => anyhow::bail!("config file {path} is invalid: {e}"),
+
+    // Build a ConfigSnapshot from the store (preferred) or the YAML file (seed).
+    // Limits and observe always come from the YAML if present; only connections
+    // and routes move to the store.
+    let seeded_snap: ConfigSnapshot = if gateway_store
+        .needs_seed()
+        .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?
+    {
+        if let Some(path) = &config_path {
+            let snap = load_and_validate(path, 1)
+                .map_err(|e| anyhow::anyhow!("config file {path} is invalid: {e}"))?;
+            unknown_hooks(&snap, &hooks).map_err(anyhow::Error::msg)?;
+            unknown_providers(&snap, &registry).map_err(anyhow::Error::msg)?;
+            gateway_store
+                .set_connections(&snap.gateway.connections)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .set_routes(&snap.gateway.routes)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .mark_seeded()
+                .map_err(|e| anyhow::anyhow!("gateway store mark_seeded: {e}"))?;
+            tracing::info!(path = %path, version = snap.version, "seeded gateway store from config file");
+            snap
+        } else if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+            let snap = env_snapshot(max_concurrent)?;
+            gateway_store
+                .set_connections(&snap.gateway.connections)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .set_routes(&snap.gateway.routes)
+                .map_err(|e| anyhow::anyhow!("gateway store seed: {e}"))?;
+            gateway_store
+                .mark_seeded()
+                .map_err(|e| anyhow::anyhow!("gateway store mark_seeded: {e}"))?;
+            tracing::info!("seeded gateway store from ANTHROPIC_API_KEY");
+            snap
+        } else {
+            ConfigSnapshot::default_empty()
         }
     } else {
-        build_pipeline_from_env(
-            max_concurrent,
-            Arc::clone(&credentials),
-            Arc::clone(&registry),
-        )
+        // Store has data — build snapshot from it, carrying limits/observe from
+        // the YAML file if one was given (connections/routes come from the store).
+        let (conn_defs, route_defs) = gateway_store
+            .load()
+            .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?;
+        let base_cfg = config_path.as_deref().and_then(|path| {
+            load_and_validate(path, 1)
+                .ok()
+                .map(|s| (*s.gateway).clone())
+        });
+        let mut gateway = base_cfg.unwrap_or_else(|| vkdg_config::schema::GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![],
+            routes: vec![],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        });
+        gateway.connections = conn_defs;
+        gateway.routes = route_defs;
+        let snap = ConfigSnapshot::build(1, gateway)
+            .map_err(|e| anyhow::anyhow!("gateway store invalid: {e}"))?;
+        tracing::info!(
+            connections = snap.connections.len(),
+            routes = snap.routes.len(),
+            "loaded gateway config from store"
+        );
+        snap
     };
-    // Share request_log Arc between pipeline and admin API.
+
+    let (config_tx, config_rx) = vkdg_config::config_channel(seeded_snap.clone());
+    let config_tx = Some(config_tx);
+    // Hot-reload: keep watching the file for external edits even after seeding.
+    // The store's connections and routes win over the file's.
+    if let (Some(path), Some(tx)) = (&config_path, &config_tx) {
+        spawn_file_reload(path.clone(), Arc::clone(&gateway_store), tx.clone());
+    }
+
+    // Always snapshot-based, even with nothing configured: the config applier
+    // then puts connections made in the console into the running data plane.
+    // With no pipeline they only took effect after a restart.
+    if let Some(limit) = seeded_snap.limits.max_body_bytes {
+        server_config.max_body_bytes = limit;
+    }
+    let mut pipeline = build_pipeline_from_snapshot(
+        &seeded_snap,
+        max_concurrent,
+        Arc::clone(&credentials),
+        Arc::clone(&registry),
+    );
+    pipeline.hooks = Arc::clone(&hooks);
+    spawn_config_applier(config_rx.clone(), &pipeline);
+    let mut pipeline = Some(pipeline);
+    // Share request_log Arc and hooks between pipeline and admin API.
     if let Some(p) = &mut pipeline {
         p.request_log = Some(Arc::clone(&request_log));
         p.hooks = Arc::clone(&hooks);
@@ -510,6 +570,7 @@ async fn serve(
             "/v1/images/generations",
             post(vkdg_ingress_openai::handle_image_generations),
         )
+        .route("/v1/responses", post(vkdg_ingress_openai::handle_responses))
         .route("/v1/models", get(vkdg_http::models::list_models))
         // Applies to the /v1 routes above only; /health and /info stay public.
         .route_layer(axum::middleware::from_fn_with_state(
@@ -525,19 +586,12 @@ async fn serve(
     let admin_addr = std::env::var("VKDG_ADMIN_ADDR").unwrap_or_else(|_| "127.0.0.1:9090".into());
     let (bootstrap_token, auto_token): (String, Option<String>) = if let Some(t) = token_override {
         (t, None) // explicit --token: don't show it (user already knows it)
+    } else if let Ok(t) = std::env::var("VKDG_BOOTSTRAP_TOKEN") {
+        (t, None)
     } else {
-        match std::env::var("VKDG_BOOTSTRAP_TOKEN") {
-            Ok(t) => (t, None),
-            Err(_) => {
-                let t = uuid::Uuid::new_v4().to_string();
-                (t.clone(), Some(t))
-            }
-        }
+        let t = uuid::Uuid::new_v4().to_string();
+        (t.clone(), Some(t))
     };
-    let config_rx = admin_config_rx.unwrap_or_else(|| {
-        let (_tx, rx) = vkdg_config::config_channel(vkdg_config::ConfigSnapshot::default_empty());
-        rx
-    });
     let admin_state = vkdg_admin::AdminState {
         sessions: vkdg_admin::session::SessionStore::with_password_file(
             bootstrap_token,
@@ -559,6 +613,8 @@ async fn serve(
             )
         }),
         connection_tester,
+        gateway_store: Some(Arc::clone(&gateway_store)),
+        config_tx,
     };
     // Console SPA served as fallback on the admin port (9090).
     // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.
@@ -619,8 +675,8 @@ fn print_startup_banner(gateway_addr: &str, admin_addr: &str, auto_token: Option
     let pad = |s: &str| " ".repeat(W.saturating_sub(s.chars().count()));
 
     let title = "   ▶  VKDG  v0.1.0";
-    let gw_vis = format!("   Gateway   {}", gw);
-    let con_vis = format!("   Console   {}", con);
+    let gw_vis = format!("   Gateway   {gw}");
+    let con_vis = format!("   Console   {con}");
 
     println!();
     println!("  {teal}{top}{reset}");
@@ -638,7 +694,7 @@ fn print_startup_banner(gateway_addr: &str, admin_addr: &str, auto_token: Option
 
     if let Some(token) = auto_token {
         let tok_label = "   Bootstrap token (use once to sign in):";
-        let tok_val = format!("   {}", token);
+        let tok_val = format!("   {token}");
         println!("  {teal}{mid}{reset}");
         println!("  {teal}{empty}{reset}");
         println!(
@@ -707,66 +763,133 @@ fn build_pipeline_from_snapshot(
     }
 }
 
-// ── Pipeline builder — from env vars (fallback) ───────────────────────────────
+// ── Config sources ─────────────────────────────────────────────────────────────
 
-fn build_pipeline_from_env(
-    max_concurrent: usize,
-    credentials: Arc<CredentialManager>,
-    provider_registry: Arc<ProviderRegistry>,
-) -> Option<PipelineState> {
-    let api_key_var = "ANTHROPIC_API_KEY";
-    if std::env::var(api_key_var).is_err() {
-        eprintln!("ANTHROPIC_API_KEY not set — pipeline disabled, /v1/messages returns 501");
-        return None;
-    }
-
-    let conn_id = ConnectionId("anthropic-default".into());
-
-    let config = ConnectionConfig {
-        id: conn_id.clone(),
-        provider: ProviderKind::Anthropic,
-        auth: AuthKind::ApiKey {
-            env_var: api_key_var.into(),
-        },
-        models: vec!["claude-*".into()],
-        max_concurrent: max_concurrent as u32,
-        weight: 1,
-        tags: vec![],
-        endpoint: None,
-        capabilities: CapabilitySet::default(),
-    };
-
-    let route = RouteConfig {
-        id: RouteId("default".into()),
-        match_models: vec!["claude-*".into()],
-        strategy: StrategyKind::RoundRobin,
-        targets: vec![conn_id],
-        plugin_hooks: PluginHooks::default(),
-    };
-
-    Some(PipelineState {
-        admission: Arc::new(AdmissionGuard::new(max_concurrent)),
-        router: Arc::new(VkdgRouter::new(vec![route])),
-        catalog: Arc::new(ConnectionCatalog::new(vec![config])),
-        credentials,
-        http_client: Arc::new(HttpClient::new()),
-        exporter: Arc::new(DecisionRecordExporter::new()),
-        provider_registry,
-        cache: None,
-        combo_resolver: None,
-        compressor: None,
-        dedup_table: None,
-        session_registry: None,
-        quota_tracker: None,
+/// What `ANTHROPIC_API_KEY` alone configures: one passthrough connection and a
+/// route to it. Seeded into the store on a first boot like a config file, so the
+/// console sees it and a later edit does not drop it.
+fn env_snapshot(max_concurrent: usize) -> Result<ConfigSnapshot> {
+    use vkdg_config::schema::{AuthDef, ConnectionDef, GatewayConfig, RouteDef};
+    let gateway = GatewayConfig {
+        listen: "0.0.0.0:8080".into(),
+        connections: vec![ConnectionDef {
+            id: "anthropic-default".into(),
+            provider: "anthropic".into(),
+            base_url: None,
+            endpoint: None,
+            auth: AuthDef::ApiKey {
+                env_var: "ANTHROPIC_API_KEY".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: u32::try_from(max_concurrent).ok(),
+            weight: Some(1),
+            tags: vec![],
+        }],
+        routes: vec![RouteDef {
+            id: "default".into(),
+            match_models: vec!["claude-*".into()],
+            strategy: "round_robin".into(),
+            targets: vec!["anthropic-default".into()],
+            hooks: Default::default(),
+        }],
+        limits: None,
+        observe: None,
         global_system_prompt: None,
-        ip_policy: None,
-        latency_tracker: None,
-        memory_store: None,
-        eval_enabled: false,
-        relay_enabled: false,
-        request_log: None,
-        hooks: Default::default(),
-    })
+    };
+    ConfigSnapshot::build(1, gateway).map_err(|e| anyhow::anyhow!("ANTHROPIC_API_KEY config: {e}"))
+}
+
+/// Ids a config file defined, so a later edit can tell "the file dropped it"
+/// from "the console made it".
+#[derive(Default)]
+struct FileOwned {
+    connections: std::collections::HashSet<String>,
+    routes: std::collections::HashSet<String>,
+}
+
+impl FileOwned {
+    fn of(snap: &ConfigSnapshot) -> Self {
+        Self {
+            connections: snap
+                .gateway
+                .connections
+                .iter()
+                .map(|c| c.id.clone())
+                .collect(),
+            routes: snap.gateway.routes.iter().map(|r| r.id.clone()).collect(),
+        }
+    }
+}
+
+/// Apply an edited config file on top of the store, persist the result, and
+/// return the snapshot to publish. The file's connections and routes are added
+/// or replaced by id, ones it used to define and no longer does are removed,
+/// and everything else (what the console made) is kept. Saving the file used
+/// to swap the live connections for the file's, dropping the console's. The
+/// store is written only after the merged snapshot validates, so a rejected
+/// reload changes nothing.
+fn merge_file(
+    file: &ConfigSnapshot,
+    owned: &FileOwned,
+    store: &GatewayStore,
+    version: u64,
+) -> Result<ConfigSnapshot> {
+    let (mut connections, mut routes) = store
+        .load()
+        .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?;
+    let now = FileOwned::of(file);
+    connections.retain(|c| !owned.connections.contains(&c.id) || now.connections.contains(&c.id));
+    routes.retain(|r| !owned.routes.contains(&r.id) || now.routes.contains(&r.id));
+    for def in &file.gateway.connections {
+        connections.retain(|c| c.id != def.id);
+        connections.push(def.clone());
+    }
+    for def in &file.gateway.routes {
+        routes.retain(|r| r.id != def.id);
+        routes.push(def.clone());
+    }
+    // A route must not name a connection that is gone; one left with no
+    // target at all goes with it.
+    let live: std::collections::HashSet<&str> = connections.iter().map(|c| c.id.as_str()).collect();
+    for route in &mut routes {
+        route.targets.retain(|t| live.contains(t.as_str()));
+    }
+    routes.retain(|r| !r.targets.is_empty());
+
+    let mut gateway = (*file.gateway).clone();
+    gateway.connections.clone_from(&connections);
+    gateway.routes.clone_from(&routes);
+    let snap = ConfigSnapshot::build(version, gateway).map_err(|e| anyhow::anyhow!("{e}"))?;
+    store
+        .set_connections(&connections)
+        .and_then(|()| store.set_routes(&routes))
+        .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?;
+    Ok(snap)
+}
+
+/// Watch the config file; every valid edit is merged with the store (see
+/// [`merge_file`]) and applied to the running gateway.
+fn spawn_file_reload(path: String, store: Arc<GatewayStore>, tx: vkdg_config::ConfigTx) {
+    let mut owned = load_and_validate(&path, 1)
+        .map(|s| FileOwned::of(&s))
+        .unwrap_or_default();
+    let (file_tx, mut file_rx) = vkdg_config::config_channel(tx.borrow().as_ref().clone());
+    drop(vkdg_config::watch(path, file_tx, 1));
+    tokio::spawn(async move {
+        while file_rx.changed().await.is_ok() {
+            let file = Arc::clone(&file_rx.borrow_and_update());
+            let version = tx.borrow().version + 1;
+            match merge_file(&file, &owned, &store, version) {
+                Ok(snap) => {
+                    owned = FileOwned::of(&file);
+                    let _ = tx.send(Arc::new(snap));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "config reload rejected — keeping current snapshot");
+                }
+            }
+        }
+    });
 }
 
 fn build_provider_registry() -> Arc<ProviderRegistry> {
@@ -894,14 +1017,13 @@ async fn cmd_login(
         OAuthFlow::AuthorizationCodePkce => {
             let auth = oauth.start_pkce_login(&method.id, &params).await?;
             println!("Open: {}", auth.authorize_url);
-            let code = match code {
-                Some(c) => c,
-                None => {
-                    println!("Paste the authorization code or callback URL:");
-                    let mut line = String::new();
-                    std::io::stdin().read_line(&mut line)?;
-                    line.trim().to_owned()
-                }
+            let code = if let Some(c) = code {
+                c
+            } else {
+                println!("Paste the authorization code or callback URL:");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                line.trim().to_owned()
             };
             oauth
                 .finish_pkce_login(&method.id, &auth.state, &code)
@@ -1024,7 +1146,7 @@ fn build_hook_registry(store: &PluginStore) -> vkdg_http::hooks::HookRegistry {
                 reg.register_auth(name, Arc::new(WasmAuthHook(auth)));
             }
             Err(e) => {
-                tracing::error!(plugin = %name, error = %e, "WASM auth plugin failed to load; skipped")
+                tracing::error!(plugin = %name, error = %e, "WASM auth plugin failed to load; skipped");
             }
         }
     }
@@ -1091,7 +1213,7 @@ fn admin_password_path() -> std::path::PathBuf {
     )
 }
 
-fn cmd_admin(sub: AdminSub) -> Result<()> {
+fn cmd_admin(sub: &AdminSub) -> Result<()> {
     match sub {
         AdminSub::SetPassword => {
             use std::io::{BufRead, IsTerminal};
@@ -1146,27 +1268,23 @@ fn open_key_store() -> Result<vkdg_governance::VirtualKeyStore> {
 /// reverse proxy is still public, which is exactly how an open relay happens.
 /// `VKDG_DATA_AUTH=off` is the only way out, and it is loud.
 fn data_auth_from_env(store: Arc<vkdg_governance::VirtualKeyStore>) -> Result<vkdg_http::DataAuth> {
-    let auth = match std::env::var("VKDG_DATA_AUTH").as_deref() {
-        Ok("off") => {
+    let auth = if std::env::var("VKDG_DATA_AUTH").as_deref() == Ok("off") {
+        tracing::warn!(
+            "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
+             Anyone who can reach this port spends your provider accounts."
+        );
+        vkdg_http::DataAuth::disabled()
+    } else {
+        let active = store
+            .list()
+            .map_or(0, |keys| keys.iter().filter(|k| !k.is_revoked()).count());
+        if active == 0 {
             tracing::warn!(
-                "VKDG_DATA_AUTH=off: /v1/* accepts requests WITHOUT an API key. \
-                 Anyone who can reach this port spends your provider accounts."
+                path = %key_store_path().display(),
+                "no API keys yet: /v1/* rejects every request until you run `vkdg keys create <name>`"
             );
-            vkdg_http::DataAuth::disabled()
         }
-        _ => {
-            let active = store
-                .list()
-                .map(|keys| keys.iter().filter(|k| !k.is_revoked()).count())
-                .unwrap_or(0);
-            if active == 0 {
-                tracing::warn!(
-                    path = %key_store_path().display(),
-                    "no API keys yet: /v1/* rejects every request until you run `vkdg keys create <name>`"
-                );
-            }
-            vkdg_http::DataAuth::required(store)
-        }
+        vkdg_http::DataAuth::required(store)
     }
     .with_trusted_proxies(trusted_proxies_from_env()?);
     Ok(auth)
@@ -1268,6 +1386,7 @@ fn cmd_setup() -> Result<()> {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
+    #[allow(clippy::literal_string_with_formatting_args)] // indicatif template, not a format! arg
     fn spinner(msg: &str) -> ProgressBar {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -1478,16 +1597,15 @@ fn cmd_setup() -> Result<()> {
 
     // ── Step 6: verify API key ────────────────────────────────────────────────
     if let Ok(key_val) = std::env::var(&env_var) {
-        let sp = spinner(&format!("Verifying {} key...", display_name));
+        let sp = spinner(&format!("Verifying {display_name} key..."));
         std::thread::sleep(Duration::from_millis(800));
         let looks_ok = !key_val.is_empty() && key_val.len() > 8;
         sp.finish_and_clear();
         if looks_ok {
-            ok(&format!("{} key looks valid", display_name));
+            ok(&format!("{display_name} key looks valid"));
         } else {
             warn(&format!(
-                "{} key may be invalid — proceeding anyway",
-                display_name
+                "{display_name} key may be invalid — proceeding anyway"
             ));
         }
         bar();
@@ -1689,9 +1807,7 @@ fn cmd_update(no_confirm: bool, version: Option<&str>) -> Result<()> {
 /// Returns true if the process can write to the system-wide systemd unit directory.
 fn is_root() -> bool {
     std::path::Path::new("/etc/systemd/system").exists()
-        && std::fs::metadata("/etc/systemd/system")
-            .map(|m| !m.permissions().readonly())
-            .unwrap_or(false)
+        && std::fs::metadata("/etc/systemd/system").is_ok_and(|m| !m.permissions().readonly())
 }
 
 // ── Plugin subcommands ────────────────────────────────────────────────────────
@@ -1700,7 +1816,7 @@ use anyhow::Context as _;
 use vkdg_plugin_host::{PluginStore, RegistryIndex, RegistryManifest, DEFAULT_REGISTRY};
 
 fn handle_plugin(sub: PluginSub) {
-    use PluginSub::*;
+    use PluginSub::{Install, List, Remove, Search, Tap, Update, ValidateManifest};
     match sub {
         Search { query, kind } => {
             if let Err(e) = plugin_search(query.as_deref().unwrap_or(""), kind.as_ref()) {
@@ -1825,9 +1941,10 @@ fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
     let (manifest, local_wasm) = load_manifest(source, registry_ref)?;
 
     let wasm = match manifest.source_kind() {
-        Ok(vkdg_plugin_host::SourceKind::Wasm) => match local_wasm {
-            Some(bytes) => Some(bytes),
-            None => {
+        Ok(vkdg_plugin_host::SourceKind::Wasm) => {
+            if let Some(bytes) = local_wasm {
+                Some(bytes)
+            } else {
                 let url = manifest
                     .install
                     .wasm
@@ -1836,7 +1953,7 @@ fn plugin_install(source: &str, registry_ref: &str) -> Result<()> {
                 println!("Fetching {url}");
                 Some(fetch_bytes(url)?)
             }
-        },
+        }
         _ => None,
     };
 
@@ -2096,6 +2213,7 @@ async fn test_connection_smoke(
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     });
 
     // Force routing to this specific connection by temporarily making the
@@ -2107,7 +2225,7 @@ async fn test_connection_smoke(
 
     let t = Instant::now();
     let resp = run_conversation_pipeline(Arc::clone(pipeline), ctx, op).await;
-    let latency_ms = t.elapsed().as_millis() as u64;
+    let latency_ms = u64::try_from(t.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     let status = resp.status();
     if status.is_success() || status.as_u16() == 400 || status.as_u16() == 422 {
@@ -2180,6 +2298,143 @@ mod tests {
         let ok = loads(&setup_yaml("kiro", None, "K", "claude-*")).unwrap();
         unknown_providers(&ok, &build_provider_registry()).unwrap();
         unknown_providers(&ok, &ProviderRegistry::empty()).unwrap_err();
+    }
+
+    fn api_key_conn(id: &str, models: &[&str]) -> vkdg_config::schema::ConnectionDef {
+        vkdg_config::schema::ConnectionDef {
+            id: id.into(),
+            provider: "anthropic".into(),
+            base_url: None,
+            endpoint: None,
+            auth: vkdg_config::schema::AuthDef::ApiKey {
+                env_var: "K".into(),
+            },
+            models: models.iter().map(|m| (*m).to_owned()).collect(),
+            max_concurrent: None,
+            weight: None,
+            tags: vec![],
+        }
+    }
+
+    fn route(id: &str, targets: &[&str]) -> vkdg_config::schema::RouteDef {
+        vkdg_config::schema::RouteDef {
+            id: id.into(),
+            match_models: vec!["claude-*".into()],
+            strategy: "round_robin".into(),
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            hooks: Default::default(),
+        }
+    }
+
+    fn file_with(connections: &[&str], limit: usize) -> ConfigSnapshot {
+        let mut head = String::from(if connections.is_empty() {
+            "connections: []\n"
+        } else {
+            "connections:\n"
+        });
+        for id in connections {
+            use std::fmt::Write as _;
+            write!(
+                head,
+                "  - id: {id}\n    provider: anthropic\n    auth: {{ type: api_key, env_var: K }}\n    models: [\"claude-*\"]\n"
+            )
+            .unwrap();
+        }
+        loads(&format!(
+            "listen: 0.0.0.0:8080\n{head}routes: []\nlimits: {{ max_concurrent_requests: {limit} }}\n"
+        ))
+        .unwrap()
+    }
+
+    fn ids(snap: &ConfigSnapshot) -> Vec<String> {
+        let mut v: Vec<String> = snap.connections.iter().map(|c| c.id.0.clone()).collect();
+        v.sort();
+        v
+    }
+
+    // A file edit after the first boot replaced the live connections with the
+    // file's, dropping everything made in the console until the next restart.
+    // File entries still apply (documented hot reload), persist, and the file
+    // owns limits and the other global settings.
+    #[test]
+    fn file_reload_applies_file_entries_and_keeps_console_ones() {
+        let store = GatewayStore::in_memory().unwrap();
+        store
+            .upsert_connection(&api_key_conn("console-c", &["gpt-*"]))
+            .unwrap();
+
+        let merged =
+            merge_file(&file_with(&["file-c"], 7), &FileOwned::default(), &store, 9).unwrap();
+
+        assert_eq!(ids(&merged), ["console-c", "file-c"]);
+        assert_eq!(merged.version, 9);
+        assert_eq!(merged.limits.max_concurrent_requests, Some(7));
+        let stored: Vec<String> = store.load().unwrap().0.into_iter().map(|c| c.id).collect();
+        assert_eq!(
+            stored.len(),
+            2,
+            "the reload must survive a restart: {stored:?}"
+        );
+    }
+
+    // Plausible wrong impls: dropping an entry from the file leaves it running
+    // forever; or the reload also deletes the console's connections and routes.
+    #[test]
+    fn file_reload_removes_what_the_file_dropped_and_nothing_else() {
+        let store = GatewayStore::in_memory().unwrap();
+        store
+            .upsert_connection(&api_key_conn("console-c", &["gpt-*"]))
+            .unwrap();
+        store
+            .upsert_connection(&api_key_conn("file-c", &["claude-*"]))
+            .unwrap();
+        store.upsert_route(&route("r-file", &["file-c"])).unwrap();
+        store
+            .upsert_route(&route("r-console", &["file-c", "console-c"]))
+            .unwrap();
+        let owned = FileOwned {
+            connections: ["file-c".to_owned()].into(),
+            routes: ["r-file".to_owned()].into(),
+        };
+
+        let merged = merge_file(&file_with(&[], 5), &owned, &store, 2).unwrap();
+
+        assert_eq!(ids(&merged), ["console-c"]);
+        let (_, routes) = store.load().unwrap();
+        assert_eq!(routes.len(), 1, "{routes:?}");
+        assert_eq!(
+            (routes[0].id.as_str(), &routes[0].targets),
+            ("r-console", &vec!["console-c".to_owned()])
+        );
+    }
+
+    // The file is what the operator just edited, so on the same id it wins.
+    #[test]
+    fn file_entry_wins_over_a_console_entry_with_the_same_id() {
+        let store = GatewayStore::in_memory().unwrap();
+        store
+            .upsert_connection(&api_key_conn("file-c", &["gpt-*"]))
+            .unwrap();
+        let merged =
+            merge_file(&file_with(&["file-c"], 5), &FileOwned::default(), &store, 2).unwrap();
+        assert_eq!(merged.connections[0].models, ["claude-*"]);
+    }
+
+    // First boot with only ANTHROPIC_API_KEY: the connection must live in the
+    // store like a seeded config, or the first console edit rebuilds the
+    // snapshot from the store and silently drops it.
+    #[test]
+    fn env_snapshot_routes_claude_through_the_env_key() {
+        let snap = env_snapshot(50).unwrap();
+        assert_eq!(snap.connections.len(), 1);
+        let c = &snap.gateway.connections[0];
+        assert!(matches!(
+            &c.auth,
+            vkdg_config::schema::AuthDef::ApiKey { env_var } if env_var == "ANTHROPIC_API_KEY"
+        ));
+        assert_eq!(c.models, ["claude-*"]);
+        assert_eq!(snap.routes.len(), 1);
+        assert_eq!(snap.gateway.routes[0].targets, std::slice::from_ref(&c.id));
     }
 
     /// A component exporting `authenticate` that always returns `payload`.

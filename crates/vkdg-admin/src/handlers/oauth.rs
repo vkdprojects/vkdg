@@ -257,8 +257,8 @@ impl AccountSummary {
                 self.credits_used = Some(u.credits_used);
                 self.credits_limit = u.credits_limit;
                 self.credits_period_end = u.credits_period_end;
-                self.credits_plan = u.plan.clone();
-                self.credits_user_ref = u.upstream_user_ref.clone();
+                self.credits_plan.clone_from(&u.plan);
+                self.credits_user_ref.clone_from(&u.upstream_user_ref);
             }
             None => {
                 self.credits_source = Some("unavailable");
@@ -345,9 +345,26 @@ fn oauth(adapter: &dyn ProviderAdapter) -> &dyn OAuthProvider {
     adapter.oauth().expect("resolve() checked oauth()")
 }
 
-fn done(account: &Account) -> Response {
-    Json(serde_json::json!({ "status": "done", "account": AccountSummary::from(account) }))
-        .into_response()
+/// The connection that serves `account`, created on first login. A failure to
+/// create it never fails the login (the account is already saved); it is
+/// reported next to the account so the console can say so.
+fn connect_account(
+    state: &AdminState,
+    adapter: &dyn ProviderAdapter,
+    account: &Account,
+) -> Result<Option<String>, AdminError> {
+    crate::handlers::connections::ensure_account_connection(state, adapter, &account.id)
+}
+
+fn done(account: &Account, connection: Result<Option<String>, AdminError>) -> Response {
+    let mut body =
+        serde_json::json!({ "status": "done", "account": AccountSummary::from(account) });
+    match connection {
+        Ok(Some(id)) => body["connection_id"] = id.into(),
+        Ok(None) => {}
+        Err(e) => body["connection_error"] = e.message.into(),
+    }
+    Json(body).into_response()
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -359,7 +376,7 @@ pub async fn list_oauth_providers(State(state): State<AdminState>, headers: Head
         return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
             .into_response();
     }
-    let Some(svc) = state.logins.clone() else {
+    let Some(svc) = state.logins else {
         return err(
             StatusCode::SERVICE_UNAVAILABLE,
             "accounts_disabled",
@@ -533,7 +550,8 @@ pub async fn poll_login(
             match svc.save(&provider, result, replaces.as_deref()) {
                 Ok(account) => {
                     svc.evict(&account.id).await;
-                    done(&account)
+                    let connection = connect_account(&state, adapter.as_ref(), &account);
+                    done(&account, connection)
                 }
                 Err(r) => *r,
             }
@@ -572,7 +590,8 @@ pub async fn import_token(
         Ok(result) => match svc.save(&provider, result, body.account_id.as_deref()) {
             Ok(account) => {
                 svc.evict(&account.id).await;
-                (StatusCode::CREATED, done(&account)).into_response()
+                let connection = connect_account(&state, adapter.as_ref(), &account);
+                (StatusCode::CREATED, done(&account, connection)).into_response()
             }
             Err(r) => *r,
         },
@@ -614,8 +633,9 @@ pub async fn list_accounts(State(state): State<AdminState>, headers: HeaderMap) 
                     let summary = AccountSummary::from(a);
                     match svc.usage_for(a).await {
                         UsageOutcome::NotCapable => summary,
-                        UsageOutcome::Read(checked_at, snapshot) => summary
-                            .with_usage(&checked_at.to_rfc3339(), snapshot.as_ref()),
+                        UsageOutcome::Read(checked_at, snapshot) => {
+                            summary.with_usage(&checked_at.to_rfc3339(), snapshot.as_ref())
+                        }
                     }
                 }))
                 .await;
@@ -644,6 +664,10 @@ pub async fn delete_account(
             if let Some(creds) = &svc.credentials {
                 creds.forget_account(&id).await;
             }
+            // Its connection would fail every request ("account not found").
+            if let Err(e) = crate::handlers::connections::remove_account_connections(&state, &id) {
+                return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => {
@@ -657,6 +681,71 @@ pub async fn delete_account(
     }
 }
 
+/// `POST /admin/v1/accounts/{id}/connection`: give an account its connection.
+/// 201 when created, 200 when it already had one. For accounts connected
+/// before connections were created automatically.
+pub async fn enable_account(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let svc = match accounts_service(&state, &headers) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    let account = match svc.store.get(&id) {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
+                .into_response()
+        }
+        Err(e) => {
+            return err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                e.to_string(),
+            )
+        }
+    };
+    if state.gateway_store.is_none() {
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_store",
+            "gateway store not available",
+        );
+    }
+    match crate::handlers::connections::connection_id_for_account(&state, &id) {
+        Ok(Some(connection_id)) => {
+            return Json(serde_json::json!({ "connection_id": connection_id })).into_response()
+        }
+        Ok(None) => {}
+        Err(e) => return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+    let Some(adapter) = svc.registry.get(&account.provider) else {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "provider_unavailable",
+            format!("provider '{}' is not installed", account.provider),
+        );
+    };
+    match crate::handlers::connections::ensure_account_connection(&state, adapter.as_ref(), &id) {
+        Ok(Some(connection_id)) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "connection_id": connection_id })),
+        )
+            .into_response(),
+        Ok(None) => err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no_default_models",
+            format!(
+                "{} cannot route requests yet, so it has no default models; add a connection by hand",
+                adapter.display_name()
+            ),
+        ),
+        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +754,7 @@ mod tests {
     use futures::future::BoxFuture;
     use std::time::Instant;
     use tokio::sync::watch;
+    use vkdg_config::schema::{AuthDef, ConnectionDef};
     use vkdg_config::ConfigSnapshot;
     use vkdg_connections::{ConnectionConfig, Credential, TokenPair};
     use vkdg_operations::Operation;
@@ -675,13 +765,14 @@ mod tests {
     /// Fake device-code provider: first poll pending, second done.
     struct FakeDevice {
         polls: Mutex<u32>,
+        models: Vec<String>,
     }
 
     impl ProviderAdapter for FakeDevice {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "fake"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Fake"
         }
         fn prepare(
@@ -694,6 +785,9 @@ mod tests {
         }
         fn oauth(&self) -> Option<&dyn OAuthProvider> {
             Some(self)
+        }
+        fn default_models(&self) -> Vec<String> {
+            self.models.clone()
         }
     }
 
@@ -782,6 +876,7 @@ mod tests {
         let mut registry = ProviderRegistry::empty();
         registry.register(Arc::new(FakeDevice {
             polls: Mutex::new(0),
+            models: vec!["fake-*".into()],
         }));
         let store = Arc::new(AccountStore::in_memory().unwrap());
         let state = AdminState {
@@ -799,6 +894,8 @@ mod tests {
                 Arc::clone(&store),
                 None,
             )),
+            gateway_store: None,
+            config_tx: None,
         };
         (state, store)
     }
@@ -1023,10 +1120,10 @@ mod tests {
     }
 
     impl ProviderAdapter for FakeCredits {
-        fn id(&self) -> &str {
+        fn id(&self) -> &'static str {
             "credits"
         }
-        fn display_name(&self) -> &str {
+        fn display_name(&self) -> &'static str {
             "Credits"
         }
         fn prepare(
@@ -1067,7 +1164,13 @@ mod tests {
             reload_plugins: None,
             connection_tester: None,
             catalog: None,
-            logins: Some(LoginService::new(Arc::new(registry), Arc::clone(&store), None)),
+            logins: Some(LoginService::new(
+                Arc::new(registry),
+                Arc::clone(&store),
+                None,
+            )),
+            gateway_store: None,
+            config_tx: None,
         };
         (state, store)
     }
@@ -1149,5 +1252,278 @@ mod tests {
         let item = &v["items"][0];
         assert!(item["credits_source"].is_null(), "{raw}");
         assert!(item["credits_used"].is_null(), "{raw}");
+    }
+
+    // ── account → connection ──────────────────────────────────────────────────
+
+    fn make_state_with_gateway(
+        models: Vec<String>,
+    ) -> (
+        AdminState,
+        Arc<AccountStore>,
+        Arc<vkdg_config::GatewayStore>,
+        vkdg_config::ConfigRx,
+    ) {
+        let (tx, rx) = vkdg_config::config_channel(ConfigSnapshot::default_empty());
+        let mut registry = ProviderRegistry::empty();
+        registry.register(Arc::new(FakeDevice {
+            polls: Mutex::new(0),
+            models,
+        }));
+        let store = Arc::new(AccountStore::in_memory().unwrap());
+        let gw = Arc::new(vkdg_config::GatewayStore::in_memory().unwrap());
+        let state = AdminState {
+            sessions: SessionStore::new("tok".into()),
+            config_rx: rx.clone(),
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: RequestLog::new(),
+            combos: None,
+            reload_plugins: None,
+            connection_tester: None,
+            catalog: None,
+            logins: Some(LoginService::new(
+                Arc::new(registry),
+                Arc::clone(&store),
+                None,
+            )),
+            gateway_store: Some(Arc::clone(&gw)),
+            config_tx: Some(tx),
+        };
+        (state, store, gw, rx)
+    }
+
+    /// Run a device login to completion; `replaces` reconnects that account.
+    async fn login(state: &AdminState, h: &HeaderMap, replaces: Option<&str>) -> serde_json::Value {
+        let mut body = start_body(Some("eu-west-1"));
+        body.0.account_id = replaces.map(str::to_owned);
+        let (_, start, text) = body_json(
+            start_login(State(state.clone()), h.clone(), Path("fake".into()), body).await,
+        )
+        .await;
+        let login_id = start["login_id"].as_str().expect(&text).to_owned();
+        for _ in 0..3 {
+            let (_, v, _) = body_json(
+                poll_login(
+                    State(state.clone()),
+                    h.clone(),
+                    Path("fake".into()),
+                    Json(PollBody {
+                        login_id: login_id.clone(),
+                        code: None,
+                    }),
+                )
+                .await,
+            )
+            .await;
+            if v["status"] == "done" {
+                return v;
+            }
+        }
+        panic!("login never completed");
+    }
+
+    fn account_connections(gw: &vkdg_config::GatewayStore, account: &str) -> Vec<ConnectionDef> {
+        gw.load()
+            .unwrap()
+            .0
+            .into_iter()
+            .filter(|c| matches!(&c.auth, AuthDef::Account { account: a } if a == account))
+            .collect()
+    }
+
+    // Plausible wrong impls: the account is saved but no connection exists, so the
+    // gateway has nothing to route to; connection saved to the store but never
+    // pushed to the live snapshot (needs a restart); models copied from the wrong place.
+    #[tokio::test]
+    async fn connecting_an_account_creates_a_live_connection_for_it() {
+        let (state, _store, gw, rx) = make_state_with_gateway(vec!["fake-*".into()]);
+        let h = authed(&state);
+
+        let done = login(&state, &h, None).await;
+        let id = done["account"]["id"].as_str().unwrap();
+
+        let conns = account_connections(&gw, id);
+        assert_eq!(conns.len(), 1, "{conns:?}");
+        assert_eq!(conns[0].provider, "fake");
+        assert_eq!(conns[0].models, ["fake-*"]);
+        assert_eq!(done["connection_id"], conns[0].id.as_str(), "{done}");
+        assert!(
+            rx.borrow()
+                .connections
+                .iter()
+                .any(|c| c.id.0 == conns[0].id),
+            "connection must reach the live snapshot without a restart"
+        );
+    }
+
+    // Plausible wrong impls: reconnect adds a second connection; an operator's own
+    // connection (YAML/CLI/console) for the same account is ignored and duplicated.
+    #[tokio::test]
+    async fn reconnect_and_hand_made_connections_are_not_duplicated() {
+        let (state, store, gw, _rx) = make_state_with_gateway(vec!["fake-*".into()]);
+        let h = authed(&state);
+        let first = login(&state, &h, None).await;
+        let id = first["account"]["id"].as_str().unwrap().to_owned();
+        login(&state, &h, Some(&id)).await;
+        assert_eq!(account_connections(&gw, &id).len(), 1);
+
+        let other = Account::from_token_pair(
+            "fake",
+            "hand@example.com",
+            TokenPair {
+                access_token: "a".into(),
+                refresh_token: Some("r".into()),
+                expires_in_secs: Some(3600),
+                extra: HashMap::new(),
+            },
+        );
+        store.upsert(&other).unwrap();
+        gw.upsert_connection(&ConnectionDef {
+            id: "my-own".into(),
+            provider: "fake".into(),
+            base_url: None,
+            endpoint: None,
+            auth: AuthDef::Account {
+                account: other.id.clone(),
+            },
+            models: vec!["fake-x".into()],
+            max_concurrent: None,
+            weight: None,
+            tags: vec![],
+        })
+        .unwrap();
+        let done = login(&state, &h, Some(&other.id)).await;
+        let conns = account_connections(&gw, &other.id);
+        assert_eq!(conns.len(), 1, "{conns:?}");
+        assert_eq!(conns[0].id, "my-own");
+        assert_eq!(done["connection_id"], "my-own");
+    }
+
+    // Plausible wrong impl: a provider that cannot serve requests yet (empty
+    // default_models) still gets a connection and steals traffic from working ones.
+    #[tokio::test]
+    async fn no_default_models_means_no_connection() {
+        let (state, _store, gw, _rx) = make_state_with_gateway(vec![]);
+        let h = authed(&state);
+        let done = login(&state, &h, None).await;
+        assert!(gw.load().unwrap().0.is_empty());
+        assert!(done.get("connection_id").is_none(), "{done}");
+    }
+
+    // Plausible wrong impls: deleting an account leaves a dangling connection that
+    // fails every request; a multi-target route keeps naming it and makes the next
+    // snapshot invalid, so every later console edit is rejected. Logging in also
+    // creates the `fake-route` that carries both accounts' connections.
+    #[tokio::test]
+    async fn deleting_an_account_removes_its_connection_and_route_targets() {
+        let (state, store, gw, rx) = make_state_with_gateway(vec!["fake-*".into()]);
+        let h = authed(&state);
+        let a = login(&state, &h, None).await["account"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let b = login(&state, &h, None).await["account"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let conn_a = account_connections(&gw, &a).remove(0).id;
+        let conn_b = account_connections(&gw, &b).remove(0).id;
+        let route = |id: &str, targets: &[&str]| vkdg_config::schema::RouteDef {
+            id: id.into(),
+            match_models: vec!["fake-*".into()],
+            strategy: "round_robin".into(),
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            hooks: Default::default(),
+        };
+        gw.upsert_route(&route("both", &[&conn_a, &conn_b]))
+            .unwrap();
+        gw.upsert_route(&route("only-a", &[&conn_a])).unwrap();
+
+        let resp = delete_account(State(state.clone()), h.clone(), Path(a.clone())).await;
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        assert!(store.get(&a).unwrap().is_none());
+        let (conns, routes) = gw.load().unwrap();
+        assert_eq!(
+            conns.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [conn_b.as_str()]
+        );
+        let mut left: Vec<_> = routes
+            .iter()
+            .map(|r| (r.id.as_str(), r.targets.clone()))
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                ("both", vec![conn_b.clone()]),
+                ("fake-route", vec![conn_b.clone()])
+            ],
+            "only-a lost its last target and goes; the others keep conn_b"
+        );
+        let snap = rx.borrow().clone();
+        assert_eq!(snap.connections.len(), 1);
+        assert_eq!(snap.routes.len(), 2);
+    }
+
+    fn stored_account(store: &AccountStore) -> Account {
+        let a = Account::from_token_pair(
+            "fake",
+            "old@example.com",
+            TokenPair {
+                access_token: "a".into(),
+                refresh_token: Some("r".into()),
+                expires_in_secs: Some(3600),
+                extra: HashMap::new(),
+            },
+        );
+        store.upsert(&a).unwrap();
+        a
+    }
+
+    // Accounts connected before connections were automatic have none and would
+    // never receive traffic; the console needs a one-click fix that is also safe
+    // to press twice.
+    #[tokio::test]
+    async fn enabling_an_account_creates_its_connection_once() {
+        let (state, store, gw, rx) = make_state_with_gateway(vec!["fake-*".into()]);
+        let h = authed(&state);
+        let acct = stored_account(&store);
+
+        let (status, v, text) =
+            body_json(enable_account(State(state.clone()), h.clone(), Path(acct.id.clone())).await)
+                .await;
+        assert_eq!(status, StatusCode::CREATED, "{text}");
+        assert_eq!(v["connection_id"], acct.id.as_str());
+        assert_eq!(account_connections(&gw, &acct.id).len(), 1);
+        assert!(rx.borrow().connections.iter().any(|c| c.id.0 == acct.id));
+
+        let (status, v, _) =
+            body_json(enable_account(State(state.clone()), h.clone(), Path(acct.id.clone())).await)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["connection_id"], acct.id.as_str());
+        assert_eq!(account_connections(&gw, &acct.id).len(), 1);
+
+        let resp = enable_account(State(state.clone()), h.clone(), Path("nope".into())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let resp = enable_account(State(state.clone()), HeaderMap::new(), Path(acct.id)).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // Plausible wrong impl: a provider that cannot serve yet reports success and
+    // the console shows an enabled account that routes nowhere.
+    #[tokio::test]
+    async fn enabling_an_account_of_a_provider_without_default_models_is_refused() {
+        let (state, store, gw, _rx) = make_state_with_gateway(vec![]);
+        let h = authed(&state);
+        let acct = stored_account(&store);
+
+        let (status, v, text) =
+            body_json(enable_account(State(state.clone()), h, Path(acct.id)).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert_eq!(v["code"], "no_default_models");
+        assert!(gw.load().unwrap().0.is_empty());
     }
 }

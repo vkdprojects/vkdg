@@ -1,6 +1,6 @@
 //! Request routing for VKDG.
 //!
-//! The Router resolves a RequestEnvelope to a RouteResult by applying
+//! The Router resolves a `RequestEnvelope` to a `RouteResult` by applying
 //! an eligibility filter and a routing strategy. Strategies are pluggable
 //! via the Strategy trait.
 

@@ -189,7 +189,7 @@ limits:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `max_concurrent_requests` | integer | unlimited | Total concurrent requests gateway-wide; excess requests receive `429` |
-| `max_body_bytes` | integer | unlimited | Maximum request body size in bytes; larger bodies receive `413` |
+| `max_body_bytes` | integer | `33554432` (32 MiB) | Maximum request body size in bytes; larger bodies receive `413`. Read at startup; a reload does not change it |
 
 Per-request timeouts are not configurable here: this gateway forwards SSE
 streams that can legitimately run for minutes, so no blanket request

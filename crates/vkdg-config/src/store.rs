@@ -81,15 +81,20 @@ impl GatewayStore {
         Ok(())
     }
 
-    /// True only if the store has never been seeded (first boot).
+    /// True only on a first boot: never seeded and nothing in the tables.
+    /// Rows written through the admin API count as data even if no seed ever
+    /// ran, so a config file cannot replace them.
     pub fn needs_seed(&self) -> Result<bool> {
-        let conn = self.lock();
-        let count: i64 = conn
+        let seeded: i64 = self
+            .lock()
             .query_row("SELECT COUNT(*) FROM meta WHERE key = 'seeded'", [], |r| {
                 r.get(0)
             })
             .map_err(|e| store_err("needs_seed", &e))?;
-        Ok(count == 0)
+        if seeded > 0 {
+            return Ok(false);
+        }
+        self.is_empty()
     }
 
     // ── Read ──────────────────────────────────────────────────────────────────
@@ -406,5 +411,25 @@ mod tests {
 
         let (_, routes) = store.load().unwrap();
         assert_eq!(routes.len(), 2);
+    }
+
+    // Connections made in the console before the store was ever seeded (no
+    // config file, first boot) are data. Reporting "needs seed" there made the
+    // next boot with a config file `set_connections` over them, and a boot
+    // without one ignore them.
+    #[test]
+    fn rows_written_before_any_seed_do_not_need_seeding() {
+        let store = GatewayStore::in_memory().unwrap();
+        assert!(store.needs_seed().unwrap(), "fresh store seeds from config");
+
+        store
+            .upsert_connection(&sample_connection("console"))
+            .unwrap();
+        assert!(!store.needs_seed().unwrap());
+
+        store.delete_connection("console").unwrap();
+        assert!(store.needs_seed().unwrap(), "empty again, never seeded");
+        store.mark_seeded().unwrap();
+        assert!(!store.needs_seed().unwrap());
     }
 }

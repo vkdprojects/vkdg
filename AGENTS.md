@@ -50,7 +50,7 @@ cargo fmt --all --check
 cargo fmt --all
 
 # Run locally. /v1/* needs a client key first: without one = 401,
-# with a key but no provider configured = 501.
+# with a key but no connection configured = 502.
 cargo run -p vkdg -- keys create dev   # prints the client key once
 cargo run -p vkdg -- serve
 

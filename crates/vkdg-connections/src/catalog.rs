@@ -160,6 +160,35 @@ impl ConnectionCatalog {
             .collect()
     }
 
+    /// Seconds until the first connection serving `model` leaves cooldown or an
+    /// open circuit, when at least one is in that state. `None` when none is.
+    /// Lets the pipeline answer "everything is cooling down" with a `429` and
+    /// a `retry-after` instead of "no eligible connection".
+    pub fn secs_until_cooldown_ends(&self, model: &str) -> Option<u32> {
+        use super::connection::ConnectionState as S;
+        let now = chrono::Utc::now();
+        self.connections
+            .read()
+            .values()
+            .filter_map(|arc| {
+                let conn = arc.try_read().ok()?;
+                if !conn.serves_model(model) {
+                    return None;
+                }
+                match &conn.state {
+                    S::Cooldown { until, .. } | S::CircuitOpen { until } if *until > now => {
+                        Some(*until)
+                    }
+                    _ => None,
+                }
+            })
+            .min()
+            .map(|until| {
+                // Round up so a client that waits exactly this long is past it.
+                u32::try_from((until - now).num_seconds().max(0) + 1).unwrap_or(u32::MAX)
+            })
+    }
+
     /// Returns all connection IDs in this catalog.
     /// Used by the pipeline to populate `RoutingHints` for all known connections.
     pub fn connection_ids(&self) -> Vec<ConnectionId> {

@@ -26,16 +26,45 @@ pub async fn run_conversation_pipeline(
         }) if ctx.can_retry() => {
             let code = *code;
             let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
-            emit_decision_record(&pipeline, &ctx, &outcome, 1);
 
             let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
             let outcome2 =
                 run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
             // If the retry also failed, carry the original code for metrics.
             let _ = code; // suppress unused-var on non-debug builds
-            (ctx2, outcome2, 2u32)
+            if matches!(
+                outcome2,
+                Err(VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched)
+            ) {
+                // No sibling to fall back to (the 429 just cooled the only
+                // candidate): the client needs the upstream's 429 and its
+                // `retry-after`, not a gateway 502 that hides why.
+                (ctx, outcome, 1u32)
+            } else {
+                emit_decision_record(&pipeline, &ctx, &outcome, 1);
+                (ctx2, outcome2, 2u32)
+            }
         }
         _ => (ctx, outcome, 1u32),
+    };
+
+    // Every candidate is cooling down after upstream rate limits: that is a rate
+    // limit for the client, with a time to wait, not a gateway outage.
+    let outcome = match outcome {
+        Err(VkdgError::NoEligibleConnection) => match pipeline
+            .catalog
+            .secs_until_cooldown_ends(&ctx.envelope.model_requested)
+        {
+            Some(secs) => Err(VkdgError::UpstreamError {
+                code: 429,
+                message:
+                    "every connection for this model is cooling down after an upstream rate limit"
+                        .into(),
+                retry_after: Some(secs),
+            }),
+            None => Err(VkdgError::NoEligibleConnection),
+        },
+        other => other,
     };
 
     // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).

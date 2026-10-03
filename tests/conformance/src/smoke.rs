@@ -571,6 +571,54 @@ async fn smoke_fallback_anthropic_429_retries_openai() {
     );
 }
 
+/// Plausible wrong impl: with no sibling to fall back to, the retry fails with
+/// "no eligible connection" (502) because the 429 just put the only connection
+/// in cooldown, and that replaces the real error. The client must see the
+/// upstream 429, not a gateway-made 502 that hides why.
+#[tokio::test]
+async fn sole_connection_429_reaches_the_client_as_429() {
+    std::env::set_var("VKDG_SMOKE_KEY", "test-token");
+    let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk429).await;
+    let pipeline = make_pipeline_with(fake.base_url.clone(), AnthropicAdapter, "claude-*");
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
+
+    let resp = run_conversation_pipeline(pipeline, ctx, op).await;
+
+    assert_eq!(resp.status(), 429, "the upstream status must survive");
+    assert_eq!(fake.call_count(), 1, "nothing else to try, no second call");
+}
+
+/// Plausible wrong impl: while the only connection cools down after a 429, every
+/// request gets a gateway 502 "no eligible connection". Clients read 502 as an
+/// outage and hammer it; a 429 with `retry-after` tells them to wait, and the
+/// upstream must not be called again before the cooldown ends.
+#[tokio::test]
+async fn request_during_cooldown_gets_429_with_retry_after_not_502() {
+    std::env::set_var("VKDG_SMOKE_KEY", "test-token");
+    let fake = FakeUpstream::spawn(FakeUpstreamBehavior::AnthropicOk429).await;
+    let pipeline = make_pipeline_with(fake.base_url.clone(), AnthropicAdapter, "claude-*");
+
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
+    let first = run_conversation_pipeline(Arc::clone(&pipeline), ctx, op).await;
+    assert_eq!(first.status(), 429);
+
+    let (ctx, op) = make_ctx_streaming("claude-3-5-haiku-20241022", ApiType::AnthropicMessages);
+    let second = run_conversation_pipeline(pipeline, ctx, op).await;
+    assert_eq!(
+        second.status(),
+        429,
+        "cooling down is a rate limit, not an outage"
+    );
+    let retry_after: u32 = second
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .expect("retry-after header");
+    assert!(retry_after >= 1, "retry-after={retry_after}");
+    assert_eq!(fake.call_count(), 1, "no upstream call while cooling down");
+}
+
 /// Plausible wrong impl: stale session pin causes `NoEligibleConnection` (502)
 /// instead of falling through to route-based selection when the pinned
 /// connection no longer exists in the catalog.

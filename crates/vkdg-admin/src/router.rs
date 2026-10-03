@@ -80,6 +80,7 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/v1/connections/{id}",
             get(crate::handlers::connections::get_connection)
                 .put(crate::handlers::connections::update_connection)
+                .patch(crate::handlers::connections::patch_connection)
                 .delete(crate::handlers::connections::delete_connection),
         )
         .route(
@@ -172,6 +173,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route(
             "/admin/v1/accounts/{id}",
             delete(crate::handlers::oauth::delete_account),
+        )
+        .route(
+            "/admin/v1/accounts/{id}/connection",
+            post(crate::handlers::oauth::enable_account),
         )
         .route(
             "/admin/v1/config/export",

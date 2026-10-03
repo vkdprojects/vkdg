@@ -326,6 +326,9 @@ export const api = {
     req<ConnectionTestResult>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/test`),
   patchConnection: (id: string, patch: ConnectionPatch) =>
     req<ConnectionSummary>('PATCH', `/admin/v1/connections/${encodeURIComponent(id)}`, patch),
+  /** Removes the connection and every route target naming it; the account behind it stays. */
+  deleteConnection: (id: string) =>
+    req<void>('DELETE', `/admin/v1/connections/${encodeURIComponent(id)}`),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>

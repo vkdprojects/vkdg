@@ -5,7 +5,7 @@
   import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatTime, formatRelativeTime } from '$lib/format.js';
-  import { Dialog } from 'bits-ui';
+  import { Dialog, AlertDialog } from 'bits-ui';
   import { PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
@@ -36,6 +36,24 @@
     const hours = Math.round(minutes / 60);
     if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
     return formatRelativeTime(Math.round(hours / 24), 'day');
+  }
+
+  let pendingDelete = $state<ConnectionSummary | null>(null);
+  let deleting = $state(false);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    deleting = true;
+    try {
+      await api.deleteConnection(pendingDelete.id);
+      toast.success(m.connection_deleted());
+      pendingDelete = null;
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      deleting = false;
+    }
   }
 
   let dialogOpen = $state(false);
@@ -218,6 +236,7 @@
           <th scope="col">{m.connection_models()}</th>
           <th scope="col">{m.connection_active_requests()}</th>
           <th scope="col">{m.connection_cooldown()}</th>
+          <th scope="col"><span class="sr-only">{m.connection_actions()}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -250,12 +269,40 @@
                 {m.common_none()}
               {/if}
             </td>
+            <td class="actions-cell">
+              <Button
+                variant="danger"
+                size="sm"
+                onclick={() => (pendingDelete = conn)}
+                ariaLabel={`${m.connection_delete()} ${conn.id}`}
+              >{m.connection_delete()}</Button>
+            </td>
           </tr>
         {/each}
       </tbody>
     </table>
   {/if}
 </div>
+
+<AlertDialog.Root open={pendingDelete !== null} onOpenChange={(v) => { if (!v) pendingDelete = null; }}>
+  <AlertDialog.Portal>
+    <AlertDialog.Overlay class="dialog-overlay" />
+    <AlertDialog.Content class="dialog-content">
+      <div class="confirm">
+        <AlertDialog.Title class="dialog-title">{m.connection_delete_title()}</AlertDialog.Title>
+        <AlertDialog.Description class="confirm-desc">
+          {m.connection_delete_confirm({ id: pendingDelete?.id ?? '' })}
+        </AlertDialog.Description>
+        <div class="confirm-footer">
+          <AlertDialog.Cancel class="confirm-btn outline">{m.common_cancel()}</AlertDialog.Cancel>
+          <button type="button" class="confirm-btn danger" disabled={deleting} onclick={confirmDelete}>
+            {m.connection_delete()}
+          </button>
+        </div>
+      </div>
+    </AlertDialog.Content>
+  </AlertDialog.Portal>
+</AlertDialog.Root>
 
 <Dialog.Root bind:open={dialogOpen} onOpenChange={(v) => { if (!v) step = 'form'; }}>
   <Dialog.Portal>
@@ -515,5 +562,62 @@
   @keyframes slideIn {
     from { opacity: 0; transform: translate(-50%, -48%); }
     to { opacity: 1; transform: translate(-50%, -50%); }
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .actions-cell {
+    text-align: right;
+  }
+
+  .confirm {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  :global(.confirm-desc) {
+    font-size: 0.875rem;
+    color: var(--text-2);
+    margin: 0;
+  }
+
+  .confirm-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  :global(.confirm-btn) {
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    padding: 0.4375rem 0.875rem;
+    border: 1px solid transparent;
+  }
+
+  :global(.confirm-btn.outline) {
+    background: transparent;
+    color: var(--text-2);
+    border-color: var(--border-strong);
+  }
+
+  :global(.confirm-btn.danger) {
+    background: var(--danger);
+    color: #fff;
+  }
+
+  :global(.confirm-btn:disabled) {
+    opacity: 0.45;
+    cursor: not-allowed;
   }
 </style>

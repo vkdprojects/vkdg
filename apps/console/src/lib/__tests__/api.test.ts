@@ -70,6 +70,33 @@ describe('patchConnection', () => {
   });
 });
 
+describe('deleteConnection', () => {
+  // Wrong impl: wrong verb, unencoded id, or the 204 body-less answer parsed as JSON.
+  it('DELETEs the encoded id and resolves on 204', async () => {
+    let seen: { method: string; id: unknown } | undefined;
+    server.use(
+      http.delete(`${BASE}/admin/v1/connections/:id`, ({ request, params }) => {
+        seen = { method: request.method, id: params['id'] };
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+
+    await expect(api.deleteConnection('claude code/1')).resolves.toBeUndefined();
+    expect(seen).toEqual({ method: 'DELETE', id: 'claude code/1' });
+  });
+
+  // Wrong impl: a store failure is swallowed and the row disappears from the UI only to come back.
+  it('surfaces the server error', async () => {
+    server.use(
+      http.delete(`${BASE}/admin/v1/connections/:id`, () =>
+        HttpResponse.json({ code: 'store_error', message: 'disk full', request_id: 'r3' }, { status: 500 }),
+      ),
+    );
+
+    await expect(api.deleteConnection('c1')).rejects.toThrow('disk full');
+  });
+});
+
 describe('enableAccount', () => {
   // Wrong impl: wrong verb/path, or a body sent although the endpoint takes none.
   it('POSTs without a body to the account connection endpoint and returns the connection id', async () => {

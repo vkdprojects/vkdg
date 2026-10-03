@@ -193,3 +193,14 @@ clean-linux:
 # Browser end-to-end tests against the real binary with the console embedded.
 e2e:
     cd apps/console && bun run build && bun run e2e
+
+# Quality + latency stress test against a live gateway.
+# Requires: uv (https://docs.astral.sh/uv/)
+#
+# Examples:
+#   just stress                                          # uses VKDG_API_KEY env var
+#   just stress --key vkdg_xxx
+#   just stress --url https://vkdg.vixpi.host --key vkdg_xxx --turns 60
+#   just stress --provider openai --url https://api.openai.com --key sk-xxx --model gpt-4o
+stress *args:
+    uv run tests/stress/quality.py {{args}}

@@ -16,22 +16,19 @@ pub async fn run_conversation_pipeline(
 ) -> Response {
     let outcome = run_pipeline_inner(&pipeline, &mut ctx, operation.clone(), &[]).await;
 
-    // Transparent 429 fallback: if the upstream rate-limits us and we have not
-    // yet committed any bytes to the client, retry with the failed connection
-    // excluded so the router picks a different candidate.
+    // Transparent fallback: if the upstream rate-limits us, reports the account
+    // out of credits or overloaded (`fails_over`), and we have not yet committed
+    // any bytes to the client, retry with the failed connection excluded so the
+    // router picks a different candidate. One retry, as before.
     let (ctx, outcome, final_attempt) = match &outcome {
-        Err(VkdgError::UpstreamError {
-            code: code @ (429 | 529),
-            ..
-        }) if ctx.can_retry() => {
-            let code = *code;
+        Err(VkdgError::UpstreamError { code, .. })
+            if super::helpers::fails_over(*code) && ctx.can_retry() =>
+        {
             let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
 
             let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
             let outcome2 =
                 run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
-            // If the retry also failed, carry the original code for metrics.
-            let _ = code; // suppress unused-var on non-debug builds
             if matches!(
                 outcome2,
                 Err(VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched)

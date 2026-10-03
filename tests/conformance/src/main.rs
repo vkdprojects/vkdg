@@ -7,5 +7,6 @@ mod ingress_anthropic;
 mod routing;
 mod smoke;
 mod state_machine;
+mod stream_failover;
 mod stream_translation;
 mod streaming;

@@ -338,4 +338,126 @@ mod reload_tests {
             "releasing the slot makes it routable again"
         );
     }
+
+    async fn cool(catalog: &ConnectionCatalog, id: &str, status: u16, retry_after: Option<u32>) {
+        catalog
+            .get(&ConnectionId(id.into()))
+            .unwrap()
+            .write()
+            .await
+            .record_upstream_error(status, retry_after);
+    }
+
+    fn sorted(mut ids: Vec<ConnectionId>) -> Vec<String> {
+        ids.sort_by(|a, b| a.0.cmp(&b.0));
+        ids.into_iter().map(|id| id.0).collect()
+    }
+
+    // Plausible wrong impl: a connection that hit a long upstream limit rejoins
+    // after the 300 s backoff ceiling, or one connection's limit takes its sibling
+    // out too. Acceptance: Kiro (dotted ids) and Claude Code (dashed ids) serve the
+    // same request; whichever one is limited leaves the candidate set for the
+    // advertised retry-after and the other keeps serving, in both directions.
+    #[tokio::test]
+    async fn a_limited_connection_leaves_for_its_retry_after_and_the_other_takes_over() {
+        let catalog = ConnectionCatalog::new(vec![
+            cfg("kiro", &["claude-sonnet-4.6"], 4),
+            cfg("claude-code", &["claude-*"], 4),
+        ]);
+        // The client spells the model the Anthropic way; Kiro lists it with a dot.
+        let model = "claude-sonnet-4-6";
+        assert_eq!(
+            sorted(catalog.eligible(model, &[])),
+            ["claude-code", "kiro"],
+            "both serve the model while healthy"
+        );
+
+        cool(&catalog, "claude-code", 429, Some(18_000)).await;
+        assert_eq!(sorted(catalog.eligible(model, &[])), ["kiro"]);
+        assert_eq!(
+            sorted(catalog.eligible_for_operation(model, &[], &CapabilitySet::default())),
+            ["kiro"]
+        );
+        let unroutable: Vec<_> = catalog
+            .unroutable(model)
+            .into_iter()
+            .map(|(id, reason)| (id.0, reason))
+            .collect();
+        assert_eq!(unroutable, [("claude-code".to_owned(), "unhealthy")]);
+        assert!(
+            catalog
+                .get(&ConnectionId("kiro".into()))
+                .unwrap()
+                .read()
+                .await
+                .state
+                .is_healthy(),
+            "invariant 6: a 429 on one connection leaves the other untouched"
+        );
+        // A request retried a few minutes later still finds it cooling: the
+        // 300 s backoff ceiling must not apply to an advertised 5 h reset.
+        let secs = catalog.secs_until_cooldown_ends(model).unwrap();
+        assert!(
+            (17_999..=18_001).contains(&secs),
+            "client is told to wait for the real reset, got {secs}"
+        );
+
+        // The other direction: Kiro limited, Claude Code recovered.
+        catalog
+            .get(&ConnectionId("claude-code".into()))
+            .unwrap()
+            .write()
+            .await
+            .state = crate::connection::ConnectionState::Healthy;
+        cool(&catalog, "kiro", 429, Some(18_000)).await;
+        assert_eq!(sorted(catalog.eligible(model, &[])), ["claude-code"]);
+        assert_eq!(
+            sorted(catalog.eligible("claude-sonnet-4.6", &[])),
+            ["claude-code"],
+            "the dotted spelling reaches the same set"
+        );
+
+        // Both limited: nothing is eligible, and the wait is the shortest reset.
+        cool(&catalog, "claude-code", 429, Some(600)).await;
+        assert_eq!(catalog.eligible(model, &[]).len(), 0);
+        let secs = catalog.secs_until_cooldown_ends(model).unwrap();
+        assert!(
+            (600..=602).contains(&secs),
+            "shortest reset wins, got {secs}"
+        );
+    }
+
+    // Plausible wrong impl: dot/dash comparison added to `eligible` only, leaving
+    // the other model-eligibility readers on raw strings. The pipeline would then
+    // filter a Kiro target as `model_not_served` for a dashed request.
+    #[tokio::test]
+    async fn every_model_reader_treats_dots_and_dashes_alike() {
+        let catalog = ConnectionCatalog::new(vec![cfg("kiro", &["claude-sonnet-4.6"], 4)]);
+        let id = ConnectionId("kiro".into());
+
+        assert_eq!(
+            catalog.eligible("claude-sonnet-4-6", &[]),
+            std::slice::from_ref(&id)
+        );
+        assert_eq!(
+            catalog.eligible_for_operation("claude-sonnet-4-6", &[], &CapabilitySet::default()),
+            std::slice::from_ref(&id)
+        );
+        assert_eq!(catalog.not_serving_model("claude-sonnet-4-6").len(), 0);
+        assert_eq!(catalog.unroutable("claude-sonnet-4-6").len(), 0);
+
+        cool(&catalog, "kiro", 429, Some(60)).await;
+        assert!(
+            catalog
+                .secs_until_cooldown_ends("claude-sonnet-4-6")
+                .is_some(),
+            "a cooling connection serving the model (by dot/dash) is counted"
+        );
+
+        // And a different version is still not served.
+        assert_eq!(catalog.not_serving_model("claude-sonnet-4-5"), [id]);
+        assert!(catalog
+            .secs_until_cooldown_ends("claude-sonnet-4-5")
+            .is_none());
+    }
 }

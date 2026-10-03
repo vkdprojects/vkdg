@@ -43,6 +43,113 @@ pub(super) fn plan(
     }
 }
 
+/// Looks ahead in a provider-decoded stream for an account-level failure, before
+/// any byte is committed to the client.
+///
+/// A provider such as Kiro answers HTTP 200 and reports "throttled" or "out of
+/// credits" as the first frame of the stream. Seen after the response is
+/// committed, that failure can neither cool the connection nor move the request
+/// to a sibling. So the upstream is read until its first *substantive* decoded
+/// event (`Started` carries nothing for the client and is skipped):
+///
+/// - that event is a `Failed` whose status [`fails_over`](super::helpers::fails_over) → `Err` with the
+///   upstream error; the caller cools the connection and the request is retried
+///   on a sibling. Nothing was sent to the client.
+/// - any other event, a `Failed` with another status, an upstream I/O error or
+///   the end of the stream → `Ok`, and the returned stream replays every chunk
+///   read so far ahead of the rest of the upstream, byte for byte. The relay then
+///   decodes it from the start exactly as if no look-ahead had happened.
+///
+/// Only the chunks up to the first event are held (usually one); the rest of the
+/// stream is not buffered and is polled only as the client asks, so backpressure
+/// and cancellation are unchanged. A `Failed` after a normal first event is not
+/// examined: by then the client has the response and a retry is unsafe.
+///
+/// The look-ahead decodes with a separate decoder instance
+/// ([`ProviderAdapter::stream_decoder`] builds a fresh one per call), so the
+/// relay's own decoder state is untouched.
+pub(super) async fn guard_first_event(
+    adapter: &dyn ProviderAdapter,
+    mut body: ByteStream,
+) -> Result<ByteStream, VkdgError> {
+    // The adapters that own a decoder are exactly those `plan` relays through
+    // `Relay::ProviderDecoder`; everything else is passthrough or translated.
+    let Some(mut probe) = adapter.stream_decoder() else {
+        return Ok(body);
+    };
+
+    let mut seen: Vec<Bytes> = Vec::new();
+    let tail = loop {
+        match body.next().await {
+            Some(Ok(chunk)) => {
+                let events = probe.feed(chunk.clone());
+                seen.push(chunk);
+                if let Some(error) = failover_error(&events) {
+                    return Err(error);
+                }
+                if first_substantive(&events).is_some() {
+                    break Tail::Open;
+                }
+            }
+            Some(Err(e)) => break Tail::Failed(e),
+            None => {
+                if let Some(error) = failover_error(&probe.finish()) {
+                    return Err(error);
+                }
+                break Tail::Ended;
+            }
+        }
+    };
+    Ok(replay(seen, tail, body))
+}
+
+/// How the upstream stood when the look-ahead stopped.
+enum Tail {
+    /// More may follow: the rest of the upstream is chained after the replay.
+    Open,
+    /// Already ended; polling it again is not allowed.
+    Ended,
+    /// Failed while read; the client gets the same error after the replay.
+    Failed(std::io::Error),
+}
+
+/// The first event that is not `Started`.
+fn first_substantive(events: &[ConversationEvent]) -> Option<&ConversationEvent> {
+    events
+        .iter()
+        .find(|e| !matches!(e, ConversationEvent::Started { .. }))
+}
+
+/// The upstream error when the first substantive event is a `Failed` that
+/// [`fails_over`](super::helpers::fails_over).
+fn failover_error(events: &[ConversationEvent]) -> Option<VkdgError> {
+    match first_substantive(events)? {
+        ConversationEvent::Failed {
+            error:
+                VkdgError::UpstreamError {
+                    code,
+                    message,
+                    retry_after,
+                },
+        } if super::helpers::fails_over(*code) => Some(VkdgError::UpstreamError {
+            code: *code,
+            message: message.clone(),
+            retry_after: *retry_after,
+        }),
+        _ => None,
+    }
+}
+
+/// `seen` chunks, then whatever `tail` says follows.
+fn replay(seen: Vec<Bytes>, tail: Tail, body: ByteStream) -> ByteStream {
+    let seen = futures::stream::iter(seen.into_iter().map(Ok));
+    match tail {
+        Tail::Open => Box::pin(seen.chain(body)),
+        Tail::Ended => Box::pin(seen),
+        Tail::Failed(e) => Box::pin(seen.chain(futures::stream::once(async move { Err(e) }))),
+    }
+}
+
 /// The streaming body the client receives for `body`.
 pub(super) fn relay_stream(
     relay: Relay,

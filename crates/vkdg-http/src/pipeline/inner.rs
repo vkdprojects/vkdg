@@ -435,16 +435,8 @@ pub(super) async fn run_pipeline_inner(
             code,
             message,
             retry_after,
-        }) if code == 429 || code >= 500 => {
-            if let Some(conn_arc) = ctx
-                .connection_id
-                .as_ref()
-                .and_then(|id| pipeline.catalog.get(id))
-            {
-                if let Ok(mut conn) = conn_arc.try_write() {
-                    conn.record_upstream_error(code);
-                }
-            }
+        }) if super::helpers::cools_connection(code) => {
+            cool_connection(pipeline, ctx.connection_id.as_ref(), code, retry_after).await;
             return Err(VkdgError::UpstreamError {
                 code,
                 message,
@@ -452,6 +444,48 @@ pub(super) async fn run_pipeline_inner(
             });
         }
         Err(e) => return Err(e),
+    };
+
+    // 9b. Account failures reported inside a 200 ──────────────────────────────
+    // Kiro answers 200 and sends "throttled" / "out of credits" as the first
+    // frame of the stream; a dialect translator can find the same in a complete
+    // body. Both are found here, while nothing has reached the client, so the
+    // connection is cooled and the entry point can retry on a sibling. Once
+    // `mark_committed` runs below that is no longer possible.
+    let relay = super::relay::plan(adapter.as_ref(), &config, &ctx.envelope.api_type);
+    let upstream_resp = match upstream_resp {
+        UpstreamResponse::Streaming { status, body } => {
+            match super::relay::guard_first_event(adapter.as_ref(), body).await {
+                Ok(body) => UpstreamResponse::Streaming { status, body },
+                Err(error) => {
+                    return Err(account_failure(pipeline, ctx.connection_id.as_ref(), error).await)
+                }
+            }
+        }
+        // The client-facing body: translated when the upstream speaks the other
+        // dialect. What the cache stores and what the client gets are the same bytes.
+        UpstreamResponse::Complete { status, body } => {
+            match super::relay::relay_complete(
+                &relay,
+                body,
+                &ctx.envelope.api_type,
+                &vkdg_operations::StreamContext {
+                    model: &ctx.envelope.model_requested,
+                    request_id: &ctx.envelope.request_id,
+                },
+            ) {
+                Ok(body) => UpstreamResponse::Complete { status, body },
+                Err(e)
+                    if matches!(
+                        &e,
+                        VkdgError::UpstreamError { code, .. } if super::helpers::fails_over(*code)
+                    ) =>
+                {
+                    return Err(account_failure(pipeline, ctx.connection_id.as_ref(), e).await)
+                }
+                Err(e) => return Err(e),
+            }
+        }
     };
     ctx.transition(AttemptState::UpstreamOpen);
 
@@ -462,21 +496,9 @@ pub(super) async fn run_pipeline_inner(
     // 10. Build response ───────────────────────────────────────────────────────
     // `complete_body` is set in the Complete arm and passed to post_response_accounting.
     // Streaming leaves it None (Phase E: wrap stream on completion).
-    let relay = super::relay::plan(adapter.as_ref(), &config, &ctx.envelope.api_type);
     let mut complete_body: Option<Bytes> = None;
     let resp = match upstream_resp {
         UpstreamResponse::Complete { status, body } => {
-            // The client-facing body: translated when the upstream speaks the other
-            // dialect. What the cache stores and what the client gets are the same bytes.
-            let body = super::relay::relay_complete(
-                &relay,
-                body,
-                &ctx.envelope.api_type,
-                &vkdg_operations::StreamContext {
-                    model: &ctx.envelope.model_requested,
-                    request_id: &ctx.envelope.request_id,
-                },
-            )?;
             // 11. Cache store (fire-and-forget, non-streaming only) ────────────
             if let (Some(key), Some(cache)) = (&cache_key_val, &pipeline.cache) {
                 let entry = CacheEntry {
@@ -564,6 +586,61 @@ pub(super) async fn run_pipeline_inner(
         &operation,
     );
     Ok(resp)
+}
+
+// ── Cooldown ──────────────────────────────────────────────────────────────────
+
+/// Puts `connection_id` into cooldown for an upstream `code` (and the wait the
+/// upstream asked for, if any). Returns when it will be eligible again, or `None`
+/// when the connection left the catalog.
+///
+/// Waits for the connection's lock instead of skipping when a request is
+/// reserving a slot: a missed write would leave a limited connection eligible and
+/// its `retry-after` ignored.
+async fn cool_connection(
+    pipeline: &PipelineState,
+    connection_id: Option<&ConnectionId>,
+    code: u16,
+    retry_after: Option<u32>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let conn_arc = pipeline.catalog.get(connection_id?)?;
+    let until = conn_arc
+        .write()
+        .await
+        .record_upstream_error(code, retry_after);
+    Some(until)
+}
+
+/// Handles an account failure found inside an HTTP 200 (see step 9b): cools the
+/// connection and returns the error for the entry point to retry on a sibling.
+///
+/// Providers such as Kiro never say how long to wait, so an error without a
+/// `retry-after` gets the time the connection will stay out. If no sibling can
+/// serve the retry, that is what the client is told.
+async fn account_failure(
+    pipeline: &PipelineState,
+    connection_id: Option<&ConnectionId>,
+    error: VkdgError,
+) -> VkdgError {
+    let VkdgError::UpstreamError {
+        code,
+        message,
+        retry_after,
+    } = error
+    else {
+        return error;
+    };
+    let until = cool_connection(pipeline, connection_id, code, retry_after).await;
+    let retry_after = retry_after.or_else(|| {
+        until.map(|until| {
+            u32::try_from((until - chrono::Utc::now()).num_seconds().max(1)).unwrap_or(u32::MAX)
+        })
+    });
+    VkdgError::UpstreamError {
+        code,
+        message,
+        retry_after,
+    }
 }
 
 // ── Fusion dispatch ───────────────────────────────────────────────────────────
@@ -1482,5 +1559,183 @@ mod tests {
         assert!(seen.iter().all(|(_, m)| m == "m-real"), "{seen:?}");
         assert_ne!(seen[0].0, seen[1].0, "round_robin rotates: {seen:?}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Sends every request to the connection's own `base_url`, so each connection
+    /// can be pointed at its own local upstream.
+    struct ToBaseUrl;
+    impl ProviderAdapter for ToBaseUrl {
+        fn id(&self) -> &'static str {
+            "openai"
+        }
+        fn display_name(&self) -> &'static str {
+            "ToBaseUrl"
+        }
+        fn prepare(
+            &self,
+            _op: &Operation,
+            cfg: &vkdg_connections::ConnectionConfig,
+            _credential: &vkdg_provider_sdk::Credential,
+        ) -> Result<PreparedRequest, vkdg_provider_sdk::ProviderError> {
+            let vkdg_connections::ProviderKind::Custom { base_url } = &cfg.provider else {
+                return Err(vkdg_provider_sdk::ProviderError::UnsupportedOperation);
+            };
+            Ok(PreparedRequest {
+                url: base_url.clone(),
+                headers: http::HeaderMap::new(),
+                body: Bytes::new(),
+                is_streaming: false,
+            })
+        }
+    }
+
+    /// A local upstream that answers every request with `status` (and
+    /// `retry-after`, when given). Returns its URL and a request counter.
+    async fn canned_upstream(
+        status: u16,
+        retry_after: Option<&'static str>,
+    ) -> (String, Arc<AtomicUsize>) {
+        use http_body_util::Full;
+        use hyper::service::service_fn;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let service = service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        async move {
+                            let mut resp = hyper::Response::builder().status(status);
+                            if let Some(v) = retry_after {
+                                resp = resp.header("retry-after", v);
+                            }
+                            Ok::<_, std::convert::Infallible>(
+                                resp.body(Full::new(Bytes::from_static(
+                                    br#"{"id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":1}}"#,
+                                )))
+                                .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(hyper_util::rt::TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        (url, hits)
+    }
+
+    /// A route balancing `limited` and `healthy` with `power_of_two_choices`; each
+    /// serves the model under its own spelling (Kiro dots, Anthropic dashes).
+    fn two_upstream_pipeline(
+        limited_url: String,
+        healthy_url: String,
+        limited_first: bool,
+    ) -> Arc<PipelineState> {
+        std::env::set_var("VKDG_TEST_FAILOVER_KEY", "k");
+        let conn = |id: &str, url: String, models: &[&str]| vkdg_connections::ConnectionConfig {
+            id: ConnectionId(id.into()),
+            provider: vkdg_connections::ProviderKind::Custom { base_url: url },
+            auth: vkdg_connections::AuthKind::ApiKey {
+                env_var: "VKDG_TEST_FAILOVER_KEY".into(),
+            },
+            models: models.iter().map(|m| (*m).to_owned()).collect(),
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let mut conns = vec![
+            conn("limited", limited_url, &["claude-sonnet-4.6"]),
+            conn("healthy", healthy_url, &["claude-*"]),
+        ];
+        if !limited_first {
+            conns.reverse();
+        }
+        let route = RouteConfig {
+            id: RouteId("claude".into()),
+            match_models: vec!["claude-*".into()],
+            strategy: StrategyKind::PowerOfTwoChoices,
+            targets: conns.iter().map(|c| c.id.clone()).collect(),
+            plugin_hooks: vkdg_routing::PluginHooks::default(),
+        };
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(ToBaseUrl));
+        Arc::new(PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(vec![route])),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        ))
+    }
+
+    // Plausible wrong impl: either the 429 does not take the connection out for the
+    // advertised `retry-after` (it rejoins after the 300 s backoff ceiling and every
+    // later request burns a probe on the limited account), or the failover does not
+    // happen (the client sees the 429 while a healthy sibling serves the model).
+    // Both targets serve the model under different spellings (Kiro dots, Anthropic
+    // dashes) and the route balances them with power_of_two_choices; each direction
+    // is exercised: the limited account first in `targets`, then second.
+    #[tokio::test]
+    async fn a_429_with_retry_after_fails_over_and_keeps_the_limited_connection_out() {
+        const REQUESTS: usize = 32;
+        for limited_first in [true, false] {
+            let (limited_url, limited_hits) = canned_upstream(429, Some("18000")).await;
+            let (healthy_url, healthy_hits) = canned_upstream(200, None).await;
+            let p = two_upstream_pipeline(limited_url, healthy_url, limited_first);
+
+            // The client spells the model with dashes; "limited" lists it with a dot.
+            for i in 0..REQUESTS {
+                let resp = run_conversation_pipeline(
+                    Arc::clone(&p),
+                    make_ctx("claude-sonnet-4-6"),
+                    make_conv_op(),
+                )
+                .await;
+                assert_eq!(
+                    resp.status(),
+                    http::StatusCode::OK,
+                    "request {i} (limited_first={limited_first}) must be served by the healthy sibling"
+                );
+            }
+
+            assert_eq!(
+                limited_hits.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "limited_first={limited_first}: the limited connection must be probed exactly once \
+                 (0 = the strategy never tried it, >1 = its cooldown did not hold)"
+            );
+            assert_eq!(
+                healthy_hits.load(std::sync::atomic::Ordering::SeqCst),
+                REQUESTS,
+                "every request ends on the healthy connection, none lost to the 429"
+            );
+
+            let wait = p
+                .catalog
+                .secs_until_cooldown_ends("claude-sonnet-4-6")
+                .expect("the limited connection is cooling");
+            assert!(
+                (17_900..=18_001).contains(&wait),
+                "cooldown must follow retry-after: 18000, got {wait} s"
+            );
+            let healthy = p.catalog.get(&ConnectionId("healthy".into())).unwrap();
+            assert!(
+                healthy.read().await.state.is_healthy(),
+                "invariant 6: the 429 on one connection must not cool its sibling"
+            );
+        }
     }
 }

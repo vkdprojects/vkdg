@@ -37,6 +37,22 @@ pub(super) fn unix_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+// ── Failover classification ───────────────────────────────────────────────────
+
+/// Upstream statuses that put the connection that answered into cooldown: rate
+/// limit (429), out of credits (402) and server-side failures (5xx).
+pub(super) fn cools_connection(code: u16) -> bool {
+    matches!(code, 402 | 429) || code >= 500
+}
+
+/// Upstream statuses worth one transparent retry on a sibling connection before
+/// any byte reaches the client: rate limit (429), overloaded (529) and out of
+/// credits (402) say "this account cannot serve right now", not "this request is
+/// bad". Other 5xx cool the connection but are not retried.
+pub(super) fn fails_over(code: u16) -> bool {
+    matches!(code, 402 | 429 | 529)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// The error response a client of `api_type` receives for `err`: status, JSON body

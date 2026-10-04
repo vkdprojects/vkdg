@@ -580,6 +580,64 @@ fn history_tool_results_capped_not_current() {
     );
 }
 
+/// A recent tool result crossing the UTF-8 byte cap must survive request
+/// preparation as a valid, bounded Kiro history entry.
+#[test]
+fn utf8_tool_result_at_history_limit_prepares_a_request() {
+    use serde_json::json;
+    use vkdg_operations::ContentBlock;
+
+    let result = format!("{}→tail", "a".repeat(1999));
+    let messages = vec![
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("read the file".into()),
+        },
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "read_file".into(),
+                input: json!({}),
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "call-1".into(),
+                content: result,
+                images: vec![],
+                is_error: false,
+            }]),
+        },
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Text("read complete".into()),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Text("continue".into()),
+        },
+    ];
+    let op = Operation::Conversation(ConversationRequest {
+        model: "claude-sonnet-4.5".into(),
+        messages,
+        ..Default::default()
+    });
+    let req = KiroAdapter
+        .prepare(&op, &connection(&["claude-*"]), &credential(&[]))
+        .expect("prepare");
+    let body: Value = serde_json::from_slice(&req.body).expect("valid JSON");
+    let text = body["conversationState"]["history"][2]["userInputMessage"]
+        ["userInputMessageContext"]["toolResults"][0]["content"][0]["text"]
+        .as_str()
+        .expect("history tool result");
+    assert_eq!(
+        text,
+        format!("{}...[truncated, 2006 bytes total]", "a".repeat(1999))
+    );
+}
+
 /// Refutes: stable conversationId regression — two requests from the same
 /// session must share a conversationId, two from different sessions must differ.
 #[test]

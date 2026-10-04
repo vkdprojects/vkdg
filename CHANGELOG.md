@@ -57,6 +57,10 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- Kiro history tool results no longer panic when the 2,000-byte cutoff lands inside a UTF-8
+  character. A Kiro `CONTENT_LENGTH_EXCEEDS_THRESHOLD` 400 now reaches OpenAI Chat clients
+  with `error.code: context_length_exceeded`, including pre-commit stream failures, so clients
+  can compact their own context. The gateway does not silently shorten the current request.
 - **A rate-limited connection rejoined routing after at most five minutes, whatever the upstream said.**
   A 429/5xx carrying `retry-after` now keeps that connection out of routing for at least that long
   (capped at 6 hours); the exponential backoff (1 s to 300 s) stays the floor. A Claude subscription

@@ -353,3 +353,48 @@ fn stream_error_frames_are_byte_exact_per_dialect() {
          data: [DONE]\n\n"
     );
 }
+
+// A Kiro request-size rejection must be identifiable to an OpenAI client so it
+// can compact its own context; unrelated 400s must remain ordinary bad requests.
+#[test]
+fn kiro_content_threshold_is_a_context_length_error() {
+    let rejected = VkdgError::UpstreamError {
+        code: 400,
+        message: r#"{"message":"Input content length exceeds threshold.","reason":"CONTENT_LENGTH_EXCEEDS_THRESHOLD"}"#.into(),
+        retry_after: None,
+    };
+    let body: Value =
+        serde_json::from_slice(&client_error(&ApiType::OpenAiChatCompletions, &rejected).body)
+            .unwrap();
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert_eq!(body["error"]["code"], "context_length_exceeded");
+    assert_eq!(
+        client_error(&ApiType::OpenAiChatCompletions, &rejected).status,
+        400
+    );
+    let frame = String::from_utf8(stream_error_frame(
+        &ApiType::OpenAiChatCompletions,
+        &rejected,
+    ))
+    .unwrap();
+    assert!(frame.contains(r#""code":"context_length_exceeded""#));
+    let event = VkdgError::UpstreamError {
+        code: 400,
+        message: "CONTENT_LENGTH_EXCEEDS_THRESHOLD: Input content length exceeds threshold.".into(),
+        retry_after: None,
+    };
+    let event_body: Value =
+        serde_json::from_slice(&client_error(&ApiType::OpenAiChatCompletions, &event).body)
+            .unwrap();
+    assert_eq!(event_body["error"]["code"], "context_length_exceeded");
+
+    let other = VkdgError::UpstreamError {
+        code: 400,
+        message: r#"{"message":"bad schema","reason":"BAD_REQUEST"}"#.into(),
+        retry_after: None,
+    };
+    let body: Value =
+        serde_json::from_slice(&client_error(&ApiType::OpenAiChatCompletions, &other).body)
+            .unwrap();
+    assert!(body["error"]["code"].is_null());
+}

@@ -385,7 +385,7 @@ fn demote_orphan_results(turns: &mut [Turn]) {
 
 /// Truncate a tool result's content for history turns.
 ///
-/// Long results (file reads, grep output) can exceed 50 k chars. Resending that
+/// Long results (file reads, grep output) can exceed 50 k bytes. Resending that
 /// on every subsequent turn wastes tokens and defeats the upstream prompt cache.
 /// The current turn is always sent in full; only history turns are truncated.
 fn truncate_history_content(content: &str) -> String {
@@ -393,9 +393,13 @@ fn truncate_history_content(content: &str) -> String {
         content.to_owned()
     } else {
         let total = content.len();
-        let mut s = content[..TOOL_RESULT_HISTORY_MAX].to_owned();
+        let mut end = TOOL_RESULT_HISTORY_MAX;
+        while !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut s = content[..end].to_owned();
         use std::fmt::Write as _;
-        let _ = write!(s, "...[truncated, {total} chars total]");
+        let _ = write!(s, "...[truncated, {total} bytes total]");
         s
     }
 }
@@ -643,4 +647,24 @@ fn sorted(map: Map<String, Value>) -> Map<String, Value> {
     let mut entries: Vec<(String, Value)> = map.into_iter().collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     entries.into_iter().collect()
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::truncate_history_content;
+
+    // A multibyte character straddling the byte limit must not panic or be split.
+    #[test]
+    fn history_tool_result_preserves_utf8_at_byte_limit() {
+        let content = format!("{}→tail", "a".repeat(1999));
+        assert_eq!(
+            truncate_history_content(&content),
+            format!("{}...[truncated, 2006 bytes total]", "a".repeat(1999))
+        );
+        let ascii = format!("{}tail", "a".repeat(2000));
+        assert_eq!(
+            truncate_history_content(&ascii),
+            format!("{}...[truncated, 2004 bytes total]", "a".repeat(2000))
+        );
+    }
 }

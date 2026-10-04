@@ -63,8 +63,24 @@ fn map(err: &VkdgError) -> Mapped {
         VkdgError::BudgetExceeded { .. } => {
             Mapped::new(402, "budget_exceeded_error", "budget_exceeded")
         }
+        VkdgError::UpstreamError {
+            code: 400, message, ..
+        } if is_context_length_rejection(message) => Mapped {
+            openai_code: Some("context_length_exceeded"),
+            ..map_upstream(400)
+        },
         VkdgError::UpstreamError { code, .. } => map_upstream(*code),
     }
+}
+
+/// Kiro reports the same rejection as an HTTP JSON body or an in-stream error.
+/// Inspect the reason field, not arbitrary error text that may quote a prompt.
+fn is_context_length_rejection(message: &str) -> bool {
+    message.starts_with("CONTENT_LENGTH_EXCEEDS_THRESHOLD:")
+        || serde_json::from_str::<serde_json::Value>(message).is_ok_and(|body| {
+            body.get("reason").and_then(serde_json::Value::as_str)
+                == Some("CONTENT_LENGTH_EXCEEDS_THRESHOLD")
+        })
 }
 
 /// A gateway-made protocol failure (`message` is shown verbatim, not as a

@@ -2,6 +2,7 @@
 //! `OpenAI` Responses API format over OAuth 2.0 (Authorization Code + PKCE).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -10,11 +11,39 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    Credential, OAuthConfig, OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter,
-    ProviderError, TokenPair,
+    Credential, DynamicModelCatalog, ModelCatalog, OAuthConfig, OAuthFlow, OAuthProvider,
+    PreparedRequest, ProviderAdapter, ProviderError, TokenPair,
 };
 
-pub struct CodexAdapter;
+/// Public OAuth `client_id` for the Codex CLI (`openai/codex`, `codex-rs`).
+/// Source: `codex-rs/login/src/auth/manager.rs` — `pub const CLIENT_ID`.
+/// Can be overridden via `CODEX_OAUTH_CLIENT_ID` env var.
+const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+
+pub struct CodexAdapter {
+    catalog: Option<Arc<DynamicModelCatalog>>,
+}
+
+impl CodexAdapter {
+    pub fn new() -> Self {
+        Self { catalog: None }
+    }
+
+    pub fn with_store(store: Arc<vkdg_config::GatewayStore>) -> Self {
+        Self {
+            catalog: Some(Arc::new(DynamicModelCatalog {
+                store,
+                provider_id: "codex",
+            })),
+        }
+    }
+}
+
+impl Default for CodexAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ProviderAdapter for CodexAdapter {
     fn oauth(&self) -> Option<&dyn OAuthProvider> {
@@ -68,20 +97,38 @@ impl ProviderAdapter for CodexAdapter {
             is_streaming: req.stream,
         })
     }
+
+    fn model_catalog(&self) -> Option<&dyn ModelCatalog> {
+        self.catalog.as_deref().map(|c| c as &dyn ModelCatalog)
+    }
 }
 
 impl OAuthProvider for CodexAdapter {
+    fn login_methods(&self) -> Vec<vkdg_provider_sdk::LoginMethod> {
+        use vkdg_provider_sdk::LoginMethod;
+        vec![LoginMethod {
+            id: "pkce".into(),
+            label: "Sign in with OpenAI".into(),
+            flow: vkdg_provider_sdk::OAuthFlow::AuthorizationCodePkce,
+            hint: Some("Opens a popup to auth.openai.com — completes automatically.".into()),
+            icon_char: Some('O'),
+            fields: vec![],
+        }]
+    }
+
     fn oauth_config(&self) -> OAuthConfig {
         let mut extra_auth_params = HashMap::new();
         extra_auth_params.insert("prompt".into(), "login".into());
         extra_auth_params.insert("codex_cli_simplified_flow".into(), "true".into());
         extra_auth_params.insert("originator".into(), "codex_cli_rs".into());
+        extra_auth_params.insert("id_token_add_organizations".into(), "true".into());
 
         OAuthConfig {
             flow: OAuthFlow::AuthorizationCodePkce,
             authorize_url: Some("https://auth.openai.com/oauth/authorize".into()),
             token_url: "https://auth.openai.com/oauth/token".into(),
-            client_id: std::env::var("CODEX_OAUTH_CLIENT_ID").unwrap_or_default(),
+            client_id: std::env::var("CODEX_OAUTH_CLIENT_ID")
+                .unwrap_or_else(|_| CODEX_CLIENT_ID.into()),
             scopes: vec![
                 "openid".into(),
                 "profile".into(),
@@ -92,6 +139,37 @@ impl OAuthProvider for CodexAdapter {
             extra_auth_params,
         }
     }
+    fn start_pkce_login<'a>(
+        &'a self,
+        _method: &'a str,
+        params: &'a vkdg_provider_sdk::LoginParams,
+    ) -> BoxFuture<'a, Result<vkdg_provider_sdk::PkceAuthorization, ProviderError>> {
+        Box::pin(async move {
+            let redirect_uri = match params.get("redirect_uri").filter(|u| !u.is_empty()) {
+                Some(uri) => vkdg_provider_sdk::validated_loopback_redirect(uri)?,
+                None => codex_redirect_uri(),
+            };
+            vkdg_provider_sdk::build_pkce_authorization(&self.oauth_config(), &redirect_uri)
+        })
+    }
+
+    fn finish_pkce_login<'a>(
+        &'a self,
+        _method: &'a str,
+        state: &'a vkdg_provider_sdk::LoginState,
+        code: &'a str,
+    ) -> BoxFuture<'a, Result<vkdg_provider_sdk::LoginResult, ProviderError>> {
+        Box::pin(async move {
+            let verifier = state.get("code_verifier").cloned().unwrap_or_default();
+            let redirect_uri = state
+                .get("redirect_uri")
+                .cloned()
+                .unwrap_or_else(codex_redirect_uri);
+            // Accept either raw code or pasted callback URL.
+            let (auth_code, _state) = vkdg_provider_sdk::parse_pkce_callback(code)?;
+            finish_pkce_exchange(verifier, redirect_uri, auth_code).await
+        })
+    }
 
     fn refresh_token<'a>(
         &'a self,
@@ -99,7 +177,8 @@ impl OAuthProvider for CodexAdapter {
         _extra: &'a HashMap<String, String>,
     ) -> BoxFuture<'a, Result<TokenPair, ProviderError>> {
         Box::pin(async move {
-            let client_id = std::env::var("CODEX_OAUTH_CLIENT_ID").unwrap_or_default();
+            let client_id =
+                std::env::var("CODEX_OAUTH_CLIENT_ID").unwrap_or_else(|_| CODEX_CLIENT_ID.into());
             let client = reqwest::Client::new();
             let resp = client
                 .post("https://auth.openai.com/oauth/token")
@@ -111,7 +190,6 @@ impl OAuthProvider for CodexAdapter {
                 .send()
                 .await
                 .map_err(|e| ProviderError::Http(e.to_string()))?;
-
             if !resp.status().is_success() {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
@@ -119,12 +197,10 @@ impl OAuthProvider for CodexAdapter {
                     "HTTP {status}: {body}"
                 )));
             }
-
             let json: Value = resp
                 .json()
                 .await
                 .map_err(|e| ProviderError::Serialization(e.to_string()))?;
-
             Ok(TokenPair {
                 access_token: json["access_token"]
                     .as_str()
@@ -136,6 +212,80 @@ impl OAuthProvider for CodexAdapter {
             })
         })
     }
+}
+fn codex_redirect_uri() -> String {
+    std::env::var("CODEX_REDIRECT_URI")
+        .unwrap_or_else(|_| "http://127.0.0.1:1455/auth/callback".into())
+}
+
+async fn finish_pkce_exchange(
+    verifier: String,
+    redirect_uri: String,
+    auth_code: String,
+) -> Result<vkdg_provider_sdk::LoginResult, ProviderError> {
+    let client_id =
+        std::env::var("CODEX_OAUTH_CLIENT_ID").unwrap_or_else(|_| CODEX_CLIENT_ID.into());
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://auth.openai.com/oauth/token")
+        .json(&json!({
+            "code": auth_code,
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_verifier": verifier,
+        }))
+        .send()
+        .await
+        .map_err(|e| ProviderError::Http(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProviderError::TokenRefresh(format!(
+            "token exchange HTTP {status}: {body}"
+        )));
+    }
+    let tokens: Value = resp
+        .json()
+        .await
+        .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+    let access_token = tokens["access_token"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+
+    // Best-effort: fetch email from OpenAI userinfo.
+    let mut extra: HashMap<String, String> = HashMap::new();
+    if let Ok(ui_resp) = client
+        .get("https://auth.openai.com/oauth/userinfo")
+        .header("Authorization", format!("Bearer {access_token}"))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        if let Ok(ui) = ui_resp.json::<Value>().await {
+            if let Some(email) = ui["email"].as_str() {
+                extra.insert("email".into(), email.into());
+            }
+            if let Some(sub) = ui["sub"].as_str() {
+                extra.insert("sub".into(), sub.into());
+            }
+        }
+    }
+
+    let label = extra.get("email").cloned().unwrap_or_default();
+
+    Ok(vkdg_provider_sdk::LoginResult {
+        tokens: TokenPair {
+            access_token,
+            refresh_token: tokens["refresh_token"].as_str().map(str::to_string),
+            expires_in_secs: tokens["expires_in"].as_u64(),
+            extra,
+        },
+        label,
+    })
 }
 
 fn base_url(config: &ConnectionConfig) -> String {
@@ -322,7 +472,7 @@ mod tests {
             token: "t".into(),
             extra: Arc::new(HashMap::new()),
         };
-        let req = CodexAdapter.prepare(&op, &config, &cred).unwrap();
+        let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
         serde_json::from_slice(&req.body).unwrap()
     }
 

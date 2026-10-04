@@ -1,6 +1,6 @@
 use crate::{
     error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
+    handlers::{response as resp, session::get_session},
     router::AdminState,
 };
 use axum::{
@@ -92,8 +92,7 @@ async fn summarize(
 
 pub async fn list_connections(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     let snapshot = state.config_rx.borrow().clone();
     let mut items = Vec::with_capacity(snapshot.connections.len());
@@ -110,14 +109,11 @@ pub async fn get_connection(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     let snapshot = state.config_rx.borrow().clone();
     match snapshot.connections.iter().find(|c| c.id.0 == id) {
-        None => {
-            AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id)).into_response()
-        }
+        None => resp::not_found(&id),
         Some(c) => Json(summarize(&state, c).await).into_response(),
     }
 }
@@ -128,8 +124,7 @@ pub async fn test_connection(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     let Some(tester) = &state.connection_tester else {
         return AdminErrorResponse(
@@ -391,48 +386,23 @@ pub fn remove_account_connections(state: &AdminState, account_id: &str) -> Resul
     }
     rebuild_and_push(state).map(|_| ())
 }
-
-pub async fn create_connection(
-    State(state): State<AdminState>,
-    headers: HeaderMap,
-    Json(body): Json<CreateConnectionBody>,
+/// Persist `def` to the store, rebuild the live snapshot, and return the
+/// updated `ConnectionSummary`. `success_status` separates 201 (create) from
+/// 200 (update/patch-replace).
+async fn persist_connection(
+    state: &AdminState,
+    def: ConnectionDef,
+    success_status: StatusCode,
 ) -> Response {
-    if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
-    }
-    if body.id.trim().is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "id must not be empty"),
-        )
-        .into_response();
-    }
-    if body.models.is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "models must not be empty"),
-        )
-        .into_response();
-    }
-    let id = body.id.clone();
-    let def = body.into_def(id.clone());
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     if let Err(e) = store.upsert_connection(&def) {
-        return AdminErrorResponse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            AdminError::new("store_error", e.to_string()),
-        )
-        .into_response();
+        return resp::store_error(e);
     }
-    match rebuild_and_push(&state) {
-        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    match rebuild_and_push(state) {
+        Err(e) => resp::internal(e),
         Ok(snap) => {
             let conn = snap.connections.iter().find(|c| c.id.0 == def.id);
             match conn {
@@ -441,10 +411,29 @@ pub async fn create_connection(
                     AdminError::new("not_found", "connection missing after upsert"),
                 )
                 .into_response(),
-                Some(c) => (StatusCode::CREATED, Json(summarize(&state, c).await)).into_response(),
+                Some(c) => (success_status, Json(summarize(state, c).await)).into_response(),
             }
         }
     }
+}
+
+pub async fn create_connection(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateConnectionBody>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return resp::unauthorized();
+    }
+    if body.id.trim().is_empty() {
+        return resp::validation("id must not be empty");
+    }
+    if body.models.is_empty() {
+        return resp::validation("models must not be empty");
+    }
+    let id = body.id.clone();
+    let def = body.into_def(id);
+    persist_connection(&state, def, StatusCode::CREATED).await
 }
 
 pub async fn update_connection(
@@ -454,53 +443,20 @@ pub async fn update_connection(
     Json(body): Json<CreateConnectionBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     if body.models.is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "models must not be empty"),
-        )
-        .into_response();
+        return resp::validation("models must not be empty");
     }
     // 404 if not in current snapshot
     {
         let snapshot = state.config_rx.borrow().clone();
         if !snapshot.connections.iter().any(|c| c.id.0 == id) {
-            return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
-                .into_response();
+            return resp::not_found(&id);
         }
     }
-    let def = body.into_def(id.clone());
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
-    };
-    if let Err(e) = store.upsert_connection(&def) {
-        return AdminErrorResponse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            AdminError::new("store_error", e.to_string()),
-        )
-        .into_response();
-    }
-    match rebuild_and_push(&state) {
-        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        Ok(snap) => {
-            let conn = snap.connections.iter().find(|c| c.id.0 == id);
-            match conn {
-                None => AdminErrorResponse(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    AdminError::new("not_found", "connection missing after upsert"),
-                )
-                .into_response(),
-                Some(c) => Json(summarize(&state, c).await).into_response(),
-            }
-        }
-    }
+    let def = body.into_def(id);
+    persist_connection(&state, def, StatusCode::OK).await
 }
 
 /// Partial update from the console: only the fields it edits. Everything else
@@ -514,14 +470,6 @@ pub struct PatchConnectionBody {
     weight: Option<u32>,
 }
 
-fn validation(message: &str) -> Response {
-    AdminErrorResponse(
-        StatusCode::UNPROCESSABLE_ENTITY,
-        AdminError::new("validation_error", message),
-    )
-    .into_response()
-}
-
 pub async fn patch_connection(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -529,14 +477,13 @@ pub async fn patch_connection(
     Json(body): Json<PatchConnectionBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     if body.models.is_none() && body.max_concurrent.is_none() && body.weight.is_none() {
-        return validation("nothing to change: send models, max_concurrent or weight");
+        return resp::validation("nothing to change: send models, max_concurrent or weight");
     }
     if body.max_concurrent == Some(0) || body.weight == Some(0) {
-        return validation("max_concurrent and weight must be at least 1");
+        return resp::validation("max_concurrent and weight must be at least 1");
     }
     let models = body.models.map(|m| {
         m.into_iter()
@@ -545,25 +492,18 @@ pub async fn patch_connection(
             .collect::<Vec<_>>()
     });
     if models.as_ref().is_some_and(Vec::is_empty) {
-        return validation("models must not be empty");
+        return resp::validation("models must not be empty");
     }
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     let (conns, _) = match store.load() {
         Ok(v) => v,
-        Err(e) => {
-            return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, store_error(e))
-                .into_response()
-        }
+        Err(e) => return resp::store_error(e),
     };
     let Some(old) = conns.into_iter().find(|c| c.id == id) else {
-        return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
-            .into_response();
+        return resp::not_found(&id);
     };
     let mut def = old.clone();
     if let Some(models) = models {
@@ -576,8 +516,7 @@ pub async fn patch_connection(
         def.weight = body.weight;
     }
     if let Err(e) = store.upsert_connection(&def) {
-        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, store_error(e))
-            .into_response();
+        return resp::store_error(e);
     }
     match rebuild_and_push(&state) {
         Err(e) => {
@@ -587,11 +526,10 @@ pub async fn patch_connection(
         }
         Ok(snap) => match snap.connections.iter().find(|c| c.id.0 == id) {
             Some(c) => Json(summarize(&state, c).await).into_response(),
-            None => AdminErrorResponse(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                AdminError::new("not_found", "connection missing after update"),
-            )
-            .into_response(),
+            None => resp::internal(AdminError::new(
+                "not_found",
+                "connection missing after update",
+            )),
         },
     }
 }
@@ -602,21 +540,17 @@ pub async fn delete_connection(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     if let Err(e) = remove_connection(store, &id) {
-        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return resp::internal(e);
     }
     if let Err(e) = rebuild_and_push(&state) {
-        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return resp::internal(e);
     }
     StatusCode::NO_CONTENT.into_response()
 }

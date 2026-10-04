@@ -40,9 +40,10 @@ pub(super) fn unix_secs() -> u64 {
 // ── Failover classification ───────────────────────────────────────────────────
 
 /// Upstream statuses that put the connection that answered into cooldown: rate
-/// limit (429), out of credits (402) and server-side failures (5xx).
+/// limit (429), out of credits (402), auth failures (401, 403) and server-side
+/// failures (5xx).
 pub(super) fn cools_connection(code: u16) -> bool {
-    matches!(code, 402 | 429) || code >= 500
+    matches!(code, 401 | 402 | 403 | 429) || code >= 500
 }
 
 /// Upstream statuses worth one transparent retry on a sibling connection before

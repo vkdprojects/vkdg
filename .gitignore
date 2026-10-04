@@ -163,3 +163,4 @@ apps/console/playwright-report/
 /.omp/config.yml
 apps/console/e2e/.data/
 references/
+omp-session-*.html

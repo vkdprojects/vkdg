@@ -1,6 +1,5 @@
 use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
+    handlers::{response as resp, session::get_session},
     router::AdminState,
 };
 use axum::{
@@ -59,8 +58,7 @@ fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
 
 pub async fn get_stats(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
 
     let (records, _) = state.request_log.list(200, None);

@@ -4,6 +4,7 @@
 //! at runtime. It follows the same pattern as `AccountStore` in
 //! `vkdg-connections`: SQLite + `parking_lot::Mutex`, WAL mode, 0600 perms.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use parking_lot::Mutex;
@@ -11,6 +12,13 @@ use rusqlite::{params, Connection};
 use vkdg_core::{Result, VkdgError};
 
 use crate::schema::{ConnectionDef, RouteDef};
+
+/// A model entry in a provider's catalog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogModel {
+    pub id: String,
+    pub display_name: Option<String>,
+}
 
 /// SQLite-backed store for gateway connections and routes.
 pub struct GatewayStore {
@@ -49,6 +57,13 @@ impl GatewayStore {
              CREATE TABLE IF NOT EXISTS meta (
                  key   TEXT PRIMARY KEY NOT NULL,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS provider_catalog (
+                 provider_id  TEXT NOT NULL,
+                 model_id     TEXT NOT NULL,
+                 display_name TEXT,
+                 updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+                 PRIMARY KEY (provider_id, model_id)
              );",
         )
         .map_err(|e| store_err("init", &e))?;
@@ -226,6 +241,82 @@ impl GatewayStore {
             .execute("DELETE FROM routes WHERE id = ?1", params![id])
             .map_err(|e| store_err("delete_route", &e))?;
         Ok(())
+    }
+
+    // ── Provider Catalog ──────────────────────────────────────────────────────
+
+    /// List all models for a given provider. Returns an empty vec when none exist.
+    pub fn catalog_list(&self, provider: &str) -> Result<Vec<CatalogModel>> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT model_id, display_name FROM provider_catalog \
+                 WHERE provider_id = ?1 ORDER BY model_id",
+            )
+            .map_err(|e| store_err("catalog_list prepare", &e))?;
+        let models = stmt
+            .query_map(params![provider], |row| {
+                Ok(CatalogModel {
+                    id: row.get(0)?,
+                    display_name: row.get(1)?,
+                })
+            })
+            .map_err(|e| store_err("catalog_list query", &e))?
+            .map(|r| r.map_err(|e| store_err("catalog_list row", &e)))
+            .collect::<Result<_>>()?;
+        Ok(models)
+    }
+
+    /// Replace all models for a provider atomically (delete + insert in one tx).
+    pub fn catalog_replace(&self, provider: &str, models: &[CatalogModel]) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn
+            .transaction()
+            .map_err(|e| store_err("catalog_replace tx", &e))?;
+        tx.execute(
+            "DELETE FROM provider_catalog WHERE provider_id = ?1",
+            params![provider],
+        )
+        .map_err(|e| store_err("catalog_replace delete", &e))?;
+        for m in models {
+            tx.execute(
+                "INSERT INTO provider_catalog (provider_id, model_id, display_name) \
+                 VALUES (?1, ?2, ?3)",
+                params![provider, m.id, m.display_name],
+            )
+            .map_err(|e| store_err("catalog_replace insert", &e))?;
+        }
+        tx.commit()
+            .map_err(|e| store_err("catalog_replace commit", &e))
+    }
+
+    /// List all models grouped by provider.
+    pub fn catalog_list_all(&self) -> Result<std::collections::HashMap<String, Vec<CatalogModel>>> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT provider_id, model_id, display_name FROM provider_catalog \
+                 ORDER BY provider_id, model_id",
+            )
+            .map_err(|e| store_err("catalog_list_all prepare", &e))?;
+        let mut map: std::collections::HashMap<String, Vec<CatalogModel>> =
+            std::collections::HashMap::new();
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    CatalogModel {
+                        id: row.get(1)?,
+                        display_name: row.get(2)?,
+                    },
+                ))
+            })
+            .map_err(|e| store_err("catalog_list_all query", &e))?;
+        for row in rows {
+            let (provider_id, model) = row.map_err(|e| store_err("catalog_list_all row", &e))?;
+            map.entry(provider_id).or_default().push(model);
+        }
+        Ok(map)
     }
 
     fn lock(&self) -> parking_lot::MutexGuard<'_, Connection> {

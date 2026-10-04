@@ -1,6 +1,6 @@
 use crate::{
-    error::{AdminError, AdminErrorResponse},
-    handlers::session::get_session,
+    error::AdminError,
+    handlers::{response as resp, session::get_session},
     router::AdminState,
 };
 use axum::{
@@ -59,8 +59,7 @@ fn strategy_str(s: &impl serde::Serialize) -> String {
 
 pub async fn list_routes(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     let snapshot = state.config_rx.borrow().clone();
     let items: Vec<RouteSummary> = snapshot
@@ -82,8 +81,7 @@ pub async fn preview_route(
     Query(q): Query<PreviewQuery>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     let snapshot = state.config_rx.borrow().clone();
     let combo_id = state
@@ -174,49 +172,29 @@ pub async fn create_route(
     Json(body): Json<CreateRouteBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     if body.id.trim().is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "id must not be empty"),
-        )
-        .into_response();
+        return resp::validation("id must not be empty");
     }
     if body.targets.is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "targets must not be empty"),
-        )
-        .into_response();
+        return resp::validation("targets must not be empty");
     }
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     let id = body.id.clone();
     let def = body.into_def(id.clone());
     if let Err(e) = store.upsert_route(&def) {
-        return AdminErrorResponse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            AdminError::new("store_error", e.to_string()),
-        )
-        .into_response();
+        return resp::store_error(e);
     }
     match crate::handlers::connections::rebuild_and_push(&state) {
-        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => resp::internal(e),
         Ok(snap) => {
             let route = snap.routes.iter().find(|r| r.id.0 == id);
             match route {
-                None => AdminErrorResponse(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    AdminError::new("not_found", "route missing after upsert"),
-                )
-                .into_response(),
+                None => resp::internal(AdminError::new("not_found", "route missing after upsert")),
                 Some(r) => (
                     StatusCode::CREATED,
                     Json(RouteSummary {
@@ -239,49 +217,32 @@ pub async fn update_route(
     Json(body): Json<CreateRouteBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
     if body.targets.is_empty() {
-        return AdminErrorResponse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            AdminError::new("validation_error", "targets must not be empty"),
-        )
-        .into_response();
+        return resp::validation("targets must not be empty");
     }
     // 404 if not in current snapshot
     {
         let snapshot = state.config_rx.borrow().clone();
         if !snapshot.routes.iter().any(|r| r.id.0 == id) {
-            return AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id))
-                .into_response();
+            return resp::not_found(&id);
         }
     }
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     let def = body.into_def(id.clone());
     if let Err(e) = store.upsert_route(&def) {
-        return AdminErrorResponse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            AdminError::new("store_error", e.to_string()),
-        )
-        .into_response();
+        return resp::store_error(e);
     }
     match crate::handlers::connections::rebuild_and_push(&state) {
-        Err(e) => AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        Err(e) => resp::internal(e),
         Ok(snap) => {
             let route = snap.routes.iter().find(|r| r.id.0 == id);
             match route {
-                None => AdminErrorResponse(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    AdminError::new("not_found", "route missing after upsert"),
-                )
-                .into_response(),
+                None => resp::internal(AdminError::new("not_found", "route missing after upsert")),
                 Some(r) => Json(RouteSummary {
                     id: r.id.0.clone(),
                     match_models: r.match_models.clone(),
@@ -300,25 +261,17 @@ pub async fn delete_route(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized())
-            .into_response();
+        return resp::unauthorized();
     }
-    let Some(store) = &state.gateway_store else {
-        return AdminErrorResponse(
-            StatusCode::SERVICE_UNAVAILABLE,
-            AdminError::new("no_store", "gateway store not available"),
-        )
-        .into_response();
+    let store = match resp::require_store(&state) {
+        Ok(s) => s,
+        Err(r) => return r,
     };
     if let Err(e) = store.delete_route(&id) {
-        return AdminErrorResponse(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            AdminError::new("store_error", e.to_string()),
-        )
-        .into_response();
+        return resp::store_error(e);
     }
     if let Err(e) = crate::handlers::connections::rebuild_and_push(&state) {
-        return AdminErrorResponse(StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        return resp::internal(e);
     }
     StatusCode::NO_CONTENT.into_response()
 }

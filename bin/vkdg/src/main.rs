@@ -377,6 +377,12 @@ async fn serve(
         GatewayStore::open(&AccountStore::default_path().with_file_name("gateway.db"))
             .map_err(|e| anyhow::anyhow!("gateway store: {e}"))?,
     );
+    // Rebuild with catalog store so Codex (and future providers) can serve
+    // model lists from the SQLite catalog.
+    let registry = Arc::new(load_provider_registry(
+        &PluginStore::from_env(),
+        Some(&gateway_store),
+    ));
 
     // Next to accounts.db and keys.db, so history survives a restart or deploy.
     let request_log_path = AccountStore::default_path().with_file_name("requests.db");
@@ -597,6 +603,10 @@ async fn serve(
             bootstrap_token,
             admin_password_path(),
             trusted_proxies_from_env()?,
+        )
+        .with_db(
+            rusqlite::Connection::open(AccountStore::default_path().with_file_name("gateway.db"))
+                .map_err(|e| anyhow::anyhow!("session db: {e}"))?,
         ),
         config_rx,
         started_at: std::sync::Arc::new(std::time::Instant::now()),
@@ -893,12 +903,15 @@ fn spawn_file_reload(path: String, store: Arc<GatewayStore>, tx: vkdg_config::Co
 }
 
 fn build_provider_registry() -> Arc<ProviderRegistry> {
-    Arc::new(load_provider_registry(&PluginStore::from_env()))
+    Arc::new(load_provider_registry(&PluginStore::from_env(), None))
 }
 
 /// Built-ins first, then installed WASM providers. Called at startup and on
 /// every plugin install/removal.
-fn load_provider_registry(store: &PluginStore) -> ProviderRegistry {
+fn load_provider_registry(
+    store: &PluginStore,
+    gateway_store: Option<&Arc<GatewayStore>>,
+) -> ProviderRegistry {
     let mut r = ProviderRegistry::empty();
     r.register(Arc::new(AnthropicAdapter));
     r.register(Arc::new(OpenAIAdapter));
@@ -909,7 +922,10 @@ fn load_provider_registry(store: &PluginStore) -> ProviderRegistry {
     r.register(Arc::new(deepseek_provider()));
     r.register(Arc::new(mistral_provider()));
     r.register(Arc::new(ClaudeCodeAdapter));
-    r.register(Arc::new(CodexAdapter));
+    r.register(match &gateway_store {
+        Some(gs) => Arc::new(CodexAdapter::with_store(Arc::clone(gs))),
+        None => Arc::new(CodexAdapter::new()),
+    });
     r.register(Arc::new(KiroAdapter));
     r.register(Arc::new(KimiCodingAdapter));
     r.register(Arc::new(AntigravityAdapter));
@@ -1160,7 +1176,7 @@ fn reload_plugins(
     providers: &ProviderRegistry,
     hooks: &vkdg_http::hooks::HookRegistry,
 ) {
-    providers.replace(load_provider_registry(store));
+    providers.replace(load_provider_registry(store, None));
     hooks.replace(build_hook_registry(store));
     tracing::info!(dir = %store.root().display(), "plugins reloaded");
 }

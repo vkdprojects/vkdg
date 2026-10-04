@@ -188,5 +188,13 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route("/admin/v1/stats", get(crate::handlers::stats::get_stats))
         .route("/metrics", get(crate::handlers::stats::get_metrics))
+        .route(
+            "/admin/v1/catalog/{provider}",
+            get(crate::handlers::catalog::get_catalog).put(crate::handlers::catalog::put_catalog),
+        )
+        .route(
+            "/admin/v1/catalog/{provider}/import-url",
+            post(crate::handlers::catalog::import_catalog_url),
+        )
         .with_state(state)
 }

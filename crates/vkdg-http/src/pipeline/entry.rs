@@ -90,7 +90,8 @@ pub(super) fn emit_decision_record(
         Err(e) => AttemptResult::Failed {
             code: format!("{e}"),
             phase: format!("{:?}", ctx.state),
-            retryable: !ctx.committed,
+            retryable: !ctx.committed
+                && !matches!(e, VkdgError::UpstreamError { code, .. } if matches!(code, 401 | 403)),
             committed: ctx.committed,
         },
     };

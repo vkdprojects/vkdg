@@ -6,6 +6,41 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **OpenAI Codex provider:** full OAuth PKCE login flow via `auth.openai.com`, token refresh,
+  and connection test. The provider appears in the console under "OpenAI Codex" alongside Claude
+  Code and Kiro.
+- **Dynamic model catalog:** `provider_catalog` table in `gateway.db` stores models per provider
+  without requiring a rebuild. Admin API: `GET/PUT /admin/v1/catalog/{provider}` and
+  `POST /admin/v1/catalog/{provider}/import-url` (imports from any JSON URL). Codex uses this
+  catalog; any future provider can too.
+- **Session persistence across restarts:** admin console sessions are now stored in `gateway.db`
+  (`admin_sessions` table) and reloaded on startup. A deploy or restart no longer forces a new
+  login.
+
+### Fixed
+- **Kiro context overflow loop:** conversations were growing unboundedly (observed: 2 428 messages
+  in one session). The provider now caps history at 100 turns before the aging pipeline runs.
+  Beyond that, Kiro was returning `out=0` responses, causing the omp agent to retry silently and
+  burn through the account's rate limit.
+- **401/403 treated as retryable:** upstream auth failures (`bearer token invalid`, expired OAuth
+  token) were marked `retryable: true`, causing the client to retry indefinitely. They are now
+  non-retryable and put the connection into cooldown immediately.
+- **Admin router path syntax:** catalog routes used `:provider` (Axum v4 syntax) instead of
+  `{provider}` (Axum v0.8+), causing a startup panic and HTTP 502 on the console.
+- **`import-url` without timeout:** `reqwest::Client` in the catalog import handler had no
+  timeout; a slow server could block a Tokio worker indefinitely. Fixed to 30 s.
+
+### Changed
+- **PKCE helpers moved to `vkdg-provider-sdk`:** `random_b64url`, `validated_loopback_redirect`,
+  `parse_pkce_callback`, and `build_pkce_authorization` are now shared utilities in the SDK.
+  Duplicated copies in `claude-code` and `codex` have been removed.
+- **Admin response helpers:** `require_store`, `ok`, and `err` extracted to
+  `vkdg-admin/handlers/response.rs`; repeated boilerplate removed from all handlers.
+- **`create_connection` / `update_connection`:** shared logic extracted to `persist_connection`;
+  the two handlers now call a single upsert path.
+
+
 ### Security
 - Console login: after a password is set, the bootstrap token is refused (not just after the first
   sign-in). Failed sign-ins are throttled per source IP (resolved through `VKDG_TRUSTED_PROXIES`)

@@ -37,6 +37,11 @@ const AGING_MID_TOOL_MAX: usize = 500;
 /// Max chars for text / tool-result content in distant history (distance 8+ from end).
 const AGING_FAR_TEXT_MAX: usize = 120;
 const AGING_FAR_TOOL_MAX: usize = 50;
+/// Hard cap on history turns sent to Kiro. The progressive aging pipeline
+/// compresses content but does not bound turn count; beyond ~100 turns the
+/// context window fills and Kiro returns empty responses, causing the omp
+/// agent to loop without producing output.
+const MAX_HISTORY_TURNS: usize = 100;
 
 /// JSON-Schema keywords Kiro answers with 400 "Improperly formed request",
 /// wherever they appear in a tool schema.
@@ -210,6 +215,16 @@ pub fn build_conversation_state(
     }
 
     demote_orphan_results(&mut turns);
+    // Cap history depth before aging. The progressive aging pipeline compresses
+    // content but does not bound turn count; at 2000+ turns the context fills
+    // and Kiro returns out=0 responses, causing the omp agent to loop silently.
+    // Keep the first user turn when it carries the system prompt (injected above).
+    let system_injected = conv.system.as_deref().is_some_and(|s| !s.is_empty());
+    if turns.len() > MAX_HISTORY_TURNS {
+        let drop_from = usize::from(system_injected);
+        let excess = turns.len() - MAX_HISTORY_TURNS;
+        turns.drain(drop_from..drop_from + excess);
+    }
 
     // Kiro's current message is always a user turn. A transcript ending on the
     // assistant keeps that turn in history and asks for a continuation.
@@ -232,11 +247,8 @@ pub fn build_conversation_state(
             .find_map(|(i, t)| if t.assistant { None } else { Some(i) });
     let has_history_user = last_user_idx.is_some();
     let history_len = turns.len();
-    // When a system prompt was injected, the first user turn carries it.
-    // The aging pipeline MUST NOT truncate that turn: the system prompt can be
-    // 5–20 KB and is critical for the model's identity and instructions.
-    // Only protect it when conv.system is non-empty (i.e. injection happened).
-    let system_injected = conv.system.as_deref().is_some_and(|s| !s.is_empty());
+    // When a system prompt was injected, the first user turn carries it;
+    // the aging pipeline must not truncate it (same protection as the drain above).
     let protected_first_user = if system_injected {
         turns
             .iter()

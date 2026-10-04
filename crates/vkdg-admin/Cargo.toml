@@ -25,6 +25,7 @@ vkdg-governance  = { workspace = true }
 rusqlite         = { workspace = true }
 argon2           = { workspace = true }
 futures          = { workspace = true }
+reqwest          = { workspace = true }
 
 [dev-dependencies]
 tempfile         = { workspace = true }

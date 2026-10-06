@@ -220,10 +220,19 @@ pub fn build_conversation_state(
     // and Kiro returns out=0 responses, causing the omp agent to loop silently.
     // Keep the first user turn when it carries the system prompt (injected above).
     let system_injected = conv.system.as_deref().is_some_and(|s| !s.is_empty());
-    if turns.len() > MAX_HISTORY_TURNS {
+    // An assistant-ended transcript also needs the synthesized current user.
+    let max_turns =
+        MAX_HISTORY_TURNS - usize::from(turns.last().is_some_and(|turn| turn.assistant));
+    if turns.len() > max_turns {
         let drop_from = usize::from(system_injected);
-        let excess = turns.len() - MAX_HISTORY_TURNS;
-        turns.drain(drop_from..drop_from + excess);
+        let mut drop_to = drop_from + turns.len() - max_turns;
+        // Start the retained suffix on an assistant turn, never on the user
+        // result of a removed call. With the protected first user this also
+        // keeps the two user turns from becoming adjacent.
+        if !turns[drop_to].assistant {
+            drop_to += 1;
+        }
+        turns.drain(drop_from..drop_to);
     }
 
     // Kiro's current message is always a user turn. A transcript ending on the

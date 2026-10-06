@@ -15,6 +15,7 @@ vkdg-http = { workspace = true }
 vkdg-routing = { workspace = true }
 vkdg-connections = { workspace = true }
 vkdg-ingress-anthropic = { workspace = true }
+vkdg-ingress-openai = { workspace = true }
 vkdg-observe = { workspace = true }
 tokio = { workspace = true }
 serde_yaml = { workspace = true }

@@ -743,6 +743,7 @@ dependencies = [
  "vkdg-core",
  "vkdg-http",
  "vkdg-ingress-anthropic",
+ "vkdg-ingress-openai",
  "vkdg-observe",
  "vkdg-operations",
  "vkdg-provider-anthropic",

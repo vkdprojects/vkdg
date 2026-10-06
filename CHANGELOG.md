@@ -19,6 +19,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
   login.
 
 ### Fixed
+- **Kiro tool history cap:** long conversations no longer split an assistant's tool calls
+  from their results at the 100-turn boundary. The cap removes complete historical
+  exchanges, preserves the system-bearing first user turn and current message, and
+  reserves a turn for assistant-ended continuations. Regression tests cover 50–52 tool
+  round trips and anonymized 111-, 113-, 103- and 161-message incident shapes through
+  real HTTP ingress and a strict loopback upstream.
 - **Kiro context overflow loop:** conversations were growing unboundedly (observed: 2 428 messages
   in one session). The provider now caps history at 100 turns before the aging pipeline runs.
   Beyond that, Kiro was returning `out=0` responses, causing the omp agent to retry silently and

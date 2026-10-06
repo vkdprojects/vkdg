@@ -89,6 +89,30 @@ minimum; counting it turned a 2-token prompt into ~2000 billed tokens.
 | images | `image_url` to Anthropic `source` (base64 or URL) | to `image_url` (data URL when inline) | in a tool result: kept inside the Anthropic `tool_result`; to an OpenAI upstream, the `tool` message carries the text and the images follow in a labelled `user` message (Chat Completions tool messages are text only) |
 | Codex / Kiro | n/a | n/a | `tool_choice`, `stop`, `top_p` and the parallel limit are not forwarded |
 
+### Kiro history limit
+
+Kiro receives at most 100 turns, counting `currentMessage`. When history exceeds
+that limit, the adapter keeps the system-bearing first user turn and the newest
+suffix beginning with an assistant turn. It removes complete older exchanges,
+not a tool call without its result or a result without its call. An assistant-ended
+conversation reserves a slot for the current `Continue.` user message.
+
+The cap does not fabricate tool results or turn results orphaned by the gateway's
+own truncation into text. Existing history-content aging still applies; the current
+tool result remains unabridged.
+
+The loopback smoke uses the real OpenAI ingress, pipeline and Kiro request builder.
+Its fake upstream independently checks immediate tool adjacency, system preservation
+and the 100-turn limit:
+
+```sh
+cargo test -p vkdg-provider-kiro --test prepare_tools history_cap
+cargo test -p conformance smoke_kiro_history_cap_real_http_ingress -- --nocapture
+```
+
+These checks need no upstream credentials. They do not establish which adapter
+or binary version a remote deployment currently runs.
+
 ## Cost
 
 Measured with a 2005-event Anthropic stream in 1 KiB reads, release build, one core

@@ -484,3 +484,129 @@ fn current_turn_tool_results_are_never_truncated() {
         "current turn result must not carry a truncation suffix"
     );
 }
+
+/// Refutes: cutting an assistant call away from its immediately following result
+/// at the history cap, with or without the protected system-bearing user turn.
+#[test]
+fn history_cap_keeps_tool_round_trips_adjacent() {
+    for with_system in [false, true] {
+        for tail in ["result", "confirmation", "assistant"] {
+            let current_is_result = tail == "result";
+            for rounds in [50, 51, 52] {
+                let mut messages = vec![text(Role::User, "initial request")];
+                for i in 0..rounds {
+                    let id = format!("call_{i}");
+                    messages.push(Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: "get_weather".into(),
+                            input: json!({}),
+                        }]),
+                    });
+                    messages.push(Message {
+                        role: Role::User,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: format!("result_{i}"),
+                            images: vec![],
+                            is_error: false,
+                        }]),
+                    });
+                }
+                if !current_is_result {
+                    messages.push(text(Role::Assistant, "completed"));
+                    if tail == "confirmation" {
+                        messages.push(text(Role::User, "Sim, pf"));
+                    }
+                }
+                let mut op = request(messages, vec![weather_tool()]);
+                if with_system {
+                    let Operation::Conversation(conv) = &mut op else {
+                        panic!("conversation fixture");
+                    };
+                    conv.system = Some("system instructions".into());
+                }
+                let b = body(&op);
+                let history = b["conversationState"]["history"]
+                    .as_array()
+                    .expect("history");
+                assert!(history.len() < 100, "history cap must hold");
+                let kept_calls: Vec<_> = history
+                    .iter()
+                    .flat_map(|item| {
+                        item["assistantResponseMessage"]["toolUses"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                    })
+                    .map(|call| call["toolUseId"].as_str().expect("call id"))
+                    .collect();
+                let kept_count = match (with_system, tail) {
+                    (true, "result") | (false, "confirmation" | "assistant") => 49,
+                    (false, "result") => 50,
+                    _ => 48,
+                };
+                let expected: Vec<_> = (rounds - kept_count..rounds)
+                    .map(|i| format!("call_{i}"))
+                    .collect();
+                assert_eq!(kept_calls, expected, "retain the longest complete suffix");
+                let mut pending: Vec<&str> = Vec::new();
+                let mut previous_assistant = false;
+                for (index, item) in history
+                    .iter()
+                    .chain(std::iter::once(&b["conversationState"]["currentMessage"]))
+                    .enumerate()
+                {
+                    if let Some(assistant) = item.get("assistantResponseMessage") {
+                        assert!(pending.is_empty(), "unanswered call before turn {index}");
+                        assert!(!previous_assistant, "consecutive assistants at {index}");
+                        pending = assistant["toolUses"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|u| u["toolUseId"].as_str().expect("call id"))
+                            .collect();
+                        previous_assistant = true;
+                    } else {
+                        let user = &item["userInputMessage"];
+                        let results: Vec<&str> = user["userInputMessageContext"]["toolResults"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|r| r["toolUseId"].as_str().expect("result id"))
+                            .collect();
+                        assert_eq!(
+                            results, pending,
+                            "adjacency at turn {index}, system={with_system}, current_result={current_is_result}, rounds={rounds}"
+                        );
+                        assert!(
+                            index == 0 || previous_assistant,
+                            "consecutive users at turn {index}"
+                        );
+                        pending.clear();
+                        previous_assistant = false;
+                    }
+                }
+                assert!(pending.is_empty(), "unanswered final call");
+                if with_system {
+                    assert!(history[0]["userInputMessage"]["content"]
+                        .as_str()
+                        .expect("system-bearing content")
+                        .contains("system instructions"));
+                }
+                if current_is_result {
+                    assert_eq!(
+                        current(&b)["userInputMessageContext"]["toolResults"][0]["content"][0]
+                            ["text"],
+                        format!("result_{}", rounds - 1)
+                    );
+                } else if tail == "confirmation" {
+                    assert_eq!(current(&b)["content"], "Sim, pf");
+                } else {
+                    assert_eq!(current(&b)["content"], "Continue.");
+                }
+            }
+        }
+    }
+}

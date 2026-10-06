@@ -919,3 +919,307 @@ async fn empty_stream_returns_valid_stop_reason() {
     );
     assert_eq!(fake.call_count(), 1, "upstream must be called exactly once");
 }
+
+/// Uses the real Kiro converter and decoder; only the transport destination is
+/// redirected to loopback so this smoke never contacts a paid upstream.
+struct LocalKiroAdapter {
+    url: String,
+}
+
+impl vkdg_provider_sdk::ProviderAdapter for LocalKiroAdapter {
+    fn id(&self) -> &'static str {
+        "kiro"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Kiro loopback smoke"
+    }
+
+    fn prepare(
+        &self,
+        operation: &Operation,
+        config: &ConnectionConfig,
+        credential: &vkdg_connections::Credential,
+    ) -> Result<vkdg_provider_sdk::PreparedRequest, vkdg_provider_sdk::ProviderError> {
+        let mut prepared =
+            vkdg_provider_kiro::KiroAdapter.prepare(operation, config, credential)?;
+        prepared.url.clone_from(&self.url);
+        Ok(prepared)
+    }
+
+    fn stream_decoder(&self) -> Option<Box<dyn vkdg_provider_sdk::ConversationStreamDecoder>> {
+        vkdg_provider_kiro::KiroAdapter.stream_decoder()
+    }
+}
+
+// Structural tokens from incident requests: no original text, argument, name,
+// identifier, credential or URL is retained. A<n>e/t keeps call count and whether
+// assistant text was empty; U<n> keeps the user's text-block count.
+fn anonymized_history(shape: &str) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    let mut messages = Vec::new();
+    let mut pending = std::collections::VecDeque::new();
+    let mut next_id = 0;
+    for token in shape.split_whitespace() {
+        match token.as_bytes()[0] {
+            b'S' => messages.push(json!({"role":"system","content":"system instructions"})),
+            b'U' => {
+                let count: usize = token[1..].parse().expect("block count");
+                messages.push(json!({"role":"user","content":(0..count)
+                    .map(|_| json!({"type":"text","text":"user instruction"})).collect::<Vec<_>>()}));
+            }
+            b'A' => {
+                let count: usize = token[1..token.len() - 1].parse().expect("call count");
+                let calls: Vec<_> = (0..count).map(|_| {
+                    let id = format!("call_{next_id}");
+                    next_id += 1;
+                    pending.push_back(id.clone());
+                    json!({"id":id,"type":"function","function":{"name":"inspect","arguments":"{}"}})
+                }).collect();
+                messages.push(json!({"role":"assistant",
+                    "content":if token.ends_with('e') { "" } else { "assistant text" },
+                    "tool_calls":calls}));
+            }
+            b'T' => messages.push(json!({"role":"tool",
+                "tool_call_id":pending.pop_front().expect("matching fixture call"),
+                "content":"tool output"})),
+            _ => panic!("unknown structural token"),
+        }
+    }
+    assert!(pending.is_empty(), "fixture must have complete pairs");
+    messages
+}
+
+/// Independent upstream validator: every result must answer the immediately
+/// preceding assistant, and that assistant's calls must all be answered once.
+fn strict_kiro_history(body: &serde_json::Value) -> Result<(), String> {
+    let state = &body["conversationState"];
+    let history = state["history"].as_array().ok_or("missing history")?;
+    if history.len() + 1 > 100 {
+        return Err("history cap exceeded".into());
+    }
+    let mut previous_assistant = false;
+    let mut pending = Vec::new();
+    for (i, item) in history
+        .iter()
+        .chain(std::iter::once(&state["currentMessage"]))
+        .enumerate()
+    {
+        if let Some(assistant) = item.get("assistantResponseMessage") {
+            if previous_assistant || !pending.is_empty() {
+                return Err(format!("unanswered assistant at turn {i}"));
+            }
+            pending = assistant["toolUses"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|u| u["toolUseId"].as_str())
+                .collect();
+            previous_assistant = true;
+        } else {
+            let user = &item["userInputMessage"];
+            let results: Vec<_> = user["userInputMessageContext"]["toolResults"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|r| r["toolUseId"].as_str())
+                .collect();
+            if results != pending {
+                return Err(format!("TOOL_USE_RESULT_MISMATCH at turn {i}"));
+            }
+            if i > 0 && !previous_assistant {
+                return Err(format!("consecutive users at turn {i}"));
+            }
+            pending.clear();
+            previous_assistant = false;
+        }
+    }
+    if !pending.is_empty() {
+        return Err("unanswered final call".into());
+    }
+    if !history[0]["userInputMessage"]["content"]
+        .as_str()
+        .is_some_and(|s| s.contains("system instructions"))
+    {
+        return Err("system instructions lost".into());
+    }
+    Ok(())
+}
+
+/// Refutes a cap that splits tool exchanges after real Chat Completions ingress
+/// and pipeline dispatch, including the next short user confirmation.
+#[tokio::test]
+async fn smoke_kiro_history_cap_real_http_ingress() {
+    use axum::{extract::State, response::IntoResponse, routing::post, Json};
+    use serde_json::{json, Value};
+    use std::sync::Mutex;
+    use tokio::net::TcpListener;
+    use vkdg_http::{AppState, ServerConfig};
+
+    let observed = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = axum::Router::new()
+        .route(
+            "/generateAssistantResponse",
+            post(
+                |State(seen): State<Arc<Mutex<Vec<Value>>>>, bytes: bytes::Bytes| async move {
+                    let body: Value = serde_json::from_slice(&bytes).expect("Kiro JSON request");
+                    let validation = strict_kiro_history(&body);
+                    seen.lock().expect("observed requests").push(body);
+                    if let Err(reason) = validation {
+                        return (
+                            http::StatusCode::BAD_REQUEST,
+                            Json(json!({"reason":reason})),
+                        )
+                            .into_response();
+                    }
+                    let mut bytes = Vec::new();
+                    let frame = aws_smithy_types::event_stream::Message::new(
+                        json!({"content":"confirmed"}).to_string(),
+                    )
+                    .add_header(aws_smithy_types::event_stream::Header::new(
+                        ":message-type",
+                        aws_smithy_types::event_stream::HeaderValue::String("event".into()),
+                    ))
+                    .add_header(aws_smithy_types::event_stream::Header::new(
+                        ":event-type",
+                        aws_smithy_types::event_stream::HeaderValue::String(
+                            "assistantResponseEvent".into(),
+                        ),
+                    ));
+                    aws_smithy_eventstream::frame::write_message_to(&frame, &mut bytes)
+                        .expect("event frame");
+                    (
+                        http::StatusCode::OK,
+                        [("content-type", "application/vnd.amazon.eventstream")],
+                        bytes,
+                    )
+                        .into_response()
+                },
+            ),
+        )
+        .with_state(observed.clone());
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("upstream bind");
+    let upstream_url = format!(
+        "http://{}/generateAssistantResponse",
+        upstream_listener.local_addr().expect("upstream addr")
+    );
+    let upstream_task = tokio::spawn(async move {
+        axum::serve(upstream_listener, upstream)
+            .await
+            .expect("upstream serve");
+    });
+    std::env::set_var("VKDG_KIRO_CAP_SMOKE_KEY", "synthetic-key");
+    let conn_id = ConnectionId("kiro-cap-smoke".into());
+    let config = ConnectionConfig {
+        id: conn_id.clone(),
+        provider: ProviderKind::Plugin { id: "kiro".into() },
+        auth: AuthKind::ApiKey {
+            env_var: "VKDG_KIRO_CAP_SMOKE_KEY".into(),
+        },
+        models: vec!["claude-*".into()],
+        max_concurrent: 1,
+        weight: 1,
+        tags: vec![],
+        endpoint: None,
+        capabilities: CapabilitySet::default(),
+    };
+    let route = RouteConfig {
+        id: RouteId("kiro-cap-smoke".into()),
+        match_models: vec!["claude-*".into()],
+        strategy: StrategyKind::RoundRobin,
+        targets: vec![conn_id],
+        plugin_hooks: PluginHooks::default(),
+    };
+    let mut registry = ProviderRegistry::empty();
+    registry.register(Arc::new(LocalKiroAdapter { url: upstream_url }));
+    let pipeline = Arc::new(PipelineState::minimal(
+        Arc::new(AdmissionGuard::new(1)),
+        Arc::new(Router::new(vec![route])),
+        Arc::new(ConnectionCatalog::new(vec![config])),
+        Arc::new(CredentialManager::new()),
+        Arc::new(HttpClient::new()),
+        Arc::new(DecisionRecordExporter::new()),
+        Arc::new(registry),
+    ));
+    let gateway = axum::Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(vkdg_ingress_openai::handle_chat_completions),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            vkdg_http::DataAuth::disabled(),
+            vkdg_http::require_api_key,
+        ))
+        .with_state(AppState::new(ServerConfig::default()).with_pipeline(pipeline));
+    let gateway_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gateway bind");
+    let gateway_url = format!(
+        "http://{}/v1/chat/completions",
+        gateway_listener.local_addr().expect("gateway addr")
+    );
+    let gateway_task = tokio::spawn(async move {
+        axum::serve(gateway_listener, gateway)
+            .await
+            .expect("gateway serve");
+    });
+    let shapes = [
+        (111, "S U2 U1 A1e T A2e T T A1e T A1e T A1e T A2e T T A2e T T A2e T T A2e T T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A2e T T A1t T A1e T A1e T A1t T A1e T A1e T A1e T A1e T A0t U1 A2e T T A1t T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1t T A2e T T A1e T A1e T A1t T A1t T A1e T A1t T A1e T A1t T A1e T A1e T A0t U1"),
+        (113, "S U2 U1 A1e T A2e T T A1e T A1e T A1e T A2e T T A2e T T A2e T T A2e T T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A2e T T A1t T A1e T A1e T A1t T A1e T A1e T A1e T A1e T A0t U1 A2e T T A1t T A1e T A1e T A1e T A1e T A1e T A1e T A1e T A1t T A2e T T A1e T A1e T A1t T A1t T A1e T A1t T A1e T A1t T A1e T A1e T A0t U1 U1 U1"),
+        (103, "S U2 A1t T A1t T A1t T A1t T A1e T A1t T A1t T A1t T A1t T A1e T A1t T A1t T A1t T A1e T U1 A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1e T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1t T A1e T A1t T A1t T A1t T A1e T A1t T A1e T A1t T A1t T A1t T A1t T A1e T"),
+        (161, "S U2 A1e T A1e T A3e T T T A2t T T U1 A2e T T U1 A2t T T A2t T T A2e T T A2e T T A1t T A1e T A1e T A1e T A1t T A1e T A2t T T A1e T A1e T A1t T A2t T T A1e T U1 A2t T T A1e T A1t T A1e T A1t T A1e T A2e T T A1t T A1e T A1e T A1e T A1t T A1e T A1t T A1e T A1t T U1 A2t T T U1 A3t T T T A1e T A2e T T A2e T T A2e T T A2e T T A2e T T A2e T T A2e T T A1e T U1 A2t T T U1 A1t T A1e T A1e T A1t T A1e T A1t T A1t T A1e T A1e T A1e T A1t T U1 A1e T U1 A1t T U1 U1 U1"),
+    ];
+    let client = reqwest::Client::new();
+    for (count, shape) in shapes {
+        let mut messages = anonymized_history(shape);
+        assert_eq!(messages.len(), count, "incident shape message count");
+        for followup in [false, true] {
+            if followup {
+                messages.push(json!({"role":"assistant","content":"confirmed"}));
+                messages.push(json!({"role":"user","content":"Sim, pf"}));
+            }
+            let response = client.post(&gateway_url).json(&json!({
+                "model":"claude-sonnet-4.5","messages":messages,"stream":true,
+                "tools":[{"type":"function","function":{"name":"inspect","parameters":{"type":"object"}}}]
+            })).send().await.expect("gateway request");
+            assert_eq!(
+                response.status(),
+                http::StatusCode::OK,
+                "shape {count}, followup={followup}"
+            );
+            let stream = response.text().await.expect("client stream");
+            assert!(
+                stream.contains("confirmed"),
+                "upstream answer must reach client"
+            );
+            assert!(stream.contains("[DONE]"), "client stream must complete");
+            let seen = observed.lock().expect("observed body");
+            let sent = seen.last().expect("one upstream request");
+            assert!(strict_kiro_history(sent).is_ok());
+            let history = sent["conversationState"]["history"]
+                .as_array()
+                .expect("history");
+            let calls: usize = history
+                .iter()
+                .map(|item| {
+                    item["assistantResponseMessage"]["toolUses"]
+                        .as_array()
+                        .map_or(0, Vec::len)
+                })
+                .sum();
+            println!("sanitized shape={count} followup={followup} downstream_turns={} tool_calls={calls} adjacency=valid system=preserved current=preserved",
+                history.len() + 1);
+            if followup {
+                assert_eq!(
+                    sent["conversationState"]["currentMessage"]["userInputMessage"]["content"],
+                    "Sim, pf"
+                );
+            }
+        }
+    }
+    assert_eq!(observed.lock().expect("requests").len(), 8);
+    gateway_task.abort();
+    upstream_task.abort();
+}

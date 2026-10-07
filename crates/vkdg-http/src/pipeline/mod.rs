@@ -8,6 +8,7 @@ pub(crate) mod entry;
 pub(crate) mod helpers;
 pub(crate) mod inner;
 pub mod phases;
+pub(crate) mod session_affinity;
 
 pub use entry::{run_conversation_pipeline, PendingLog};
 

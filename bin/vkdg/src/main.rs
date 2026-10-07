@@ -492,6 +492,7 @@ async fn serve(
         Arc::clone(&registry),
     );
     pipeline.hooks = Arc::clone(&hooks);
+    spawn_session_purge(&pipeline);
     spawn_config_applier(config_rx.clone(), &pipeline);
     let mut pipeline = Some(pipeline);
     // Share request_log Arc and hooks between pipeline and admin API.
@@ -732,6 +733,25 @@ async fn info() -> impl axum::response::IntoResponse {
 
 // ── Pipeline builder — from ConfigSnapshot ────────────────────────────────────
 
+/// How long a conversation stays pinned to its connection after its last turn.
+/// Matches the provider prompt cache's longest tier (one hour): past that the
+/// cached prefix is gone and re-routing costs nothing.
+const SESSION_PIN_TTL_SECS: u64 = 3600;
+
+/// Drop expired pins so the registry does not grow with every conversation ever seen.
+fn spawn_session_purge(pipeline: &PipelineState) {
+    let Some(registry) = pipeline.session_registry.clone() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            tick.tick().await;
+            registry.purge_expired().await;
+        }
+    });
+}
+
 fn build_pipeline_from_snapshot(
     snap: &ConfigSnapshot,
     max_concurrent: usize,
@@ -757,7 +777,8 @@ fn build_pipeline_from_snapshot(
         combo_resolver: None,
         compressor: None,
         dedup_table: None,
-        session_registry: None,
+        // Conversation affinity: turns of one conversation stay on one connection.
+        session_registry: Some(vkdg_connections::SessionRegistry::new(SESSION_PIN_TTL_SECS)),
         quota_tracker: None,
         global_system_prompt: snap.gateway.global_system_prompt.clone(),
         ip_policy: Some(Arc::new(vkdg_core::net::IpPolicy::new(

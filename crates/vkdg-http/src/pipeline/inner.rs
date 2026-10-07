@@ -63,6 +63,13 @@ pub(super) async fn run_pipeline_inner(
     ctx.transition(AttemptState::Admitted);
 
     // 2. Combo resolution + session stickiness ────────────────────────────────
+    // Clients send no session key; derive one from the conversation so its turns
+    // share a connection (and the provider's prompt cache).
+    if ctx.envelope.session_key.is_none() {
+        if let Operation::Conversation(conv) = &operation {
+            ctx.envelope.session_key = super::session_affinity::derive(&ctx.envelope, conv);
+        }
+    }
     let csr = resolve_combo_and_session(pipeline, &ctx.envelope).await;
 
     // 2b. Budget cap check ─────────────────────────────────────────────────────
@@ -257,10 +264,13 @@ pub(super) async fn run_pipeline_inner(
     // can detect rotation afterwards for context-relay.
     let session_preferred_saved = csr.session_preferred.clone();
     let connection_id = match csr.session_preferred {
-        // Only use the pin if the connection is still in the catalog (healthy check
-        // happens inside acquire() at step 3; here we just guard against stale pins
-        // for connections that were removed from the catalog entirely).
-        Some(preferred) if pipeline.catalog.get(&preferred).is_some() => {
+        // A pin holds only while its connection is still eligible for this
+        // request: in the catalog, serving the model, healthy, with capacity and
+        // not already rate-limited this request. Otherwise the router's choice
+        // wins and the pin moves with the next successful response.
+        Some(preferred)
+            if !filter.is_excluded(&preferred) && pipeline.catalog.get(&preferred).is_some() =>
+        {
             tracing::debug!(
                 session_key = ?ctx.envelope.session_key,
                 pinned = %preferred.0,
@@ -585,7 +595,8 @@ pub(super) async fn run_pipeline_inner(
         complete_body.as_ref(),
         start_time,
         &operation,
-    );
+    )
+    .await;
     Ok(resp)
 }
 

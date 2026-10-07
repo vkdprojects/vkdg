@@ -174,6 +174,14 @@ Routes are evaluated in declaration order; the first matching route wins.
 
 A target is skipped if it is over its `max_concurrent` limit, its circuit is open, or it does not support the required capability set.
 
+### Conversation affinity
+
+The strategy picks a connection for the first request of a conversation only. Later requests of the same conversation stay on that connection, so the provider's per-account prompt cache keeps hitting. This applies to every strategy and needs no configuration.
+
+- A conversation is identified by the client's session id (`x-claude-code-session-id` or `x-session-id`) when present. Otherwise by a SHA-256 hash of the tenant, the client, the system prompt and the first user message. Requests with neither are routed per request.
+- The pin lasts 3600 s after the last turn (fixed) and is set after streaming and non-streaming responses alike.
+- A pin is ignored, and the strategy picks again, when its connection is in cooldown, at capacity, unhealthy, does not serve the model, or already returned a 429 for this request.
+
 ---
 
 ## limits

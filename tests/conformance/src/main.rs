@@ -6,6 +6,7 @@ mod fake_upstream;
 mod fusion_chain;
 mod ingress_anthropic;
 mod routing;
+mod session_affinity;
 mod smoke;
 mod state_machine;
 mod stream_failover;

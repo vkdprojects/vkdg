@@ -141,7 +141,7 @@ pub(super) async fn prepare_operation(
     (operation, compression_metrics)
 }
 
-pub(super) fn post_response_accounting(
+pub(super) async fn post_response_accounting(
     pipeline: &PipelineState,
     ctx: &vkdg_core::pipeline::PipelineCtx,
     response_body: Option<&bytes::Bytes>,
@@ -201,7 +201,7 @@ pub(super) fn post_response_accounting(
         }
     }
 
-    // Quota + session pin: non-streaming only
+    // Quota: non-streaming only (needs the response body to estimate tokens)
     if let Some(approx_tokens) = response_body.map(|b| (b.len() / 4) as u64) {
         if let Some(tracker) = &pipeline.quota_tracker {
             if let Some(conn_id) = &ctx.connection_id {
@@ -212,18 +212,17 @@ pub(super) fn post_response_accounting(
                 });
             }
         }
-        if let (Some(registry), Some(session_key), Some(conn_id)) = (
-            &pipeline.session_registry,
-            &ctx.envelope.session_key,
-            &ctx.connection_id,
-        ) {
-            let registry = Arc::clone(registry);
-            let session_id = session_key.0.clone();
-            let conn_id = conn_id.clone();
-            tokio::spawn(async move {
-                registry.pin(session_id, conn_id).await;
-            });
-        }
+    }
+
+    // Session pin: streaming and non-streaming alike, since agents stream. It is
+    // awaited, not spawned: the next turn of the conversation can arrive before a
+    // spawned task runs and would be routed afresh to another connection.
+    if let (Some(registry), Some(session_key), Some(conn_id)) = (
+        &pipeline.session_registry,
+        &ctx.envelope.session_key,
+        &ctx.connection_id,
+    ) {
+        registry.pin(session_key.0.clone(), conn_id.clone()).await;
     }
 
     // Latency recording (unconditional)

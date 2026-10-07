@@ -70,6 +70,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
   `vkdg-admin/handlers/response.rs`; repeated boilerplate removed from all handlers.
 - **`create_connection` / `update_connection`:** shared logic extracted to `persist_connection`;
   the two handlers now call a single upsert path.
+- **Routing by conversation, not by request:** the first request of a conversation takes the
+  route's strategy (P2C in production); later turns stay on that connection for up to one hour so
+  the provider's per-account prompt cache keeps hitting. The conversation key is the client
+  session id, or a SHA-256 of tenant, client, system prompt and first user message (never stored
+  as content). The pin is also set after streaming responses and is ignored when the connection is
+  in cooldown, at capacity, unhealthy, does not serve the model, or already returned a 429. Expired
+  pins are purged every 5 minutes.
 
 
 ### Security

@@ -43,5 +43,5 @@ pub use request::{
     upstream_model, ConversationStreamDecoder, PreparedRequest, ProviderAdapter, ProviderCategory,
     ProviderMeta,
 };
-pub use usage::{UsageProvider, UsageSnapshot};
+pub use usage::{UsageProvider, UsageSnapshot, UsageWindow, WindowKind};
 pub use vkdg_connections::Credential;

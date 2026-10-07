@@ -104,14 +104,15 @@ impl CredentialManager {
                 .get_oauth2_token(&conn.id, token_url, client_id, client_secret_env, scopes)
                 .await
                 .map(Credential::bearer),
-            AuthKind::Account { account_id } => self.get_account_token(account_id).await,
+            AuthKind::Account { account_id } => self.account_credential(account_id).await,
         }
     }
 
     /// Resolve an account credential, refreshing through the provider plugin when the
     /// token expires within [`REFRESH_AHEAD`]. One refresh per account at a time; the
-    /// refreshed tokens are persisted before they are returned.
-    async fn get_account_token(&self, account_id: &str) -> Result<Credential> {
+    /// refreshed tokens are persisted before they are returned. Also used outside the
+    /// request path (e.g. reading an account's usage) so those calls get a live token.
+    pub async fn account_credential(&self, account_id: &str) -> Result<Credential> {
         let backend = self
             .accounts
             .as_ref()

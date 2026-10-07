@@ -15,6 +15,7 @@ use vkdg_provider_sdk::{
 };
 
 mod catalog;
+mod usage;
 
 pub struct ClaudeCodeAdapter;
 
@@ -25,6 +26,10 @@ impl ProviderAdapter for ClaudeCodeAdapter {
 
     fn model_catalog(&self) -> Option<&dyn vkdg_provider_sdk::ModelCatalog> {
         Some(&catalog::ClaudeCodeCatalog)
+    }
+
+    fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
+        Some(&usage::ClaudeCodeUsage)
     }
 
     fn id(&self) -> &'static str {

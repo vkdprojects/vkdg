@@ -178,9 +178,10 @@ pub fn parse_usage(body: &Value) -> Result<UsageSnapshot, ProviderError> {
         .map(fingerprint);
 
     Ok(UsageSnapshot {
-        credits_used,
+        credits_used: Some(credits_used),
         credits_limit,
         credits_period_end,
+        windows: Vec::new(),
         plan,
         upstream_user_ref,
     })
@@ -283,7 +284,8 @@ mod tests {
     #[test]
     fn parses_used_plan_and_period_from_real_body() {
         let s = parse_usage(&kiro_pro_max()).unwrap();
-        assert!((s.credits_used - 2285.75).abs() < f64::EPSILON);
+        assert_eq!(s.credits_used, Some(2285.75));
+        assert!(s.windows.is_empty(), "Kiro meters credits, not windows");
         assert_eq!(s.plan.as_deref(), Some("KIRO PRO MAX"));
         assert_eq!(s.credits_period_end, Some(1_790_812_800));
     }
@@ -329,7 +331,7 @@ mod tests {
             }]
         });
         let s = parse_usage(&body).unwrap();
-        assert!((s.credits_used - 12.5).abs() < f64::EPSILON);
+        assert_eq!(s.credits_used, Some(12.5));
         assert_eq!(s.credits_limit, None);
         assert_eq!(s.credits_period_end, None);
     }

@@ -15,6 +15,9 @@ use vkdg_provider_sdk::{
     OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError, ResponsesSseDecoder,
     TokenPair,
 };
+
+mod usage;
+
 /// Public OAuth `client_id` for the Codex CLI (`openai/codex`, `codex-rs`).
 /// Source: `codex-rs/login/src/auth/manager.rs` — `pub const CLIENT_ID`.
 /// Can be overridden via `CODEX_OAUTH_CLIENT_ID` env var.
@@ -48,6 +51,10 @@ impl Default for CodexAdapter {
 impl ProviderAdapter for CodexAdapter {
     fn oauth(&self) -> Option<&dyn OAuthProvider> {
         Some(self)
+    }
+
+    fn usage(&self) -> Option<&dyn vkdg_provider_sdk::UsageProvider> {
+        Some(&usage::CodexUsage)
     }
 
     fn id(&self) -> &'static str {

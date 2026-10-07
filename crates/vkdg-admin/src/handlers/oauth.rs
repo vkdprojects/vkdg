@@ -117,11 +117,23 @@ impl LoginService {
             }
         }
         let usage = adapter.usage().expect("checked above");
-        let snapshot = usage
-            .fetch_usage(&account.credential())
-            .await
-            .map_err(|e| eprintln!("credit usage fetch failed for {}: {e}", account.id))
-            .ok();
+        // A live token: expiring OAuth access tokens are refreshed (and a revoked
+        // account refused) by the same manager that serves gateway requests.
+        let credential = match &self.credentials {
+            Some(creds) => creds.account_credential(&account.id).await,
+            None => Ok(account.credential()),
+        };
+        let snapshot = match credential {
+            Ok(credential) => usage
+                .fetch_usage(&credential)
+                .await
+                .map_err(|e| eprintln!("usage fetch failed for {}: {e}", account.id))
+                .ok(),
+            Err(e) => {
+                eprintln!("usage skipped for {}: {e}", account.id);
+                None
+            }
+        };
         self.usage_cache.lock().insert(
             account.id.clone(),
             CachedUsage {
@@ -218,6 +230,19 @@ pub struct AccountSummary {
     /// Opaque fingerprint of the upstream user, when reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     credits_user_ref: Option<String>,
+    /// Rate-limit windows (5-hour, weekly, per-model weekly) for providers that
+    /// meter by window. Only windows the upstream reported are present; omitted
+    /// when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    usage_windows: Vec<WindowSummary>,
+}
+
+#[derive(Serialize)]
+struct WindowSummary {
+    kind: &'static str,
+    used_percent: f64,
+    /// Unix seconds; `null` when the upstream gave no reset time.
+    resets_at: Option<i64>,
 }
 
 impl From<&Account> for AccountSummary {
@@ -241,6 +266,7 @@ impl From<&Account> for AccountSummary {
             credits_plan: None,
             credits_checked_at: None,
             credits_user_ref: None,
+            usage_windows: Vec::new(),
         }
     }
 }
@@ -254,11 +280,20 @@ impl AccountSummary {
         match usage {
             Some(u) => {
                 self.credits_source = Some("reported");
-                self.credits_used = Some(u.credits_used);
+                self.credits_used = u.credits_used;
                 self.credits_limit = u.credits_limit;
                 self.credits_period_end = u.credits_period_end;
                 self.credits_plan.clone_from(&u.plan);
                 self.credits_user_ref.clone_from(&u.upstream_user_ref);
+                self.usage_windows = u
+                    .windows
+                    .iter()
+                    .map(|w| WindowSummary {
+                        kind: w.kind.as_str(),
+                        used_percent: w.used_percent,
+                        resets_at: w.resets_at,
+                    })
+                    .collect();
             }
             None => {
                 self.credits_source = Some("unavailable");
@@ -1117,6 +1152,17 @@ mod tests {
     /// `snapshot` is `None`, without touching the network.
     struct FakeCredits {
         snapshot: Option<UsageSnapshot>,
+        /// Access tokens `fetch_usage` was called with, in order.
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl FakeCredits {
+        fn new(snapshot: Option<UsageSnapshot>) -> Self {
+            Self {
+                snapshot,
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
     }
 
     impl ProviderAdapter for FakeCredits {
@@ -1142,11 +1188,50 @@ mod tests {
     impl vkdg_provider_sdk::UsageProvider for FakeCredits {
         fn fetch_usage<'a>(
             &'a self,
-            _: &'a Credential,
+            cred: &'a Credential,
         ) -> BoxFuture<'a, Result<UsageSnapshot, ProviderError>> {
+            self.seen.lock().push(cred.token.clone());
             let snap = self.snapshot.clone();
             Box::pin(async move { snap.ok_or_else(|| ProviderError::Http("boom".into())) })
         }
+    }
+
+    /// Refresh endpoint stand-in: always issues `fresh-token`.
+    struct FakeRefresher;
+
+    impl vkdg_connections::TokenRefresher for FakeRefresher {
+        fn refresh<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a HashMap<String, String>,
+        ) -> BoxFuture<'a, vkdg_core::Result<TokenPair>> {
+            Box::pin(async {
+                Ok(TokenPair {
+                    access_token: "fresh-token".into(),
+                    refresh_token: None,
+                    expires_in_secs: Some(3600),
+                    extra: HashMap::new(),
+                })
+            })
+        }
+    }
+
+    /// Like `state_with`, but usage reads go through a `CredentialManager` that
+    /// refreshes expiring account tokens.
+    fn state_with_refresh(adapter: Arc<dyn ProviderAdapter>) -> (AdminState, Arc<AccountStore>) {
+        let (mut state, store) = state_with(Arc::clone(&adapter));
+        let mut registry = ProviderRegistry::empty();
+        registry.register(adapter);
+        let creds = Arc::new(
+            CredentialManager::new().with_accounts(Arc::clone(&store), Arc::new(FakeRefresher)),
+        );
+        state.logins = Some(LoginService::new(
+            Arc::new(registry),
+            Arc::clone(&store),
+            Some(creds),
+        ));
+        (state, store)
     }
 
     fn state_with(adapter: Arc<dyn ProviderAdapter>) -> (AdminState, Arc<AccountStore>) {
@@ -1194,15 +1279,14 @@ mod tests {
     // source not marked "reported"; checked-at timestamp missing.
     #[tokio::test]
     async fn list_accounts_reports_credits_from_usage_provider() {
-        let (state, store) = state_with(Arc::new(FakeCredits {
-            snapshot: Some(UsageSnapshot {
-                credits_used: 137.95,
-                credits_limit: Some(10000.0),
-                credits_period_end: Some(1_790_812_800),
-                plan: Some("KIRO POWER".into()),
-                upstream_user_ref: Some("d-9067c9".into()),
-            }),
-        }));
+        let (state, store) = state_with(Arc::new(FakeCredits::new(Some(UsageSnapshot {
+            credits_used: Some(137.95),
+            credits_limit: Some(10000.0),
+            credits_period_end: Some(1_790_812_800),
+            plan: Some("KIRO POWER".into()),
+            upstream_user_ref: Some("d-9067c9".into()),
+            ..UsageSnapshot::default()
+        }))));
         seed_account(&store, "credits");
         let h = authed(&state);
 
@@ -1218,13 +1302,17 @@ mod tests {
             item["credits_checked_at"].is_string(),
             "checked-at timestamp must be recorded: {raw}"
         );
+        assert!(
+            item["usage_windows"].is_null(),
+            "a credit provider reports no rate-limit windows: {raw}"
+        );
     }
 
     // Refutes: an upstream error swallowed into a fabricated 0; source not marked
     // "unavailable"; limit invented when none was reported.
     #[tokio::test]
     async fn list_accounts_marks_usage_unavailable_never_zero() {
-        let (state, store) = state_with(Arc::new(FakeCredits { snapshot: None }));
+        let (state, store) = state_with(Arc::new(FakeCredits::new(None)));
         seed_account(&store, "credits");
         let h = authed(&state);
 
@@ -1237,6 +1325,10 @@ mod tests {
             "no usage figure when upstream fails, never 0: {raw}"
         );
         assert!(item["credits_limit"].is_null(), "{raw}");
+        assert!(
+            item["usage_windows"].is_null(),
+            "no windows when upstream fails, never a 0% bar: {raw}"
+        );
     }
 
     // Refutes: forcing credit fields (or a source) onto providers that sell no
@@ -1252,6 +1344,108 @@ mod tests {
         let item = &v["items"][0];
         assert!(item["credits_source"].is_null(), "{raw}");
         assert!(item["credits_used"].is_null(), "{raw}");
+    }
+
+    // Refutes: windows dropped from the wire; kind names or percents altered; a
+    // missing reset time turned into 0; credit fields fabricated for a
+    // percent-only provider; plan not forwarded.
+    #[tokio::test]
+    async fn list_accounts_reports_rate_limit_windows() {
+        use vkdg_provider_sdk::{UsageWindow, WindowKind};
+        let (state, store) = state_with(Arc::new(FakeCredits::new(Some(UsageSnapshot {
+            windows: vec![
+                UsageWindow {
+                    kind: WindowKind::FiveHour,
+                    used_percent: 49.0,
+                    resets_at: Some(1_790_000_000),
+                },
+                UsageWindow {
+                    kind: WindowKind::WeeklySonnet,
+                    used_percent: 12.5,
+                    resets_at: None,
+                },
+            ],
+            plan: Some("max".into()),
+            ..UsageSnapshot::default()
+        }))));
+        seed_account(&store, "credits");
+        let h = authed(&state);
+
+        let (status, v, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let item = &v["items"][0];
+        assert_eq!(item["credits_source"], "reported", "{raw}");
+        assert_eq!(item["credits_plan"], "max", "{raw}");
+        let w = item["usage_windows"].as_array().expect(&raw);
+        assert_eq!(w.len(), 2, "{raw}");
+        assert_eq!(w[0]["kind"], "five_hour", "{raw}");
+        assert_eq!(w[0]["used_percent"], 49.0, "{raw}");
+        assert_eq!(w[0]["resets_at"], 1_790_000_000_i64, "{raw}");
+        assert_eq!(w[1]["kind"], "weekly_sonnet", "{raw}");
+        assert!(w[1]["resets_at"].is_null(), "unknown reset is null: {raw}");
+        assert!(
+            item["credits_used"].is_null(),
+            "a percent-only provider has no credit figure, never 0: {raw}"
+        );
+    }
+
+    // Refutes: usage read with the stored (stale) access token instead of the
+    // refreshed one — OAuth tokens expire within hours, so every read would 401
+    // and show "unavailable".
+    #[tokio::test]
+    async fn usage_read_uses_a_refreshed_token() {
+        let fake = Arc::new(FakeCredits::new(Some(UsageSnapshot::default())));
+        let seen = Arc::clone(&fake.seen);
+        let (state, store) = state_with_refresh(fake);
+        let mut account = Account::from_token_pair(
+            "credits",
+            "acct@example.com",
+            TokenPair {
+                access_token: "stale-token".into(),
+                refresh_token: Some("rt".into()),
+                expires_in_secs: Some(1),
+                extra: HashMap::new(),
+            },
+        );
+        account.label = "acct@example.com".into();
+        store.upsert(&account).unwrap();
+        let h = authed(&state);
+
+        let (status, _, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        assert_eq!(*seen.lock(), vec!["fresh-token".to_owned()], "{raw}");
+    }
+
+    // Refutes: a revoked, expired account still being sent to the upstream with
+    // its dead token; the row losing its `needs_login` status.
+    #[tokio::test]
+    async fn revoked_account_skips_usage_fetch_and_needs_login() {
+        let fake = Arc::new(FakeCredits::new(Some(UsageSnapshot::default())));
+        let seen = Arc::clone(&fake.seen);
+        let (state, store) = state_with_refresh(fake);
+        let mut account = Account::from_token_pair(
+            "credits",
+            "acct@example.com",
+            TokenPair {
+                access_token: "dead-token".into(),
+                refresh_token: Some("rt".into()),
+                expires_in_secs: Some(0),
+                extra: HashMap::new(),
+            },
+        );
+        account.revoked = Some("401: Bad credentials".into());
+        store.upsert(&account).unwrap();
+        let h = authed(&state);
+
+        let (status, v, raw) = body_json(list_accounts(State(state), h).await).await;
+        assert_eq!(status, StatusCode::OK, "{raw}");
+        let item = &v["items"][0];
+        assert_eq!(item["status"], "needs_login", "{raw}");
+        assert_eq!(item["credits_source"], "unavailable", "{raw}");
+        assert!(
+            seen.lock().is_empty(),
+            "no upstream call with a dead token: {raw}"
+        );
     }
 
     // ── account → connection ──────────────────────────────────────────────────

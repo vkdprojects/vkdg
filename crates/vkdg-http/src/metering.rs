@@ -38,124 +38,151 @@ impl TokenUsage {
     }
 }
 
-/// Incremental usage parser over response bytes, SSE or JSON.
+/// Tracks reported usage and logical completion without collecting SSE bodies.
 #[derive(Debug, Default)]
 pub struct UsageMeter {
-    /// Bytes of an incomplete trailing line.
-    partial: Vec<u8>,
-    /// Whole non-SSE body, parsed once at the end.
-    body: Vec<u8>,
+    framer: vkdg_provider_sdk::SseFramer,
+    json_body: Vec<u8>,
     sse: Option<bool>,
-    usage: TokenUsage,
-    /// Stop reason from the final `message_delta` SSE event.
-    stop_reason: Option<String>,
-    /// Kiro context window usage percentage, from `vkdg_context_usage` SSE events.
-    context_usage_pct: Option<f64>,
+    state: MeterState,
 }
 
-/// Non-streaming bodies larger than this are not metered from their JSON: the
-/// usage block would be at the top level of a body this size only for giant
-/// outputs, and buffering them twice is not worth it.
+#[derive(Debug, Default)]
+struct MeterState {
+    usage: TokenUsage,
+    stop_reason: Option<String>,
+    context_usage_pct: Option<f64>,
+    end: crate::sse::StreamEnd,
+}
+
 const MAX_JSON_BODY: usize = 8 * 1024 * 1024;
 
 impl UsageMeter {
     pub fn feed(&mut self, chunk: &[u8]) {
-        let is_sse = *self.sse.get_or_insert_with(|| looks_like_sse(chunk));
-        if !is_sse {
-            if self.body.len() + chunk.len() <= MAX_JSON_BODY {
-                self.body.extend_from_slice(chunk);
+        if self.sse.is_none() {
+            let Some(first) = chunk.iter().find(|b| !b.is_ascii_whitespace()) else {
+                return;
+            };
+            self.sse = Some(!matches!(first, b'{' | b'['));
+        }
+        if self.sse == Some(false) {
+            if self.json_body.len() + chunk.len() <= MAX_JSON_BODY {
+                self.json_body.extend_from_slice(chunk);
             }
             return;
         }
-        self.partial.extend_from_slice(chunk);
-        while let Some(pos) = self.partial.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = self.partial.drain(..=pos).collect();
-            self.observe_line(&line);
-        }
+        let state = &mut self.state;
+        self.framer.push(chunk, |frame| match frame {
+            Ok(frame) => {
+                let value = serde_json::from_str::<Value>(&frame.data).ok();
+                state.end.observe(frame.event, &frame.data, value.as_ref());
+                if let Some(value) = value.as_ref() {
+                    state.observe(value);
+                }
+            }
+            Err(_) => state.end = crate::sse::StreamEnd::Failed,
+        });
     }
 
-    /// Usage seen so far, including a trailing line or JSON body not yet
-    /// terminated. Safe to call more than once.
+    /// Flush reported usage, but never treat an unterminated SSE frame as a
+    /// terminal event. A client can disconnect in the middle of `[DONE]`.
     pub fn finish(&mut self) -> TokenUsage {
         if self.sse == Some(true) {
-            let rest = std::mem::take(&mut self.partial);
-            self.observe_line(&rest);
-        } else if let Ok(v) = serde_json::from_slice::<Value>(&self.body) {
-            self.observe(&v);
+            let state = &mut self.state;
+            self.framer.finish(|frame| {
+                if let Ok(frame) = frame {
+                    if let Ok(value) = serde_json::from_str::<Value>(&frame.data) {
+                        state.observe(&value);
+                    }
+                }
+            });
+        } else if let Ok(value) = serde_json::from_slice::<Value>(&self.json_body) {
+            self.state.observe(&value);
         }
-        self.usage
+        self.state.usage
     }
 
-    /// Stop reason extracted from the stream (`end_turn`, `max_tokens`, etc.).
-    /// `None` until a `message_delta` event carrying one is observed.
     pub fn stop_reason(&self) -> Option<String> {
-        self.stop_reason.clone()
+        self.state.stop_reason.clone()
     }
 
-    /// Kiro context window usage; `None` when the provider did not report it.
     pub fn context_usage_pct(&self) -> Option<f64> {
-        self.context_usage_pct
+        self.state.context_usage_pct
     }
 
-    fn observe_line(&mut self, line: &[u8]) {
-        let Some(data) = line.strip_prefix(b"data:") else {
-            return;
-        };
-        if let Ok(v) = serde_json::from_slice::<Value>(data.trim_ascii()) {
-            self.observe(&v);
-        }
-    }
-
-    fn observe(&mut self, v: &Value) {
-        // Anthropic `message_start` nests usage under `message`.
-        for usage in [v.get("usage"), v.pointer("/message/usage")]
-            .into_iter()
-            .flatten()
-        {
-            let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-            let write = n("cache_creation_input_tokens");
-            // `OpenAI`'s `prompt_tokens` already counts the cached tokens
-            // (`prompt_tokens_details.cached_tokens`); Anthropic's `input_tokens`
-            // excludes them and reports them beside it. Cache creation sits outside
-            // both (the gateway's own extension field on the `OpenAI` shape).
-            let (input, read) = if usage.get("prompt_tokens").is_some() {
-                let cached = usage
-                    .pointer("/prompt_tokens_details/cached_tokens")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                (n("prompt_tokens") + write, cached)
-            } else {
-                let read = n("cache_read_input_tokens");
-                (n("input_tokens") + read + write, read)
-            };
-            let output = n("output_tokens").max(n("completion_tokens"));
-            self.usage.input = self.usage.input.max(input);
-            self.usage.output = self.usage.output.max(output);
-            self.usage.cache_read = self.usage.cache_read.max(read);
-            self.usage.cache_write = self.usage.cache_write.max(write);
-        }
-        // Anthropic `message_delta` carries the stop reason.
-        if let Some(sr) = v
-            .get("delta")
-            .and_then(|d| d.get("stop_reason"))
-            .and_then(Value::as_str)
-        {
-            if !sr.is_empty() {
-                self.stop_reason = Some(sr.to_owned());
-            }
-        }
-        // VKDG vendor event: Kiro context window usage percentage.
-        if v.get("type").and_then(Value::as_str) == Some("vkdg_context_usage") {
-            if let Some(pct) = v.get("pct").and_then(Value::as_f64) {
-                self.context_usage_pct = Some(pct);
-            }
-        }
+    pub(crate) fn stream_end(&self) -> crate::sse::StreamEnd {
+        self.state.end
     }
 }
 
-fn looks_like_sse(first: &[u8]) -> bool {
-    let t = first.trim_ascii_start();
-    t.starts_with(b"event:") || t.starts_with(b"data:") || t.starts_with(b":")
+impl MeterState {
+    fn observe(&mut self, value: &Value) {
+        let usage = value
+            .get("usage")
+            .or_else(|| value.get("message").and_then(|m| m.get("usage")))
+            .or_else(|| value.get("response").and_then(|r| r.get("usage")));
+        if let Some(usage) = usage {
+            let read = usage
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    usage
+                        .pointer("/prompt_tokens_details/cached_tokens")
+                        .and_then(Value::as_u64)
+                })
+                .or_else(|| {
+                    usage
+                        .pointer("/input_tokens_details/cached_tokens")
+                        .and_then(Value::as_u64)
+                });
+            let write = usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64);
+            if let Some(n) = read {
+                self.usage.cache_read = n;
+            }
+            if let Some(n) = write {
+                self.usage.cache_write = n;
+            }
+            if let Some(n) = usage.get("prompt_tokens").and_then(Value::as_u64) {
+                self.usage.input = n.saturating_add(self.usage.cache_write);
+            } else if let Some(n) = usage.get("input_tokens").and_then(Value::as_u64) {
+                self.usage.input = if usage.get("input_tokens_details").is_some() {
+                    n
+                } else {
+                    n.saturating_add(self.usage.cache_read)
+                        .saturating_add(self.usage.cache_write)
+                };
+            }
+            if let Some(n) = usage
+                .get("output_tokens")
+                .or_else(|| usage.get("completion_tokens"))
+                .and_then(Value::as_u64)
+            {
+                self.usage.output = n;
+            }
+        }
+        let stop = value
+            .pointer("/delta/stop_reason")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .and_then(|choices| {
+                        choices
+                            .iter()
+                            .find_map(|c| c.get("finish_reason").and_then(Value::as_str))
+                    })
+            })
+            .or_else(|| value.get("stop_reason").and_then(Value::as_str));
+        if let Some(stop) = stop.filter(|s| !s.is_empty()) {
+            self.stop_reason = Some(stop.to_owned());
+        }
+        if value.get("type").and_then(Value::as_str) == Some("vkdg_context_usage") {
+            self.context_usage_pct = value.get("pct").and_then(Value::as_f64);
+        }
+    }
 }
 
 #[cfg(test)]

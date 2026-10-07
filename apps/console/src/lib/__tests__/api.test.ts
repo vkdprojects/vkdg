@@ -72,7 +72,7 @@ describe('patchConnection', () => {
 
 describe('deleteConnection', () => {
   // Wrong impl: wrong verb, unencoded id, or the 204 body-less answer parsed as JSON.
-  it('DELETEs the encoded id and resolves on 204', async () => {
+  it('deletes the encoded id and resolves on 204', async () => {
     let seen: { method: string; id: unknown } | undefined;
     server.use(
       http.delete(`${BASE}/admin/v1/connections/:id`, ({ request, params }) => {

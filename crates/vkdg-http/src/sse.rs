@@ -87,18 +87,50 @@ pub fn strip_think_tags(data: &str) -> String {
 
 // ── Stream termination guard ──────────────────────────────────────────────────
 
-/// True when this chunk ends the stream in either client dialect.
-///
-/// `OpenAI` ends with a `[DONE]` sentinel; Anthropic ends with `message_stop`, or with
-/// an `error` event after a failure. Recognising only `[DONE]` made every successful
-/// Anthropic response end with a spurious error event.
-fn is_terminal_chunk(chunk: &[u8]) -> bool {
-    let contains = |needle: &[u8]| chunk.windows(needle.len()).any(|w| w == needle);
-    contains(b"[DONE]")
-        || contains(b"message_stop")
-        || contains(b"response.done")
-        || contains(b"response.completed")
-        || contains(b"event: error")
+/// Logical end of an SSE response, independent of HTTP EOF.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamEnd {
+    #[default]
+    Open,
+    Completed,
+    Failed,
+}
+
+impl StreamEnd {
+    pub(crate) fn observe(
+        &mut self,
+        event: Option<&str>,
+        data: &str,
+        value: Option<&serde_json::Value>,
+    ) {
+        let kind = value
+            .and_then(|v| v.get("type"))
+            .and_then(serde_json::Value::as_str)
+            .or(event);
+        if value.is_some_and(|v| v.get("error").is_some_and(|e| !e.is_null()))
+            || matches!(kind, Some("error" | "response.failed"))
+            || (kind == Some("response.incomplete")
+                && value
+                    .and_then(|v| v.pointer("/response/incomplete_details/reason"))
+                    .and_then(serde_json::Value::as_str)
+                    != Some("max_output_tokens"))
+        {
+            *self = Self::Failed;
+        } else if *self != Self::Failed
+            && (data.trim() == "[DONE]"
+                || matches!(
+                    kind,
+                    Some(
+                        "message_stop"
+                            | "response.done"
+                            | "response.completed"
+                            | "response.incomplete"
+                    )
+                ))
+        {
+            *self = Self::Completed;
+        }
+    }
 }
 
 /// Wrap a byte stream and end it with the client dialect's error frame if it
@@ -120,8 +152,13 @@ pub fn with_termination_guard(
         },
     ));
     Box::pin(futures::stream::unfold(
-        (inner, false, false),
-        move |(mut stream, mut saw_done, mut finished)| {
+        (
+            inner,
+            vkdg_provider_sdk::SseFramer::new(),
+            StreamEnd::Open,
+            false,
+        ),
+        move |(mut stream, mut framer, mut end, finished)| {
             let interrupted = interrupted.clone();
             async move {
                 if finished {
@@ -129,26 +166,23 @@ pub fn with_termination_guard(
                 }
                 match stream.next().await {
                     Some(Ok(chunk)) => {
-                        if is_terminal_chunk(&chunk) {
-                            saw_done = true;
-                        }
-                        Some((Ok(chunk), (stream, saw_done, finished)))
+                        framer.push(&chunk, |frame| match frame {
+                            Ok(frame) => {
+                                let value =
+                                    serde_json::from_str::<serde_json::Value>(&frame.data).ok();
+                                end.observe(frame.event, &frame.data, value.as_ref());
+                            }
+                            Err(_) => end = StreamEnd::Failed,
+                        });
+                        let finished = end != StreamEnd::Open;
+                        Some((Ok(chunk), (stream, framer, end, finished)))
                     }
-                    None => {
-                        finished = true;
-                        if saw_done {
-                            None
-                        } else {
-                            tracing::warn!(
-                                "upstream closed SSE stream before its terminal event; injecting error frame"
-                            );
-                            Some((Ok(interrupted), (stream, true, finished)))
-                        }
-                    }
-                    Some(Err(e)) => {
-                        finished = true;
-                        tracing::warn!(error = %e, "SSE stream error; injecting error frame");
-                        Some((Ok(interrupted), (stream, true, finished)))
+                    None if end != StreamEnd::Open => None,
+                    None | Some(Err(_)) => {
+                        tracing::warn!(
+                            "upstream SSE stream ended before completion; injecting error frame"
+                        );
+                        Some((Ok(interrupted), (stream, framer, StreamEnd::Failed, true)))
                     }
                 }
             }

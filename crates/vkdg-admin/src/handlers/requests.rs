@@ -155,14 +155,16 @@ impl RequestLog {
     }
 
     /// Settle a row once its response body is done: record the tokens it
-    /// reported and, for a row still `pending`, the final status (`completed`
-    /// when the body ran to the end, `cancelled` when the client hung up) and
-    /// the duration including the stream. Unknown ids are ignored.
+    /// reported, the stop reason, and the final status when still `pending`:
+    /// `completed` when the stream completed cleanly or reached EOF without
+    /// errors, `failed` when an error frame arrived or the stream was truncated
+    /// before a terminal event, and `cancelled` when the client disconnected
+    /// before a completed response.
     pub fn finish(
         &self,
         id: &str,
         tokens: vkdg_core::pricing::BilledTokens,
-        body_ended: bool,
+        status: Option<&str>,
         price: Option<&vkdg_core::pricing::ModelPrice>,
         stop_reason: Option<String>,
         context_usage_pct: Option<f64>,
@@ -196,7 +198,9 @@ impl RequestLog {
             r.context_usage_pct = Some(pct);
         }
         if r.status == STATUS_PENDING {
-            r.status = if body_ended { "completed" } else { "cancelled" }.into();
+            if let Some(status) = status {
+                status.clone_into(&mut r.status);
+            }
             r.duration_ms = Some(chrono::Utc::now().timestamp_millis() - r.started_at_ms);
         }
         let Ok(json) = serde_json::to_string(&r) else {
@@ -486,10 +490,17 @@ mod tests {
             ..BilledTokens::default()
         };
         let price = ModelPrice::new("m", 3_000_000, 15_000_000);
-        log.finish("streamed", t(11, 4), true, Some(&price), None, None);
-        log.finish("dropped", t(11, 1), false, None, None, None);
-        log.finish("failed", t(0, 0), true, Some(&price), None, None);
-        log.finish("unknown", t(1, 1), true, None, None, None);
+        log.finish(
+            "streamed",
+            t(11, 4),
+            Some("completed"),
+            Some(&price),
+            None,
+            None,
+        );
+        log.finish("dropped", t(11, 1), Some("cancelled"), None, None, None);
+        log.finish("failed", t(0, 0), Some("failed"), Some(&price), None, None);
+        log.finish("unknown", t(1, 1), Some("completed"), None, None, None);
 
         let r = log.get("streamed").unwrap();
         assert_eq!(r.status, "completed");

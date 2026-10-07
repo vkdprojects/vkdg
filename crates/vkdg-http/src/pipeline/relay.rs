@@ -225,10 +225,9 @@ pub(super) type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Er
 /// The encoder lives in `vkdg-operations` so a dialect is written in exactly one
 /// place. Each upstream chunk yields at most one output chunk (all its events
 /// encoded together, so the client sees fewer, larger writes). When upstream
-/// ends, `decoder.finish()` and the encoder's own close both run: a provider that
-/// sends no stop event still produces a well-formed terminal sequence. A decoder
-/// `Failed` ends the stream right after the dialect's error event and drops the
-/// upstream, which cancels the request.
+/// ends, `decoder.finish()` and the encoder's own close both run. A decoder
+/// `Completed` or `Failed` ends the stream immediately after its terminal sequence
+/// and drops the upstream; HTTP EOF is not required after a logical end.
 ///
 /// Backpressure: upstream is polled only when the client asks for the next
 /// chunk, so at most one upstream chunk's events are in flight.
@@ -250,15 +249,18 @@ pub(super) fn decode_stream_to_sse(
         events: &[ConversationEvent],
         out: &mut Vec<u8>,
     ) -> bool {
-        let mut failed = false;
+        let mut ended = false;
         for event in events {
             out.extend(encoder.encode(event));
-            if matches!(event, ConversationEvent::Failed { .. }) {
-                failed = true;
+            if matches!(
+                event,
+                ConversationEvent::Completed { .. } | ConversationEvent::Failed { .. }
+            ) {
+                ended = true;
                 break;
             }
         }
-        failed
+        ended
     }
 
     let state = State {
@@ -280,7 +282,7 @@ pub(super) fn decode_stream_to_sse(
                         }
                         return Some((Ok(Bytes::from(out)), Some(state)));
                     }
-                    // Failed: the error event is the last thing the client gets.
+                    // The decoded terminal event is the last response event.
                 }
                 Some(Err(e)) => return Some((Err(e), None)),
                 None => {

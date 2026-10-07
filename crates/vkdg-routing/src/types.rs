@@ -114,6 +114,8 @@ pub struct RoutingHints {
     pub quota_headroom: HashMap<ConnectionId, f32>,
     /// p50 latency per connection in milliseconds
     pub latency_p50_ms: HashMap<ConnectionId, u32>,
+    /// Requests currently in flight per connection. Absent = 0.
+    pub in_flight: HashMap<ConnectionId, u32>,
     /// Request-level mode pack override (from X-VKDG-Mode header or combo)
     pub mode_pack: Option<String>,
 }

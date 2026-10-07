@@ -30,6 +30,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
   window with remaining percent and reset time.
 
 ### Fixed
+- **`power_of_two_choices` routed by latency, starving the slower target:** it compared the p50
+  latency of its two samples, so with two targets it behaved like `lowest_latency`. Latency is only
+  measured on targets that get traffic, so the faster Claude Code account took every request while
+  the other sat idle for hours (observed in prod: 0 requests for 2 h, the other account at 68% of
+  its 5 h window). It now picks the target with fewer requests in flight (`RoutingHints.in_flight`,
+  from `ConnectionCatalog::in_flight`); ties go to a random sample. Use `lowest_latency` to
+  prefer the fastest target.
 - Codex multi-turn history uses `output_text` for assistant content and `input_text`
   for user/developer content. Mixed text, function calls and results retain their
   order and call IDs instead of discarding text beside tool blocks.

@@ -195,6 +195,16 @@ impl ConnectionCatalog {
         self.connections.read().keys().cloned().collect()
     }
 
+    /// Requests currently in flight per connection. A connection whose lock is
+    /// held by a writer is skipped (reads as 0), like in `eligible`.
+    pub fn in_flight(&self) -> HashMap<ConnectionId, u32> {
+        self.connections
+            .read()
+            .iter()
+            .filter_map(|(id, arc)| Some((id.clone(), arc.try_read().ok()?.active_requests())))
+            .collect()
+    }
+
     /// Explicitly resets cooldown and restores a connection to `Healthy`.
     /// Returns `true` if the connection was found and reset, `false` otherwise.
     pub fn reset_cooldown(&self, id: &ConnectionId) -> bool {
@@ -471,5 +481,21 @@ mod reload_tests {
         assert!(catalog
             .secs_until_cooldown_ends("claude-sonnet-4-5")
             .is_none());
+    }
+
+    // Plausible wrong impl: snapshot reports configured capacity or a stale
+    // count instead of live guards, so P2C would balance on fiction.
+    #[tokio::test]
+    async fn in_flight_tracks_live_guards() {
+        let catalog = ConnectionCatalog::new(vec![cfg("a", &["m"], 4), cfg("b", &["m"], 4)]);
+        let a = ConnectionId("a".into());
+        let b = ConnectionId("b".into());
+        let conn_a = catalog.get(&a).unwrap();
+        let g1 = conn_a.read().await.acquire().unwrap();
+        let g2 = conn_a.read().await.acquire().unwrap();
+        let snap = catalog.in_flight();
+        assert_eq!((snap[&a], snap[&b]), (2, 0));
+        drop((g1, g2));
+        assert_eq!(catalog.in_flight()[&a], 0);
     }
 }

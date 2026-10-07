@@ -169,7 +169,7 @@ Routes are evaluated in declaration order; the first matching route wins.
 | `weighted` | Selects targets proportionally to their `weight` field |
 | `fallback_chain` | Tries targets in declaration order; moves to next on failure |
 | `lowest_latency` | Selects the target with the lowest observed p50 latency |
-| `power_of_two_choices` | Picks two candidates at random, routes to the less-loaded one |
+| `power_of_two_choices` | Samples two eligible targets at random, routes to the one with fewer requests in flight (latency is ignored) |
 | `last_known_good` | Prefers the last target that returned a successful response |
 
 A target is skipped if it is over its `max_concurrent` limit, its circuit is open, or it does not support the required capability set.

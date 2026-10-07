@@ -130,9 +130,11 @@ impl Strategy for LowestLatencyStrategy {
     }
 }
 
-/// Power of two choices: sample two distinct eligible targets, take the faster.
-/// Spreads load across near-equal targets instead of piling onto one, while
-/// still steering away from slow ones.
+/// Power of two choices: sample two distinct eligible targets, take the one with
+/// fewer requests in flight; a tie goes to the first sample, which is random.
+/// Latency is deliberately not a signal here: it is only measured on targets
+/// that receive traffic, so preferring the faster one starves the other for as
+/// long as the first stays fast. Use `lowest_latency` to chase latency.
 pub struct PowerOfTwoChoicesStrategy {
     seed: AtomicUsize,
 }
@@ -173,7 +175,10 @@ impl Strategy for PowerOfTwoChoicesStrategy {
         filter: &EligibilityFilter,
         hints: &RoutingHints,
     ) -> Result<ConnectionId> {
-        let eligible = with_latency(candidates, filter, hints);
+        let eligible: Vec<&ConnectionId> = candidates
+            .iter()
+            .filter(|c| !filter.is_excluded(c))
+            .collect();
         let n = eligible.len();
         if n == 0 {
             return Err(VkdgError::NoEligibleConnection);
@@ -184,7 +189,12 @@ impl Strategy for PowerOfTwoChoicesStrategy {
         } else {
             a
         };
-        let pick = if eligible[b].1 < eligible[a].1 { b } else { a };
-        Ok(eligible[pick].0.clone())
+        let load = |c: &ConnectionId| hints.in_flight.get(c).copied().unwrap_or(0);
+        let pick = if load(eligible[b]) < load(eligible[a]) {
+            b
+        } else {
+            a
+        };
+        Ok(eligible[pick].clone())
     }
 }

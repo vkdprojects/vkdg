@@ -381,23 +381,71 @@ mod tests {
         h
     }
 
-    // Found in review: lowest_latency and power_of_two_choices parsed from config
-    // but silently routed round-robin.
+    // lowest_latency parsed from config but silently routed round-robin.
     #[tokio::test]
-    async fn latency_strategies_prefer_the_faster_target() {
-        for kind in [StrategyKind::LowestLatency, StrategyKind::PowerOfTwoChoices] {
-            let router = Router::new(vec![two_target_route(kind.clone())]);
-            for _ in 0..6 {
-                let r = router
-                    .route(
-                        &test_envelope("m"),
-                        &EligibilityFilter::default(),
-                        &latency_hints(),
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(r.connection_id.0, "fast", "{kind:?}");
+    async fn lowest_latency_prefers_the_faster_target() {
+        let router = Router::new(vec![two_target_route(StrategyKind::LowestLatency)]);
+        for _ in 0..6 {
+            let r = router
+                .route(
+                    &test_envelope("m"),
+                    &EligibilityFilter::default(),
+                    &latency_hints(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(r.connection_id.0, "fast");
+        }
+    }
+
+    // Prod bug: with two eligible targets P2C always sampled both and took the
+    // lower latency, so it behaved as lowest_latency. The faster account took
+    // every request, the other got none for hours and was never re-measured.
+    // Refutes "P2C picks the lower latency of its two samples".
+    #[tokio::test]
+    async fn power_of_two_choices_does_not_starve_the_slower_target() {
+        let router = Router::new(vec![two_target_route(StrategyKind::PowerOfTwoChoices)]);
+        let mut slow = 0;
+        let mut fast = 0;
+        for _ in 0..200 {
+            let r = router
+                .route(
+                    &test_envelope("m"),
+                    &EligibilityFilter::default(),
+                    &latency_hints(),
+                )
+                .await
+                .unwrap();
+            if r.connection_id.0 == "slow" {
+                slow += 1;
+            } else {
+                fast += 1;
             }
+        }
+        assert!(
+            slow >= 60 && fast >= 60,
+            "equal load must spread: slow={slow} fast={fast}"
+        );
+    }
+
+    // Refutes "P2C ignores in-flight load": the loaded target must lose even
+    // when it is the faster one.
+    #[tokio::test]
+    async fn power_of_two_choices_picks_the_less_loaded_target() {
+        let router = Router::new(vec![two_target_route(StrategyKind::PowerOfTwoChoices)]);
+        let mut hints = latency_hints();
+        hints
+            .in_flight
+            .insert(vkdg_core::ConnectionId("fast".into()), 3);
+        hints
+            .in_flight
+            .insert(vkdg_core::ConnectionId("slow".into()), 1);
+        for _ in 0..20 {
+            let r = router
+                .route(&test_envelope("m"), &EligibilityFilter::default(), &hints)
+                .await
+                .unwrap();
+            assert_eq!(r.connection_id.0, "slow");
         }
     }
 

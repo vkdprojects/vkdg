@@ -161,6 +161,7 @@ pub(super) async fn run_pipeline_inner(
                 }
             }
         }
+        hints.in_flight = pipeline.catalog.in_flight();
         hints
     };
     let route_result = match pipeline

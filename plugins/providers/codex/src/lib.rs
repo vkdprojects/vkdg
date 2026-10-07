@@ -11,8 +11,9 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    Credential, DynamicModelCatalog, ModelCatalog, OAuthConfig, OAuthFlow, OAuthProvider,
-    PreparedRequest, ProviderAdapter, ProviderError, TokenPair,
+    ConversationStreamDecoder, Credential, DynamicModelCatalog, ModelCatalog, OAuthConfig,
+    OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError, ResponsesSseDecoder,
+    TokenPair,
 };
 /// Public OAuth `client_id` for the Codex CLI (`openai/codex`, `codex-rs`).
 /// Source: `codex-rs/login/src/auth/manager.rs` — `pub const CLIENT_ID`.
@@ -94,6 +95,10 @@ impl ProviderAdapter for CodexAdapter {
             body,
             is_streaming: req.stream,
         })
+    }
+
+    fn stream_decoder(&self) -> Option<Box<dyn ConversationStreamDecoder>> {
+        Some(Box::new(ResponsesSseDecoder::new()))
     }
 
     fn model_catalog(&self) -> Option<&dyn ModelCatalog> {
@@ -420,6 +425,8 @@ fn build_auth_headers(token: &str, credential: &Credential) -> HeaderMap {
 /// - `store: false` (OAuth accounts: backend rejects `true`)
 /// - `max_tokens` / `max_output_tokens` stripped (Codex rejects both)
 /// - always `stream: true`; the Responses endpoint is SSE-first
+/// - assistant history uses `output_text`; user/developer text uses `input_text`
+/// - text runs and top-level function calls/results retain their block order
 fn build_responses_body(req: &ConversationRequest) -> Bytes {
     const KNOWN_EFFORTS: &[&str] = &["off", "min", "low", "medium", "high", "xhigh", "max"];
     let raw_model = vkdg_provider_sdk::upstream_model(req, "gpt-4o");
@@ -447,64 +454,70 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
             Role::System => "developer",
             Role::User => "user",
             Role::Assistant => "assistant",
-            Role::Tool => "tool",
+            // Responses has no tool-role message; tool results are top-level items.
+            Role::Tool => "user",
         };
-        let item = match &m.content {
-            MessageContent::Text(text) => json!({
+        let text_type = if m.role == Role::Assistant {
+            "output_text"
+        } else {
+            "input_text"
+        };
+        match &m.content {
+            MessageContent::Text(text) => input.push(json!({
                 "type": "message", "role": role,
-                "content": [{ "type": "input_text", "text": text }]
-            }),
+                "content": [{ "type": text_type, "text": text }]
+            })),
             MessageContent::Blocks(blocks) => {
-                let tool_calls: Vec<Value> = blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolUse { id, name, input } => {
-                            let args = serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
-                            Some(json!({ "type": "function_call", "call_id": id,
-                                     "name": name, "arguments": args }))
+                let message_start = input.len();
+                let mut parts = Vec::new();
+                for block in blocks {
+                    // Flush the current text run before each top-level tool item.
+                    // Move its content into the final message rather than cloning it.
+                    if matches!(
+                        block,
+                        ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                    ) && !parts.is_empty()
+                    {
+                        let mut message = json!({ "type": "message", "role": role });
+                        message["content"] = Value::Array(std::mem::take(&mut parts));
+                        input.push(message);
+                    }
+                    match block {
+                        ContentBlock::Text { text } => {
+                            parts.push(json!({ "type": text_type, "text": text }));
                         }
-                        _ => None,
-                    })
-                    .collect();
-                let tool_results: Vec<Value> = blocks
-                    .iter()
-                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: arguments,
+                        } => {
+                            let args =
+                                serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into());
+                            input.push(json!({
+                                "type": "function_call", "call_id": id,
+                                "name": name, "arguments": args
+                            }));
+                        }
                         ContentBlock::ToolResult {
                             tool_use_id,
                             content,
                             ..
-                        } => Some(json!({
-                            "type": "function_call_output",
-                            "call_id": tool_use_id, "output": content
-                        })),
-                        _ => None,
-                    })
-                    .collect();
-                if !tool_calls.is_empty() {
-                    // Each function_call is a top-level item, not nested in a message.
-                    for tc in &tool_calls {
-                        input.push(tc.clone());
-                    }
-                    continue;
-                } else if !tool_results.is_empty() {
-                    for tr in &tool_results {
-                        input.push(tr.clone());
-                    }
-                    continue;
-                }
-                let parts: Vec<Value> = blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => {
-                            Some(json!({ "type": "input_text", "text": text }))
+                        } => {
+                            input.push(json!({
+                                "type": "function_call_output",
+                                "call_id": tool_use_id, "output": content
+                            }));
                         }
-                        _ => None,
-                    })
-                    .collect();
-                json!({ "type": "message", "role": role, "content": parts })
+                        _ => {}
+                    }
+                }
+                if !parts.is_empty() || input.len() == message_start {
+                    let mut message = json!({ "type": "message", "role": role });
+                    message["content"] = Value::Array(parts);
+                    input.push(message);
+                }
             }
-        };
-        input.push(item);
+        }
     }
 
     let mut body = Map::new();
@@ -600,6 +613,251 @@ mod tests {
         serde_json::from_slice(&req.body).unwrap()
     }
 
+    fn history_body(messages: Vec<Message>) -> Value {
+        let request = ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages,
+            ..Default::default()
+        };
+        serde_json::from_slice(&build_responses_body(&request)).unwrap()
+    }
+
+    // Refutes using input_text for assistant history in either content representation.
+    #[test]
+    fn history_text_parts_use_role_specific_responses_types() {
+        let body = history_body(vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Text("assistant text".into()),
+            },
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "first".into(),
+                    },
+                    ContentBlock::Text {
+                        text: "second".into(),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Text("user text".into()),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Text {
+                    text: "user block".into(),
+                }]),
+            },
+            Message {
+                role: Role::System,
+                content: MessageContent::Text("developer text".into()),
+            },
+            Message {
+                role: Role::System,
+                content: MessageContent::Blocks(vec![ContentBlock::Text {
+                    text: "developer block".into(),
+                }]),
+            },
+        ]);
+        assert_eq!(
+            body["input"],
+            json!([
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "assistant text"}
+                ]},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "first"},
+                    {"type": "output_text", "text": "second"}
+                ]},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "user text"}
+                ]},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "user block"}
+                ]},
+                {"type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": "developer text"}
+                ]},
+                {"type": "message", "role": "developer", "content": [
+                    {"type": "input_text", "text": "developer block"}
+                ]}
+            ])
+        );
+    }
+
+    // Refutes partitioning blocks into calls/results and losing or reordering mixed text.
+    #[test]
+    fn mixed_history_preserves_text_calls_results_and_parallel_call_ids_in_order() {
+        let body = history_body(vec![
+            Message {
+                role: Role::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "before calls".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_a".into(),
+                        name: "first".into(),
+                        input: json!({"text": "quoted \"value\"\n雪", "values": [1, true, null]}),
+                    },
+                    ContentBlock::Text {
+                        text: "between calls".into(),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_b".into(),
+                        name: "second".into(),
+                        input: json!({"nested": {"enabled": false}}),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call_b".into(),
+                        content: "{\"result\":\"second\"}".into(),
+                        is_error: false,
+                        images: vec![],
+                    },
+                    ContentBlock::Text {
+                        text: "after second result".into(),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Text {
+                        text: "before first result".into(),
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "call_a".into(),
+                        content: "first result\n雪".into(),
+                        is_error: false,
+                        images: vec![],
+                    },
+                    ContentBlock::Text {
+                        text: "after first result".into(),
+                    },
+                ]),
+            },
+            Message {
+                role: Role::Tool,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_c".into(),
+                    content: "pure tool result".into(),
+                    is_error: true,
+                    images: vec![],
+                }]),
+            },
+        ]);
+        assert_eq!(
+            body["input"],
+            json!([
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "before calls"}
+                ]},
+                {"type": "function_call", "call_id": "call_a", "name": "first",
+                 "arguments": "{\"text\":\"quoted \\\"value\\\"\\n雪\",\"values\":[1,true,null]}"},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "between calls"}
+                ]},
+                {"type": "function_call", "call_id": "call_b", "name": "second",
+                 "arguments": "{\"nested\":{\"enabled\":false}}"},
+                {"type": "function_call_output", "call_id": "call_b",
+                 "output": "{\"result\":\"second\"}"},
+                {"type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "after second result"}
+                ]},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "before first result"}
+                ]},
+                {"type": "function_call_output", "call_id": "call_a", "output": "first result\n雪"},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "after first result"}
+                ]},
+                {"type": "function_call_output", "call_id": "call_c", "output": "pure tool result"}
+            ])
+        );
+    }
+
+    // Responses has no tool-role message; retain surrounding tool text as user input.
+    #[test]
+    fn mixed_tool_message_retains_text_without_invalid_tool_role() {
+        let body = history_body(vec![Message {
+            role: Role::Tool,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "before result".into(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "call_a".into(),
+                    content: "result".into(),
+                    is_error: false,
+                    images: vec![],
+                },
+                ContentBlock::Text {
+                    text: "after result".into(),
+                },
+            ]),
+        }]);
+        assert_eq!(
+            body["input"],
+            json!([
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "before result"}
+                ]},
+                {"type": "function_call_output", "call_id": "call_a", "output": "result"},
+                {"type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "after result"}
+                ]}
+            ])
+        );
+    }
+
+    // Refutes the production input[84].content[0] rejection and truncating long histories.
+    #[test]
+    fn long_history_keeps_all_messages_and_valid_assistant_parts_at_input_84() {
+        let messages = (0..86)
+            .map(|index| Message {
+                role: if index % 2 == 0 {
+                    Role::Assistant
+                } else {
+                    Role::User
+                },
+                content: if index % 4 == 0 {
+                    MessageContent::Blocks(vec![ContentBlock::Text {
+                        text: format!("turn {index}"),
+                    }])
+                } else {
+                    MessageContent::Text(format!("turn {index}"))
+                },
+            })
+            .collect();
+        let body = history_body(messages);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 86);
+        assert_eq!(
+            input[84],
+            json!({
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "turn 84"}]
+            })
+        );
+        for (index, item) in input.iter().enumerate() {
+            let (role, part_type) = if index % 2 == 0 {
+                ("assistant", "output_text")
+            } else {
+                ("user", "input_text")
+            };
+            assert_eq!(
+                item,
+                &json!({
+                    "type": "message", "role": role,
+                    "content": [{"type": part_type, "text": format!("turn {index}")}]
+                })
+            );
+        }
+    }
+
     #[test]
     fn upstream_model_is_the_requested_one_not_the_route_pattern() {
         assert_eq!(simple("gpt-5-codex", &["gpt-*"])["model"], "gpt-5-codex");
@@ -620,7 +878,6 @@ mod tests {
         assert_eq!(b["model"], "gpt-5.6-sol");
         assert_eq!(b["reasoning"]["effort"], "high");
     }
-
 
     // Previously sent Chat Completions body; Responses API rejects messages/max_tokens.
     #[test]
@@ -778,7 +1035,10 @@ mod tests {
         assert_eq!(tool["name"], "get_weather");
         assert_eq!(tool["description"], "Get current weather");
         assert_eq!(tool["parameters"]["type"], "object");
-        assert!(tool.get("function").is_none(), "Codex Responses API tools must not nest under 'function'");
+        assert!(
+            tool.get("function").is_none(),
+            "Codex Responses API tools must not nest under 'function'"
+        );
     }
 
     #[test]

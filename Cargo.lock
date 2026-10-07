@@ -747,6 +747,7 @@ dependencies = [
  "vkdg-observe",
  "vkdg-operations",
  "vkdg-provider-anthropic",
+ "vkdg-provider-codex",
  "vkdg-provider-kiro",
  "vkdg-provider-openai",
  "vkdg-provider-sdk",

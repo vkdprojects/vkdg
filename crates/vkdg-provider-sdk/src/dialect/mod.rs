@@ -1,15 +1,18 @@
 //! Upstream dialect decoding: provider bytes to canonical conversation events.
 //!
 //! One decoder per dialect and transport. Streams ([`AnthropicSseDecoder`],
-//! [`OpenAiSseDecoder`]) and complete bodies ([`decode_anthropic_json`],
-//! [`decode_openai_json`]) share the event vocabulary, so a client dialect is written
-//! once, by the encoders in `vkdg-operations`, whatever the upstream spoke.
+//! [`OpenAiSseDecoder`], [`ResponsesSseDecoder`]) and complete bodies
+//! ([`decode_anthropic_json`], [`decode_openai_json`]) share the event vocabulary,
+//! so a client dialect is written once, by the encoders in `vkdg-operations`.
 //! [`sse_decoder_for`] and [`json_decoder_for`] pick the decoder for a [`WireFormat`].
+//! Responses providers select [`ResponsesSseDecoder`] through their stream hook,
+//! independently of the client wire format.
 
 mod anthropic_json;
 mod anthropic_sse;
 mod openai_json;
 mod openai_sse;
+mod responses_sse;
 mod sse_frame;
 mod token_counts;
 mod upstream_failure;
@@ -23,6 +26,7 @@ pub use anthropic_json::decode_anthropic_json;
 pub use anthropic_sse::AnthropicSseDecoder;
 pub use openai_json::decode_openai_json;
 pub use openai_sse::OpenAiSseDecoder;
+pub use responses_sse::ResponsesSseDecoder;
 pub use sse_frame::{FrameError, SseFrame, SseFramer, DEFAULT_MAX_EVENT_BYTES};
 pub use upstream_failure::DEFAULT_MAX_TOOL_ARGUMENT_BYTES;
 
@@ -53,5 +57,7 @@ mod event_text;
 mod json_response_tests;
 #[cfg(test)]
 mod openai_sse_tests;
+#[cfg(test)]
+mod responses_sse_tests;
 #[cfg(test)]
 mod sse_frame_tests;

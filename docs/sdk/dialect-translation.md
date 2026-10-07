@@ -5,8 +5,9 @@ Design and decision: [ADR-004](../adr/ADR-004-dialect-translation.md).
 
 ## Supported pairs
 
-Client dialect is the one the request arrived in (`/v1/messages`, `/v1/chat/completions`);
-upstream dialect is `ProviderAdapter::wire_format`.
+Client dialect is the one the request arrived in (`/v1/messages`, `/v1/chat/completions`).
+Upstream decoding uses `ProviderAdapter::stream_decoder` when supplied, otherwise
+`ProviderAdapter::wire_format` selects passthrough or translation.
 
 | Client | Upstream | Stream | Non-stream | Guarantee |
 |---|---|---|---|---|
@@ -15,7 +16,7 @@ upstream dialect is `ProviderAdapter::wire_format`.
 | OpenAI Chat | Anthropic | translated | translated | text, reasoning, tool calls, usage, stop reason, errors |
 | Anthropic | OpenAI Chat | translated | translated | same set |
 | any | Kiro (AWS event stream) | translated by Kiro's decoder | n/a (Kiro always streams) | unchanged |
-| any | Codex (Responses API) | **pending** | **pending** | `wire_format` is `None`: raw Responses events reach the client |
+| OpenAI Chat / Anthropic | Codex (Responses API) | translated by Codex's decoder | pending | text, reasoning, parallel function calls, usage, stop reason, errors |
 
 Tested against: Anthropic Messages API `2023-06-01`, OpenAI Chat Completions (2025-2026 shape,
 including `reasoning_content`), live Claude Code subscription (`claude-sonnet-4-5`,
@@ -34,6 +35,35 @@ including `reasoning_content`), live Claude Code subscription (`claude-sonnet-4-
 | usage | `usage` in `message_start` + cumulative `message_delta` | trailing chunk with `choices: []` | see below |
 | error before commit | HTTP status + `{"type":"error",...}` | HTTP status + `{"error":{...}}` | same status either way, one table |
 | error after commit | `event: error` | error object + `[DONE]` | no retry, no further content |
+
+### Codex Responses streams
+
+`ResponsesSseDecoder` converts the OAuth Codex upstream into canonical events.
+The existing client encoders produce Chat Completions or Anthropic Messages SSE.
+
+| Responses event | Canonical effect |
+|---|---|
+| `response.output_text.delta` | answer text |
+| `response.reasoning_summary_text.delta`, `response.reasoning_text.delta` | reasoning |
+| `response.output_item.added` with `function_call` | tool open, preserving `call_id`, name and `output_index` |
+| `response.function_call_arguments.delta` / `.done` | argument fragments; repeated done snapshots do not duplicate arguments |
+| `response.output_item.done` with `function_call` | close that tool independently |
+| `response.completed` / `response.done` | usage and completion; `tool_use` when function calls occurred |
+| `response.incomplete` with `max_output_tokens` | `max_tokens` completion |
+| `response.failed` / `error` | terminal failure, including after text `.done` |
+
+Text and reasoning `.done` events are snapshots, not response terminals. EOF or
+`[DONE]` before a response terminal fails as truncated. Frame bytes and per-tool
+argument bytes use the shared decoder limits; retained tool metadata is capped at
+4096 calls per response. Unsupported incomplete reasons fail explicitly.
+
+The request converter emits assistant history as `output_text`, user/developer
+history as `input_text`, and function calls/results as ordered top-level items.
+Text beside tools is retained. A loopback HTTP regression covers 87 initial and
+89 continuation messages, a real Chat tool-call/result replay, and client
+`finish_reason` / `[DONE]`; decoder tests cover parallel calls, UTF-8 fragmentation,
+late failures, truncation and limits.
+
 
 ### Usage
 
@@ -131,7 +161,7 @@ upstream chunk's events (9 events for a 1 KiB read).
 
 ## Pending
 
-- **Codex / OpenAI Responses API.** A third decoder/encoder pair on the same canonical events:
-  `WireFormat::OpenAiResponses`, a Responses client dialect for `/v1/responses` (today its stream
-  encoder falls back to Anthropic's), and the Responses error shape. Until then Codex responses reach
-  the client as raw Responses events, and its request body ignores `tool_choice`, `stop` and `top_p`.
+- **Responses clients and Codex non-stream responses.** The Codex upstream stream
+  decoder is implemented; a Responses client encoder for `/v1/responses`, its
+  error shape and non-stream collection remain pending. Codex request fields
+  `tool_choice`, `stop` and `top_p` remain unsupported.

@@ -19,6 +19,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
   login.
 
 ### Fixed
+- Codex multi-turn history uses `output_text` for assistant content and `input_text`
+  for user/developer content. Mixed text, function calls and results retain their
+  order and call IDs instead of discarding text beside tool blocks.
+- Codex Responses streams decode into client-native Chat Completions or Messages
+  events, including reasoning, parallel tools, usage and terminal errors.
+  `response.output_text.done` does not complete the response. Regression coverage
+  includes an 87/89-message HTTP tool round trip and arbitrarily fragmented SSE.
 - **Kiro tool history cap:** long conversations no longer split an assistant's tool calls
   from their results at the 100-turn boundary. The cap removes complete historical
   exchanges, preserves the system-bearing first user turn and current message, and

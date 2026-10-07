@@ -68,6 +68,28 @@ impl TokenCounts {
         true
     }
 
+    /// Responses input tokens include the cache, just like Chat prompt tokens.
+    pub(super) fn merge_responses(&mut self, usage: &Value) -> bool {
+        let input = count_field(usage, "input_tokens");
+        let output = count_field(usage, "output_tokens");
+        let cached = usage
+            .get("input_tokens_details")
+            .and_then(|details| count_field(details, "cached_tokens"));
+        if input.is_none() && output.is_none() && cached.is_none() {
+            return false;
+        }
+        if let Some(input) = input {
+            self.input = Some(input.saturating_sub(cached.unwrap_or(0)));
+        }
+        if let Some(output) = output {
+            self.output = Some(output);
+        }
+        if let Some(cached) = cached {
+            self.cache_read = Some(cached);
+        }
+        true
+    }
+
     pub(super) fn event(&self) -> ConversationEvent {
         let count = |n: Option<u32>| n.map_or(UsageCount::Unknown, UsageCount::Reported);
         ConversationEvent::Usage {

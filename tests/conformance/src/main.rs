@@ -1,5 +1,6 @@
 mod admission;
 mod capability;
+mod codex;
 mod dialect_translation;
 mod fake_upstream;
 mod fusion_chain;

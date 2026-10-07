@@ -24,8 +24,8 @@ pub mod usage;
 
 pub use dialect::{
     decode_anthropic_json, decode_openai_json, json_decoder_for, sse_decoder_for,
-    AnthropicSseDecoder, FrameError, JsonDecoder, OpenAiSseDecoder, SseFrame, SseFramer,
-    DEFAULT_MAX_EVENT_BYTES, DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
+    AnthropicSseDecoder, FrameError, JsonDecoder, OpenAiSseDecoder, ResponsesSseDecoder, SseFrame,
+    SseFramer, DEFAULT_MAX_EVENT_BYTES, DEFAULT_MAX_TOOL_ARGUMENT_BYTES,
 };
 pub use dynamic_catalog::DynamicModelCatalog;
 pub use error::ProviderError;

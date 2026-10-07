@@ -140,6 +140,24 @@ pub async fn test_connection(
     Json(result).into_response()
 }
 
+pub async fn reset_connection_cooldown(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return resp::unauthorized();
+    }
+    let snapshot = state.config_rx.borrow().clone();
+    let Some(c) = snapshot.connections.iter().find(|c| c.id.0 == id) else {
+        return resp::not_found(&id);
+    };
+    if let Some(catalog) = &state.catalog {
+        catalog.reset_cooldown(&c.id);
+    }
+    Json(summarize(&state, c).await).into_response()
+}
+
 // ── CRUD body types ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -650,6 +668,92 @@ mod tests {
         let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(list["total"], 1);
         assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reset_cooldown_clears_connection_cooldown_state() {
+        use vkdg_config::{schema::AuthDef, ConfigSnapshot, ConnectionDef, GatewayConfig};
+        use vkdg_connections::{
+            AuthKind, ConnectionCatalog, ConnectionConfig, ConnectionState, ProviderKind,
+        };
+        use vkdg_core::ConnectionId;
+
+        let conn_id = ConnectionId("test-conn".into());
+        let conn_config = ConnectionConfig {
+            id: conn_id.clone(),
+            provider: ProviderKind::Anthropic,
+            auth: AuthKind::ApiKey {
+                env_var: "ANTHROPIC_API_KEY".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: vkdg_core::CapabilitySet::default(),
+        };
+        let catalog = Arc::new(ConnectionCatalog::new(vec![conn_config]));
+        {
+            let conn_arc = catalog.get(&conn_id).unwrap();
+            let mut conn = conn_arc.try_write().unwrap();
+            conn.state = ConnectionState::Cooldown {
+                until: chrono::Utc::now() + chrono::Duration::seconds(300),
+                failure_count: 2,
+            };
+        }
+
+        let gateway_cfg = GatewayConfig {
+            listen: "0.0.0.0:8080".into(),
+            connections: vec![ConnectionDef {
+                id: "test-conn".into(),
+                provider: "anthropic".into(),
+                auth: AuthDef::ApiKey {
+                    env_var: "ANTHROPIC_API_KEY".into(),
+                },
+                models: vec!["claude-*".into()],
+                max_concurrent: None,
+                weight: None,
+                base_url: None,
+                tags: vec![],
+                endpoint: None,
+            }],
+            routes: vec![],
+            limits: None,
+            observe: None,
+            global_system_prompt: None,
+        };
+        let snap = ConfigSnapshot::build(1, gateway_cfg).expect("build snapshot");
+        let (_tx, rx) = watch::channel(Arc::new(snap));
+
+        let sessions = crate::session::SessionStore::new("tok".into());
+        let session = sessions.bootstrap_login().unwrap();
+        let state = AdminState {
+            sessions,
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: crate::handlers::requests::RequestLog::new(),
+            combos: None,
+            catalog: Some(catalog.clone()),
+            logins: None,
+            reload_plugins: None,
+            connection_tester: None,
+            gateway_store: None,
+            config_tx: None,
+        };
+
+        let mut headers = HeaderMap::new();
+        let cookie = format!("vkdg_session={}", session.session_id);
+        headers.insert(http::header::COOKIE, cookie.parse().unwrap());
+
+        let resp =
+            reset_connection_cooldown(State(state.clone()), headers, Path("test-conn".into()))
+                .await;
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(catalog
+            .secs_until_cooldown_ends("claude-3-5-sonnet")
+            .is_none());
     }
 
     #[tokio::test]

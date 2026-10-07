@@ -194,6 +194,18 @@ impl ConnectionCatalog {
     pub fn connection_ids(&self) -> Vec<ConnectionId> {
         self.connections.read().keys().cloned().collect()
     }
+
+    /// Explicitly resets cooldown and restores a connection to `Healthy`.
+    /// Returns `true` if the connection was found and reset, `false` otherwise.
+    pub fn reset_cooldown(&self, id: &ConnectionId) -> bool {
+        if let Some(conn_arc) = self.connections.read().get(id) {
+            if let Ok(mut conn) = conn_arc.try_write() {
+                conn.reset_cooldown();
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

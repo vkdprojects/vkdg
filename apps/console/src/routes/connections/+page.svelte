@@ -74,6 +74,21 @@
       syncingId = null;
     }
   }
+  let resettingId = $state<string | null>(null);
+
+  async function resetCooldown(conn: ConnectionSummary) {
+    resettingId = conn.id;
+    try {
+      await api.resetConnectionCooldown(conn.id);
+      toast.success(m.connection_cooldown_reset({ id: conn.id }));
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      resettingId = null;
+    }
+  }
+
 
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
@@ -313,6 +328,18 @@
                   <RefreshCwIcon size={14} aria-hidden="true" />
                   {m.connection_sync_models()}
                 </Button>
+                {#if conn.status === 'cooldown' || conn.status === 'circuit_open' || conn.cooldown_until}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onclick={() => resetCooldown(conn)}
+                    disabled={resettingId === conn.id}
+                    ariaLabel={`${m.connection_reset_cooldown()} ${conn.id}`}
+                  >
+                    <RefreshCwIcon size={14} aria-hidden="true" />
+                    {m.connection_reset_cooldown()}
+                  </Button>
+                {/if}
                 <Button
                   variant="danger"
                   size="sm"

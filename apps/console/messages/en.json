@@ -211,6 +211,8 @@
   "connection_models_more": "+{n} more",
   "connection_empty_desc": "Add a provider connection to start routing requests.",
   "connection_auto_refresh": "Refreshes every 5s while this tab is visible.",
+  "connection_reset_cooldown": "Reset cooldown",
+  "connection_cooldown_reset": "Cooldown reset for {id}",
   "common_refresh": "Refresh",
   "common_close": "Close",
   "common_updated_at": "Updated {time}",

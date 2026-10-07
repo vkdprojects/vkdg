@@ -88,6 +88,10 @@ pub fn build_admin_router(state: AdminState) -> Router {
             axum::routing::post(crate::handlers::connections::test_connection),
         )
         .route(
+            "/admin/v1/connections/{id}/reset-cooldown",
+            axum::routing::post(crate::handlers::connections::reset_connection_cooldown),
+        )
+        .route(
             "/admin/v1/connections/{id}/models/sync",
             post(crate::handlers::model_sync::sync_models),
         )

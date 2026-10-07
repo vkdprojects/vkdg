@@ -291,6 +291,11 @@ impl Connection {
             }
         }
     }
+
+    /// Explicitly reset any active cooldown or circuit open state back to `Healthy`.
+    pub fn reset_cooldown(&mut self) {
+        self.state = ConnectionState::Healthy;
+    }
 }
 
 /// RAII guard — decrements `active_requests` on drop.
@@ -413,6 +418,48 @@ mod tests {
             eligible.is_empty(),
             "connection in cooldown must not be eligible for routing"
         );
+    }
+    #[test]
+    fn reset_cooldown_restores_health_and_eligibility() {
+        use crate::catalog::ConnectionCatalog;
+
+        let conn_id = ConnectionId("c_reset".into());
+        let config = ConnectionConfig {
+            id: conn_id.clone(),
+            provider: ProviderKind::Anthropic,
+            auth: AuthKind::ApiKey {
+                env_var: "K".into(),
+            },
+            models: vec!["claude-*".into()],
+            max_concurrent: 10,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: vkdg_core::CapabilitySet::default(),
+        };
+        let catalog = ConnectionCatalog::new(vec![config]);
+        {
+            let conn_arc = catalog.get(&conn_id).unwrap();
+            let mut conn = conn_arc.try_write().unwrap();
+            conn.state = ConnectionState::Cooldown {
+                until: chrono::Utc::now() + chrono::Duration::seconds(300),
+                failure_count: 3,
+            };
+        }
+        assert_eq!(
+            catalog.eligible("claude-3-5-haiku-20241022", &[]),
+            Vec::<ConnectionId>::new()
+        );
+
+        let reset = catalog.reset_cooldown(&conn_id);
+        assert!(
+            reset,
+            "reset_cooldown should return true for existing connection"
+        );
+
+        let eligible = catalog.eligible("claude-3-5-haiku-20241022", &[]);
+        assert_eq!(eligible.len(), 1);
+        assert_eq!(eligible[0], conn_id);
     }
 
     // Plausible wrong impl: eligibility reads a cached Healthy/Cooldown

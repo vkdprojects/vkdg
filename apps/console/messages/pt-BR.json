@@ -195,6 +195,8 @@
   "connection_models_more": "+{n} mais",
   "connection_empty_desc": "Adicione uma conexão de provedor para começar a rotear requisições.",
   "connection_auto_refresh": "Atualiza a cada 5s enquanto esta aba está visível.",
+  "connection_reset_cooldown": "Resetar resfriamento",
+  "connection_cooldown_reset": "Resfriamento resetado para {id}",
   "common_refresh": "Atualizar",
   "common_close": "Fechar",
   "common_updated_at": "Atualizado às {time}",

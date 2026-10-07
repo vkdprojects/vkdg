@@ -406,5 +406,16 @@
   "key_table_restrictions": "Restrições",
   "key_table_actions": "Ações",
   "shell_collapse_nav": "Recolher navegação",
-  "shell_expand_nav": "Expandir navegação"
+  "shell_expand_nav": "Expandir navegação",
+  "usage_window_five_hour": "5 horas",
+  "usage_window_weekly": "Semanal",
+  "usage_window_weekly_sonnet": "Semanal Sonnet",
+  "usage_window_weekly_opus": "Semanal Opus",
+  "usage_column_credits": "Créditos",
+  "usage_left": "{percent}% restante",
+  "usage_resets": "Renova {when}",
+  "usage_overview_title": "Uso em todas as contas",
+  "usage_overview_desc": "Conta mais usada primeiro. Só aparecem as janelas que o provedor informa.",
+  "usage_overview_account": "Conta",
+  "usage_overview_unavailable": "Uso indisponível"
 }

@@ -17,6 +17,17 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - **Session persistence across restarts:** admin console sessions are now stored in `gateway.db`
   (`admin_sessions` table) and reloaded on startup. A deploy or restart no longer forces a new
   login.
+- **Rate-limit windows for Claude Code and Codex accounts:** `GET /admin/v1/accounts` now returns
+  `usage_windows` (`kind` = `five_hour|weekly|weekly_sonnet|weekly_opus`, `used_percent`,
+  `resets_at` as Unix seconds). Only windows the upstream reports are listed, so plans without a
+  general weekly limit show none. `credits_source`, `credits_checked_at` and `credits_plan` are the
+  generic usage-source metadata for both credit and window providers; `credits_used` stays absent
+  for percent-only providers. A failed read is `credits_source: "unavailable"`, never 0%. Usage
+  reads use the refreshed OAuth token, and a revoked account makes no upstream call. Sources are
+  undocumented endpoints (`api.anthropic.com/api/oauth/usage`, `chatgpt.com/backend-api/wham/usage`).
+- **Usage overview in the console:** the Accounts page shows every metered account side by side
+  (one bar per window, most-consumed first) above the per-account cards, which now render a bar per
+  window with remaining percent and reset time.
 
 ### Fixed
 - Codex multi-turn history uses `output_text` for assistant content and `input_text`

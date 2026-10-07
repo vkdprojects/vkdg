@@ -421,5 +421,16 @@
   "key_table_restrictions": "Restrictions",
   "key_table_actions": "Actions",
   "shell_collapse_nav": "Collapse navigation",
-  "shell_expand_nav": "Expand navigation"
+  "shell_expand_nav": "Expand navigation",
+  "usage_window_five_hour": "5 hours",
+  "usage_window_weekly": "Weekly",
+  "usage_window_weekly_sonnet": "Weekly Sonnet",
+  "usage_window_weekly_opus": "Weekly Opus",
+  "usage_column_credits": "Credits",
+  "usage_left": "{percent}% left",
+  "usage_resets": "Resets {when}",
+  "usage_overview_title": "Usage across accounts",
+  "usage_overview_desc": "Most-used account first. Only windows the provider reports are shown.",
+  "usage_overview_account": "Account",
+  "usage_overview_unavailable": "Usage unavailable"
 }

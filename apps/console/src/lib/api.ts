@@ -129,6 +129,16 @@ export interface CreatedKey extends ClientKey {
   key: string;
 }
 
+export type UsageWindowKind = 'five_hour' | 'weekly' | 'weekly_sonnet' | 'weekly_opus';
+
+export interface UsageWindow {
+  kind: UsageWindowKind;
+  /** 0-100 as reported by the upstream; may exceed 100 on overshoot. */
+  used_percent: number;
+  /** Unix seconds; null when the upstream gave no reset time. */
+  resets_at: number | null;
+}
+
 export interface Account {
   id: string;
   provider: string;
@@ -153,6 +163,12 @@ export interface Account {
   credits_checked_at?: string;
   /** Opaque fingerprint of the upstream user, when reported. */
   credits_user_ref?: string;
+  /**
+   * Rate-limit windows for providers that meter by window (Claude Code, Codex).
+   * Only windows the upstream reported are present — a plan with no general
+   * weekly limit has no `weekly` entry. Absent when none were reported.
+   */
+  usage_windows?: UsageWindow[];
 }
 
 export type OAuthFlow = 'authorization_code_pkce' | 'device_code' | 'import_token';

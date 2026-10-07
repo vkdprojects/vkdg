@@ -64,6 +64,31 @@ Text beside tools is retained. A loopback HTTP regression covers 87 initial and
 `finish_reason` / `[DONE]`; decoder tests cover parallel calls, UTF-8 fragmentation,
 late failures, truncation and limits.
 
+### Production verification, 2026-10-07
+
+Gateway commit `3407010` runs at `https://vkdg.vixpi.host` in image
+`local/vkdg:dev-3407010`, activated at `2026-10-07T12:46:27Z`.
+The public health endpoint returned HTTP 200.
+
+| Model | Public Chat SSE, 92-message tool round-trip | Actual OMP client in a separate directory |
+|---|---|---|
+| `gpt-6-luna:high` | passed | passed |
+| `gpt-6.1-sol:medium` | passed | passed |
+| `gpt-5.6-sol` | passed after an upstream overload | passed with medium thinking |
+
+The API probe includes assistant string and array history, mixed text/function
+calls, and tool results. It executes a newly generated function call and verifies
+that the final answer contains the nonce returned by that function.
+Each model is requested directly, without model fallback.
+
+The OMP probe disables retries and model fallback, invokes the real `read` tool
+on a temporary file, and verifies its exact contents in the final response.
+Both assistant turns retain provider `vkdg` and the requested model.
+These runs use new sessions, not the user's original failing session.
+
+One initial `gpt-5.6-sol` API request returned HTTP 502 with an upstream overload;
+the next attempt passed. These checks establish the deployed history/stream fix,
+not continuous upstream availability. None returned the reported `input_text` 400.
 
 ### Usage
 

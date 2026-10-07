@@ -510,7 +510,11 @@ mod tests {
             !text.contains("upstream stream ended before completion"),
             "a stream ending in response.done is complete: {text}"
         );
-        assert_eq!(guarded.len(), 2, "no extra error frame may follow response.done");
+        assert_eq!(
+            guarded.len(),
+            2,
+            "no extra error frame may follow response.done"
+        );
     }
 
     // Plausible wrong impl: stream error silently terminates without notifying client.

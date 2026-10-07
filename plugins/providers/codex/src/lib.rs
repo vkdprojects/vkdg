@@ -421,8 +421,24 @@ fn build_auth_headers(token: &str, credential: &Credential) -> HeaderMap {
 /// - `max_tokens` / `max_output_tokens` stripped (Codex rejects both)
 /// - always `stream: true`; the Responses endpoint is SSE-first
 fn build_responses_body(req: &ConversationRequest) -> Bytes {
-    let model = vkdg_provider_sdk::upstream_model(req, "gpt-4o").to_owned();
-
+    const KNOWN_EFFORTS: &[&str] = &["off", "min", "low", "medium", "high", "xhigh", "max"];
+    let raw_model = vkdg_provider_sdk::upstream_model(req, "gpt-4o");
+    let (model, effort_from_model) = if let Some(pos) = raw_model.rfind(':') {
+        let suffix = &raw_model[pos + 1..];
+        if KNOWN_EFFORTS.contains(&suffix) {
+            (&raw_model[..pos], Some(suffix))
+        } else {
+            (raw_model, None)
+        }
+    } else {
+        (raw_model, None)
+    };
+    let model = model.to_owned();
+    let reasoning_effort = req
+        .thinking
+        .as_ref()
+        .and_then(|t| t.effort.as_deref())
+        .or(effort_from_model);
     let mut input: Vec<Value> = Vec::new();
     for m in &req.messages {
         // system → developer keeps the message in `input` for prompt caching;
@@ -515,6 +531,11 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
     if let Some(temp) = req.temperature {
         body.insert("temperature".into(), json!(temp));
     }
+    if let Some(effort) = reasoning_effort {
+        let mut reasoning = Map::new();
+        reasoning.insert("effort".into(), Value::String(effort.to_owned()));
+        body.insert("reasoning".into(), Value::Object(reasoning));
+    }
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req
             .tools
@@ -585,6 +606,21 @@ mod tests {
         assert_eq!(simple("o3", &["gpt-5", "o3"])["model"], "o3");
         assert_eq!(simple("", &["gpt-*"])["model"], "gpt-4o");
     }
+    #[test]
+    fn reasoning_suffix_stripped_from_model_and_mapped_to_reasoning_effort() {
+        let b = simple("gpt-6-luna:low", &["gpt-*"]);
+        assert_eq!(b["model"], "gpt-6-luna");
+        assert_eq!(b["reasoning"]["effort"], "low");
+
+        let b = simple("gpt-6.1-sol:medium", &["gpt-*"]);
+        assert_eq!(b["model"], "gpt-6.1-sol");
+        assert_eq!(b["reasoning"]["effort"], "medium");
+
+        let b = simple("gpt-5.6-sol:high", &["gpt-*"]);
+        assert_eq!(b["model"], "gpt-5.6-sol");
+        assert_eq!(b["reasoning"]["effort"], "high");
+    }
+
 
     // Previously sent Chat Completions body; Responses API rejects messages/max_tokens.
     #[test]

@@ -94,7 +94,11 @@ pub fn strip_think_tags(data: &str) -> String {
 /// Anthropic response end with a spurious error event.
 fn is_terminal_chunk(chunk: &[u8]) -> bool {
     let contains = |needle: &[u8]| chunk.windows(needle.len()).any(|w| w == needle);
-    contains(b"[DONE]") || contains(b"message_stop") || contains(b"event: error")
+    contains(b"[DONE]")
+        || contains(b"message_stop")
+        || contains(b"response.done")
+        || contains(b"response.completed")
+        || contains(b"event: error")
 }
 
 /// Wrap a byte stream and end it with the client dialect's error frame if it
@@ -476,6 +480,37 @@ mod tests {
             2,
             "no extra frame may follow message_stop: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn responses_done_is_a_valid_terminator() {
+        use futures::stream;
+
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(
+                b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            )),
+            Ok(Bytes::from_static(
+                b"event: response.done\ndata: {\"type\":\"response.done\"}\n\n",
+            )),
+        ];
+        let inner: Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>> =
+            Box::pin(stream::iter(chunks));
+        let guarded: Vec<_> =
+            with_termination_guard(inner, &vkdg_core::ApiType::OpenAiChatCompletions)
+                .collect()
+                .await;
+
+        let text: String = guarded
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|b| String::from_utf8_lossy(b).to_string())
+            .collect();
+        assert!(
+            !text.contains("upstream stream ended before completion"),
+            "a stream ending in response.done is complete: {text}"
+        );
+        assert_eq!(guarded.len(), 2, "no extra error frame may follow response.done");
     }
 
     // Plausible wrong impl: stream error silently terminates without notifying client.

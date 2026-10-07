@@ -14,7 +14,6 @@ use vkdg_provider_sdk::{
     Credential, DynamicModelCatalog, ModelCatalog, OAuthConfig, OAuthFlow, OAuthProvider,
     PreparedRequest, ProviderAdapter, ProviderError, TokenPair,
 };
-
 /// Public OAuth `client_id` for the Codex CLI (`openai/codex`, `codex-rs`).
 /// Source: `codex-rs/login/src/auth/manager.rs` — `pub const CLIENT_ID`.
 /// Can be overridden via `CODEX_OAUTH_CLIENT_ID` env var.
@@ -86,10 +85,9 @@ impl ProviderAdapter for CodexAdapter {
         };
 
         let body = build_responses_body(req);
-        // Codex uses the OpenAI Responses API endpoint
-        let url = format!("{}/v1/responses", base_url(config));
-        let headers = build_auth_headers(token);
-
+        let is_oauth = !matches!(config.auth, vkdg_connections::AuthKind::ApiKey { .. });
+        let url = endpoint_url(config, is_oauth);
+        let headers = build_auth_headers(token, credential);
         Ok(PreparedRequest {
             url,
             headers,
@@ -134,11 +132,14 @@ impl OAuthProvider for CodexAdapter {
                 "profile".into(),
                 "email".into(),
                 "offline_access".into(),
+                "model.request".into(),
+                "model.read".into(),
             ],
             redirect_uri: Some("http://127.0.0.1:1455/auth/callback".into()),
             extra_auth_params,
         }
     }
+
     fn start_pkce_login<'a>(
         &'a self,
         _method: &'a str,
@@ -201,14 +202,22 @@ impl OAuthProvider for CodexAdapter {
                 .json()
                 .await
                 .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+            let access_token = json["access_token"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+
+            let mut extra_map = HashMap::new();
+            if let Some(account_id) = extract_chatgpt_account_id(&access_token) {
+                extra_map.insert("chatgpt_account_id".into(), account_id);
+            }
+
             Ok(TokenPair {
-                access_token: json["access_token"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
+                access_token,
                 refresh_token: json["refresh_token"].as_str().map(str::to_string),
                 expires_in_secs: json["expires_in"].as_u64(),
-                extra: HashMap::new(),
+                extra: extra_map,
             })
         })
     }
@@ -255,9 +264,12 @@ async fn finish_pkce_exchange(
         .as_str()
         .unwrap_or_default()
         .to_string();
-
-    // Best-effort: fetch email from OpenAI userinfo.
     let mut extra: HashMap<String, String> = HashMap::new();
+    if let Some(account_id) = extract_chatgpt_account_id(&access_token) {
+        extra.insert("chatgpt_account_id".into(), account_id);
+    }
+
+    // Best-effort: fetch userinfo from OpenAI.
     if let Ok(ui_resp) = client
         .get("https://auth.openai.com/oauth/userinfo")
         .header("Authorization", format!("Bearer {access_token}"))
@@ -271,6 +283,9 @@ async fn finish_pkce_exchange(
             }
             if let Some(sub) = ui["sub"].as_str() {
                 extra.insert("sub".into(), sub.into());
+            }
+            if let Some(account_id) = ui["chatgpt_account_id"].as_str() {
+                extra.insert("chatgpt_account_id".into(), account_id.to_string());
             }
         }
     }
@@ -288,14 +303,87 @@ async fn finish_pkce_exchange(
     })
 }
 
-fn base_url(config: &ConnectionConfig) -> String {
+pub const CHATGPT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+pub const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+
+fn endpoint_url(config: &ConnectionConfig, is_oauth: bool) -> String {
     match &config.provider {
-        ProviderKind::Custom { base_url } => base_url.clone(),
-        _ => "https://api.openai.com".into(),
+        ProviderKind::Custom { base_url } => {
+            if base_url.ends_with("/responses") {
+                base_url.clone()
+            } else {
+                format!("{}/v1/responses", base_url.trim_end_matches('/'))
+            }
+        }
+        _ => {
+            if is_oauth {
+                CHATGPT_CODEX_RESPONSES_URL.into()
+            } else {
+                OPENAI_RESPONSES_URL.into()
+            }
+        }
     }
 }
 
-fn build_auth_headers(token: &str) -> HeaderMap {
+pub fn extract_chatgpt_account_id(token: &str) -> Option<String> {
+    let payload_b64 = token.split('.').nth(1)?;
+    let mut padded = payload_b64.replace('-', "+").replace('_', "/");
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    let decoded = base64_decode(&padded)?;
+    let claims: Value = serde_json::from_slice(&decoded).ok()?;
+
+    if let Some(acc) = claims["chatgpt_account_id"].as_str() {
+        return Some(acc.to_string());
+    }
+    if let Some(auth) = claims.get("https://api.openai.com/auth") {
+        if let Some(acc) = auth["chatgpt_account_id"].as_str() {
+            return Some(acc.to_string());
+        }
+    }
+    None
+}
+
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            b'=' => Some(0),
+            _ => None,
+        }
+    }
+    let bytes = input.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity((bytes.len() / 4) * 3);
+    for chunk in bytes.chunks_exact(4) {
+        let b0 = val(chunk[0])?;
+        let b1 = val(chunk[1])?;
+        let b2 = val(chunk[2])?;
+        let b3 = val(chunk[3])?;
+        let triple =
+            (u32::from(b0) << 18) | (u32::from(b1) << 12) | (u32::from(b2) << 6) | u32::from(b3);
+        #[allow(clippy::cast_possible_truncation)]
+        out.push((triple >> 16) as u8);
+        if chunk[2] != b'=' {
+            #[allow(clippy::cast_possible_truncation)]
+            out.push((triple >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            #[allow(clippy::cast_possible_truncation)]
+            out.push(triple as u8);
+        }
+    }
+    Some(out)
+}
+
+fn build_auth_headers(token: &str, credential: &Credential) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::AUTHORIZATION,
@@ -307,6 +395,20 @@ fn build_auth_headers(token: &str) -> HeaderMap {
         http::header::CONTENT_TYPE,
         http::HeaderValue::from_static("application/json"),
     );
+
+    // Determine ChatGPT-Account-Id from credential extra or JWT claims
+    let account_id = credential
+        .extra
+        .get("chatgpt_account_id")
+        .cloned()
+        .or_else(|| extract_chatgpt_account_id(token));
+
+    if let Some(acc_id) = account_id {
+        if let Ok(val) = acc_id.parse() {
+            headers.insert(http::HeaderName::from_static("chatgpt-account-id"), val);
+        }
+    }
+
     headers
 }
 
@@ -499,5 +601,90 @@ mod tests {
             "Codex rejects max_tokens: {b}"
         );
         assert_eq!(b["stream"], true, "/responses always streams");
+    }
+
+    #[test]
+    fn oauth_account_uses_backend_api_and_account_header() {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-oauth".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::Account {
+                account_id: "oauth-user".into(),
+            },
+            models: vec!["gpt-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello".into()),
+            }],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+            thinking: None,
+            ..Default::default()
+        });
+        let mut extra = HashMap::new();
+        extra.insert("chatgpt_account_id".into(), "acc_test123".into());
+        let cred = Credential {
+            token: "valid-token".into(),
+            extra: Arc::new(extra),
+        };
+        let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
+        assert_eq!(req.url, CHATGPT_CODEX_RESPONSES_URL);
+        assert_eq!(
+            req.headers
+                .get("chatgpt-account-id")
+                .map(|v| v.to_str().unwrap()),
+            Some("acc_test123")
+        );
+    }
+
+    #[test]
+    fn api_key_account_uses_openai_responses_url() {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-apikey".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::ApiKey {
+                env_var: "OPENAI_API_KEY".into(),
+            },
+            models: vec!["gpt-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello".into()),
+            }],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+            thinking: None,
+            ..Default::default()
+        });
+        let cred = Credential {
+            token: "sk-mock".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
+        assert_eq!(req.url, OPENAI_RESPONSES_URL);
+        assert!(req.headers.get("chatgpt-account-id").is_none());
     }
 }

@@ -520,13 +520,14 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
             .tools
             .iter()
             .map(|t| {
-                let mut func = Map::new();
-                func.insert("name".into(), Value::String(t.name.clone()));
+                let mut tool = Map::new();
+                tool.insert("type".into(), Value::String("function".into()));
+                tool.insert("name".into(), Value::String(t.name.clone()));
                 if let Some(desc) = &t.description {
-                    func.insert("description".into(), Value::String(desc.clone()));
+                    tool.insert("description".into(), Value::String(desc.clone()));
                 }
-                func.insert("parameters".into(), t.input_schema.clone());
-                json!({ "type": "function", "function": func })
+                tool.insert("parameters".into(), t.input_schema.clone());
+                Value::Object(tool)
             })
             .collect();
         body.insert("tools".into(), Value::Array(tools));
@@ -686,5 +687,129 @@ mod tests {
         let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
         assert_eq!(req.url, OPENAI_RESPONSES_URL);
         assert!(req.headers.get("chatgpt-account-id").is_none());
+    }
+
+    #[test]
+    fn tools_serialized_with_flat_function_schema() {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-tools".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::ApiKey {
+                env_var: "OPENAI_API_KEY".into(),
+            },
+            models: vec!["gpt-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("what's the weather?".into()),
+            }],
+            tools: vec![vkdg_operations::Tool {
+                name: "get_weather".into(),
+                description: Some("Get current weather".into()),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "location": { "type": "string" }
+                    },
+                    "required": ["location"]
+                }),
+            }],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+            thinking: None,
+            ..Default::default()
+        });
+        let cred = Credential {
+            token: "sk-mock".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let tools = body.get("tools").and_then(Value::as_array).unwrap();
+        assert_eq!(tools.len(), 1);
+        let tool = &tools[0];
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["name"], "get_weather");
+        assert_eq!(tool["description"], "Get current weather");
+        assert_eq!(tool["parameters"]["type"], "object");
+        assert!(tool.get("function").is_none(), "Codex Responses API tools must not nest under 'function'");
+    }
+
+    #[test]
+    fn tool_calls_and_results_serialized_in_input() {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-tools".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth: AuthKind::ApiKey {
+                env_var: "OPENAI_API_KEY".into(),
+            },
+            models: vec!["gpt-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: MessageContent::Text("what's the weather?".into()),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                        id: "call_123".into(),
+                        name: "get_weather".into(),
+                        input: json!({ "location": "San Francisco" }),
+                    }]),
+                },
+                Message {
+                    role: Role::Tool,
+                    content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                        tool_use_id: "call_123".into(),
+                        content: "{\"temp\": 65}".into(),
+                        is_error: false,
+                        images: vec![],
+                    }]),
+                },
+            ],
+            tools: vec![],
+            max_tokens: None,
+            temperature: None,
+            stream: true,
+            system: None,
+            required_capabilities: CapabilitySet::default(),
+            thinking: None,
+            ..Default::default()
+        });
+        let cred = Credential {
+            token: "sk-mock".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        let req = CodexAdapter::new().prepare(&op, &config, &cred).unwrap();
+        let body: Value = serde_json::from_slice(&req.body).unwrap();
+        let input = body.get("input").and_then(Value::as_array).unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[1]["call_id"], "call_123");
+        assert_eq!(input[1]["name"], "get_weather");
+        assert_eq!(input[1]["arguments"], "{\"location\":\"San Francisco\"}");
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[2]["call_id"], "call_123");
+        assert_eq!(input[2]["output"], "{\"temp\": 65}");
     }
 }

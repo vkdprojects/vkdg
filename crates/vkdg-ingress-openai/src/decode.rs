@@ -459,9 +459,23 @@ struct OaiResponsesRequest {
     max_output_tokens: Option<u32>,
     instructions: Option<String>,
     reasoning: Option<OaiReasoning>,
-    tools: Option<Vec<OaiTool>>,
+    tools: Option<Vec<OaiResponsesTool>>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum OaiResponsesTool {
+    Flat {
+        #[serde(rename = "type")]
+        #[allow(dead_code)]
+        type_: String,
+        name: String,
+        description: Option<String>,
+        #[serde(default)]
+        parameters: serde_json::Value,
+    },
+    Nested(OaiTool),
+}
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum OaiResponsesInput {
@@ -546,10 +560,22 @@ pub fn decode_responses_request(body: &[u8]) -> Result<(String, Operation), Vkdg
         .tools
         .unwrap_or_default()
         .into_iter()
-        .map(|t| Tool {
-            name: t.function.name,
-            description: t.function.description,
-            input_schema: t.function.parameters,
+        .map(|t| match t {
+            OaiResponsesTool::Flat {
+                name,
+                description,
+                parameters,
+                ..
+            } => Tool {
+                name,
+                description,
+                input_schema: parameters,
+            },
+            OaiResponsesTool::Nested(nested) => Tool {
+                name: nested.function.name,
+                description: nested.function.description,
+                input_schema: nested.function.parameters,
+            },
         })
         .collect();
 
@@ -720,5 +746,30 @@ mod tests {
             panic!("expected Conversation")
         };
         assert_eq!(req.system, Some("override".to_string()));
+    }
+
+    #[test]
+    fn decode_responses_tools_flat_and_nested() {
+        let flat_body = as_bytes(
+            r#"{"model":"m","input":"hi","tools":[{"type":"function","name":"flat_tool","description":"flat desc","parameters":{"type":"object"}}]}"#,
+        );
+        let (_model, op) = decode_responses_request(flat_body).unwrap();
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation");
+        };
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "flat_tool");
+        assert_eq!(req.tools[0].description.as_deref(), Some("flat desc"));
+
+        let nested_body = as_bytes(
+            r#"{"model":"m","input":"hi","tools":[{"type":"function","function":{"name":"nested_tool","description":"nested desc","parameters":{"type":"object"}}}]}"#,
+        );
+        let (_model, op) = decode_responses_request(nested_body).unwrap();
+        let Operation::Conversation(req) = op else {
+            panic!("expected Conversation");
+        };
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "nested_tool");
+        assert_eq!(req.tools[0].description.as_deref(), Some("nested desc"));
     }
 }

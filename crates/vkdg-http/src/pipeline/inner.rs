@@ -171,11 +171,23 @@ pub(super) async fn run_pipeline_inner(
         hints.in_flight = pipeline.catalog.in_flight();
         hints
     };
-    let route_result = match pipeline
-        .router
-        .route(&ctx.envelope, &filter, &routing_hints)
-        .await
-    {
+    let route_result = match &ctx.pinned_connection {
+        Some(pinned) => Ok(RouteResult {
+            connection_id: pinned.clone(),
+            route_id: RouteId("pinned".into()),
+            excluded: vec![],
+            fusion_targets: vec![],
+            chain_steps: vec![],
+            hooks: Default::default(),
+        }),
+        None => {
+            pipeline
+                .router
+                .route(&ctx.envelope, &filter, &routing_hints)
+                .await
+        }
+    };
+    let route_result = match route_result {
         Ok(r) => r,
         // Only when no route claims the model. A route that matched but has no
         // usable target stays failed: falling through would send its traffic to
@@ -1749,5 +1761,86 @@ mod tests {
                 "invariant 6: the 429 on one connection must not cool its sibling"
             );
         }
+    }
+
+    /// `n` Custom connections on one `claude-*` route (fallback chain, so the
+    /// router always prefers the first target), each at its own canned upstream.
+    fn pinned_pipeline(urls: &[String], with_route: bool) -> Arc<PipelineState> {
+        std::env::set_var("VKDG_TEST_FAILOVER_KEY", "k");
+        let conns: Vec<_> = urls
+            .iter()
+            .enumerate()
+            .map(|(i, url)| vkdg_connections::ConnectionConfig {
+                id: ConnectionId(format!("conn-{i}")),
+                provider: vkdg_connections::ProviderKind::Custom {
+                    base_url: url.clone(),
+                },
+                auth: vkdg_connections::AuthKind::ApiKey {
+                    env_var: "VKDG_TEST_FAILOVER_KEY".into(),
+                },
+                models: vec!["claude-*".into()],
+                max_concurrent: 10,
+                weight: 1,
+                tags: vec![],
+                endpoint: None,
+                capabilities: CapabilitySet::default(),
+            })
+            .collect();
+        let routes = if with_route {
+            vec![RouteConfig {
+                id: RouteId("claude".into()),
+                match_models: vec!["claude-*".into()],
+                strategy: StrategyKind::FallbackChain,
+                targets: conns.iter().map(|c| c.id.clone()).collect(),
+                plugin_hooks: vkdg_routing::PluginHooks::default(),
+            }]
+        } else {
+            vec![]
+        };
+        let mut r = ProviderRegistry::empty();
+        r.register(Arc::new(ToBaseUrl));
+        Arc::new(PipelineState::minimal(
+            Arc::new(AdmissionGuard::new(100)),
+            Arc::new(VkdgRouter::new(routes)),
+            Arc::new(ConnectionCatalog::new(conns)),
+            Arc::new(CredentialManager::new()),
+            Arc::new(HttpClient::new()),
+            Arc::new(DecisionRecordExporter::new()),
+            Arc::new(r),
+        ))
+    }
+
+    // The admin "Test" button pins the request to the connection under test.
+    // Plausible wrong impl: the pin is ignored and the router picks the route's
+    // first target, so the test probes (and reports on) a different account.
+    #[tokio::test]
+    async fn a_pinned_connection_bypasses_the_router() {
+        let (first_url, first_hits) = canned_upstream(200, None).await;
+        let (second_url, second_hits) = canned_upstream(200, None).await;
+        let p = pinned_pipeline(&[first_url, second_url], true);
+
+        let mut ctx = make_ctx("claude-sonnet-4-6");
+        ctx.pinned_connection = Some(ConnectionId("conn-1".into()));
+        let resp = run_conversation_pipeline(p, ctx, make_conv_op()).await;
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(first_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(second_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    // Production: every account connection lists only patterns (`claude-*`), no
+    // route or connection serves the literal model the old smoke test sent, so the
+    // test died as "no eligible connection". A pinned connection is tried as asked.
+    #[tokio::test]
+    async fn a_pinned_connection_is_used_even_when_no_route_serves_the_model() {
+        let (url, hits) = canned_upstream(200, None).await;
+        let p = pinned_pipeline(&[url], false);
+
+        let mut ctx = make_ctx("test");
+        ctx.pinned_connection = Some(ConnectionId("conn-0".into()));
+        let resp = run_conversation_pipeline(p, ctx, make_conv_op()).await;
+
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

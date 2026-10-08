@@ -30,6 +30,10 @@ Versioning: [Semantic Versioning](https://semver.org/).
   window with remaining percent and reset time.
 
 ### Fixed
+- **Account "Test" failed for Claude Code and Codex with "no eligible connection":** account
+  connections list only patterns (`claude-*`, `gpt-*`), so the test request named a model no route
+  served and died in routing before reaching the account. The test now pins the request to the
+  connection under test (`PipelineCtx::pinned_connection`), skipping routing and sibling failover.
 - **`power_of_two_choices` routed by latency, starving the slower target:** it compared the p50
   latency of its two samples, so with two targets it behaved like `lowest_latency`. Latency is only
   measured on targets that get traffic, so the faster Claude Code account took every request while

@@ -22,7 +22,9 @@ pub async fn run_conversation_pipeline(
     // router picks a different candidate. One retry, as before.
     let (ctx, outcome, final_attempt) = match &outcome {
         Err(VkdgError::UpstreamError { code, .. })
-            if super::helpers::fails_over(*code) && ctx.can_retry() =>
+            if super::helpers::fails_over(*code)
+                && ctx.can_retry()
+                && ctx.pinned_connection.is_none() =>
         {
             let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
 

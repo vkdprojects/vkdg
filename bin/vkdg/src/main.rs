@@ -2202,7 +2202,8 @@ async fn test_connection_smoke(
         CapabilitySet, ConversationRequest, Message, MessageContent, Operation, Role,
     };
 
-    // Find the connection's first concrete model so we don't send a glob.
+    // The connection's first concrete model; account connections list only
+    // patterns (`claude-*`), which the adapters turn into their default model.
     let model = {
         let Some(guard) = pipeline.catalog.get(&ConnectionId(conn_id.to_owned())) else {
             return vkdg_admin::router::ConnectionTestResult {
@@ -2217,6 +2218,7 @@ async fn test_connection_smoke(
             .models
             .iter()
             .find(|m| !m.contains(['*', '?']))
+            .or_else(|| config.config.models.first())
             .cloned()
             .unwrap_or_else(|| "test".to_owned())
     };
@@ -2253,12 +2255,11 @@ async fn test_connection_smoke(
         ..Default::default()
     });
 
-    // Force routing to this specific connection by temporarily making the
-    // router irrelevant: we push the connection directly.
+    // Pin the request to this connection: the router would look for one that
+    // serves `model` and find none for an account listing only patterns.
     use vkdg_core::pipeline::PipelineCtx;
     let mut ctx = PipelineCtx::new(envelope);
-    ctx.connection_id = Some(ConnectionId(conn_id.to_owned()));
-    ctx.route_id = Some("_test".to_owned());
+    ctx.pinned_connection = Some(ConnectionId(conn_id.to_owned()));
 
     let t = Instant::now();
     let resp = run_conversation_pipeline(Arc::clone(pipeline), ctx, op).await;

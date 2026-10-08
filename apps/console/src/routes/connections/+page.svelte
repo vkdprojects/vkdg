@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { ConnectionStatus, ConnectionSummary } from '$lib/api.js';
-  import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
+  import { Badge, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatTime, formatRelativeTime } from '$lib/format.js';
   import { Dialog, AlertDialog } from 'bits-ui';
@@ -226,8 +226,14 @@
 
 <div class="page">
   <div class="page-header">
-    <h1 class="page-title">{m.nav_connections()}</h1>
-    <div class="header-actions">
+    <div>
+      <h1 class="page-title">{m.nav_connections()}</h1>
+      <p class="refresh-note" aria-live="polite">
+        {m.connection_auto_refresh()}
+        {#if updatedAt}{m.common_updated_at({ time: formatTime(updatedAt) })}{/if}
+      </p>
+    </div>
+    <div class="page-actions">
       <Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}>
         <RefreshCwIcon size={14} aria-hidden="true" />
         {m.common_refresh()}
@@ -239,121 +245,106 @@
     </div>
   </div>
 
-  <p class="refresh-note" aria-live="polite">
-    {m.connection_auto_refresh()}
-    {#if updatedAt}{m.common_updated_at({ time: formatTime(updatedAt) })}{/if}
-  </p>
   {#if !loading && connections.length > 0}
-    <div class="summary-grid">
+    <section class="summary panel">
       <Stat label={m.connection_active_requests()} value={totalActive} unit={`/ ${totalCapacity}`} />
-      <Meter
-        label={m.connection_active_requests()}
-        value={totalActive}
-        limit={totalCapacity}
-        valueText={`${totalActive} / ${totalCapacity}`}
-      />
-    </div>
+      <Meter bare value={totalActive} limit={totalCapacity} ariaLabel={m.connection_active_requests()} />
+    </section>
   {/if}
-
 
   {#if loading}
     <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
   {:else if connections.length === 0}
     <EmptyState title={m.connection_empty()} description={m.connection_empty_desc()} />
   {:else}
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">{m.connection_id()}</th>
-          <th scope="col">{m.connection_provider()}</th>
-          <th scope="col">{m.connection_status()}</th>
-          <th scope="col">{m.connection_models()}</th>
-          <th scope="col">{m.connection_active_requests()}</th>
-          <th scope="col">{m.connection_cooldown()}</th>
-          <th scope="col"><span class="sr-only">{m.connection_actions()}</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each connections as conn (conn.id)}
-          <tr>
-            <td class="mono">{conn.id}</td>
-            <td>{conn.provider}</td>
-            <td>
-              <div class="status-cell">
-                <StatusDot status={conn.status} />
-                <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
+    <div class="conn-grid">
+      {#each connections as conn (conn.id)}
+        <article class="conn-card" data-status={conn.status}>
+          <header class="conn-head">
+            <div class="conn-title">
+              <span class="mono conn-id" title={conn.id}>{conn.id}</span>
+              <span class="conn-provider">{conn.provider}</span>
+            </div>
+            <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
+          </header>
+
+          <div class="conn-section">
+            <span class="conn-label">{m.connection_active_requests()}</span>
+            <Meter
+              value={conn.active_requests}
+              limit={conn.max_concurrent}
+              valueText={`${conn.active_requests} / ${conn.max_concurrent}`}
+            />
+          </div>
+
+          <div class="conn-section">
+            <span class="conn-label">{m.connection_models()}</span>
+            {#if conn.models.length === 0}
+              <span class="hint">{m.common_none()}</span>
+            {:else}
+              <div class="model-chips" title={conn.models.join('\n')}>
+                {#each conn.models.slice(0, MODEL_CHIPS) as id (id)}
+                  <span class="model-chip" class:pattern={isPattern(id)}>{id}</span>
+                {/each}
+                {#if conn.models.length > MODEL_CHIPS}
+                  <span class="hint">{m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}</span>
+                {/if}
               </div>
-            </td>
-            <td class="models-cell">
-              {#if conn.models.length === 0}
-                {m.common_none()}
-              {:else}
-                <div class="model-chips" title={conn.models.join('\n')}>
-                  {#each conn.models.slice(0, MODEL_CHIPS) as id (id)}
-                    <span class="model-chip" class:pattern={isPattern(id)}>{id}</span>
-                  {/each}
-                  {#if conn.models.length > MODEL_CHIPS}
-                    <span class="hint">{m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}</span>
-                  {/if}
-                </div>
-              {/if}
-            </td>
-            <td class="concurrency-cell">
-              <Meter
-                value={conn.active_requests}
-                limit={conn.max_concurrent}
-                valueText={`${conn.active_requests} / ${conn.max_concurrent}`}
-              />
-            </td>
-            <td class="cooldown-cell">
+            {/if}
+          </div>
+
+          <div class="conn-section">
+            <span class="conn-label">{m.connection_cooldown()}</span>
+            <div class="cooldown-info">
               {#if conn.cooldown_until}
-                <div>{m.connection_cooldown_until({ time: humanizeCooldown(conn.cooldown_until) })}</div>
+                <div class="cooldown-until">{m.connection_cooldown_until({ time: humanizeCooldown(conn.cooldown_until) })}</div>
               {/if}
               {#if conn.failure_count != null}
                 <div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>
               {/if}
               {#if !conn.cooldown_until && conn.failure_count == null}
-                {m.common_none()}
+                <span class="hint">{m.common_none()}</span>
               {/if}
-            </td>
-            <td class="actions-cell">
-              <div class="row-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onclick={() => syncModels(conn)}
-                  disabled={syncingId === conn.id}
-                  ariaLabel={`${m.connection_sync_models()} ${conn.id}`}
-                >
-                  <RefreshCwIcon size={14} aria-hidden="true" />
-                  {m.connection_sync_models()}
-                </Button>
-                {#if conn.status === 'cooldown' || conn.status === 'circuit_open' || conn.cooldown_until}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onclick={() => resetCooldown(conn)}
-                    disabled={resettingId === conn.id}
-                    ariaLabel={`${m.connection_reset_cooldown()} ${conn.id}`}
-                  >
-                    <RefreshCwIcon size={14} aria-hidden="true" />
-                    {m.connection_reset_cooldown()}
-                  </Button>
-                {/if}
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onclick={() => (pendingDelete = conn)}
-                  ariaLabel={`${m.connection_delete()} ${conn.id}`}
-                >{m.connection_delete()}</Button>
-              </div>
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+            </div>
+          </div>
+
+          <footer class="conn-actions">
+            <span class="sr-only">{m.connection_actions()}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onclick={() => syncModels(conn)}
+              disabled={syncingId === conn.id}
+              ariaLabel={`${m.connection_sync_models()} ${conn.id}`}
+            >
+              <RefreshCwIcon size={14} aria-hidden="true" />
+              {m.connection_sync_models()}
+            </Button>
+            {#if conn.status === 'cooldown' || conn.status === 'circuit_open' || conn.cooldown_until}
+              <Button
+                variant="outline"
+                size="sm"
+                onclick={() => resetCooldown(conn)}
+                disabled={resettingId === conn.id}
+                ariaLabel={`${m.connection_reset_cooldown()} ${conn.id}`}
+              >
+                <RefreshCwIcon size={14} aria-hidden="true" />
+                {m.connection_reset_cooldown()}
+              </Button>
+            {/if}
+            <Button
+              variant="danger"
+              size="sm"
+              onclick={() => (pendingDelete = conn)}
+              ariaLabel={`${m.connection_delete()} ${conn.id}`}
+            >{m.connection_delete()}</Button>
+          </footer>
+        </article>
+      {/each}
+    </div>
   {/if}
 </div>
+
 
 <AlertDialog.Root open={pendingDelete !== null} onOpenChange={(v) => { if (!v) pendingDelete = null; }}>
   <AlertDialog.Portal>
@@ -391,7 +382,7 @@
       {#if step === 'form'}
         <!-- Step 1: pick provider, enter details -->
         <form onsubmit={handleFormSubmit}>
-          <div class="form-fields">
+          <div class="dialog-body fields">
             <Select
               label={m.connection_provider()}
               options={providerOptions}
@@ -458,268 +449,203 @@
   .loading {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     color: var(--text-3);
-    font-size: 0.875rem;
-    padding: 32px 0;
+    font-size: var(--text-sm);
+    padding: var(--space-6) 0;
   }
 
-  :global(.dialog-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 50;
-    animation: fadeIn 0.15s ease;
-  }
-
-  :global(.dialog-content) {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 51;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    width: min(480px, calc(100vw - 32px));
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-    animation: slideIn 0.15s ease;
-  }
-
-  :global(.dialog-title) {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-
-  :global(.dialog-close) {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: none;
-    color: var(--text-3);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-    transition: color 0.1s, background 0.1s;
-  }
-
-  :global(.dialog-close:hover) {
-    color: var(--text-1);
-    background: var(--bg-hover);
-  }
-
-  .dialog-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px 20px 0;
-  }
-
-  .form-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 20px;
-  }
-
-  .dialog-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    padding: 0 20px 20px;
-  }
-
-  .header-actions {
-    display: flex;
-    gap: 8px;
-  }
 
   .refresh-note {
-    font-size: 0.75rem;
+    margin: var(--space-1) 0 0;
+    font-size: var(--text-xs);
     color: var(--text-3);
   }
-  .summary-grid {
+
+  /* Fleet summary: hero metric + meter */
+  .summary {
     display: grid;
-    grid-template-columns: minmax(9rem, 0.35fr) minmax(16rem, 1fr);
-    gap: 1px;
-    margin: 1rem 0;
-    border: 1px solid var(--border);
-    background: var(--border);
-  }
-
-  .summary-grid > :global(*) {
-    min-width: 0;
-    padding: 0.875rem;
-    background: var(--bg-surface);
-  }
-
-  .concurrency-cell {
-    min-width: 10rem;
-  }
-
-  .concurrency-cell :global(.meter) {
-    gap: 0.25rem;
-  }
-
-
-  .cooldown-cell {
-    font-size: 0.8125rem;
-    white-space: nowrap;
-  }
-
-  .hint {
-    font-size: 0.75rem;
-    color: var(--text-3);
-  }
-
-  .status-cell {
-    display: flex;
+    grid-template-columns: repeat(auto-fit, minmax(var(--col-md), 1fr));
     align-items: center;
-    gap: 6px;
+    gap: var(--space-5);
+    padding: var(--space-5);
+    margin-bottom: var(--space-5);
+  }
+  .summary :global(.stat-value) {
+    color: var(--accent);
   }
 
-  .mono {
-    font-family: monospace;
-    font-size: 0.8125rem;
+  /* Connection cards */
+  .conn-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-xl)), 1fr));
+    gap: var(--space-4);
   }
 
-  @media (max-width: 720px) {
-    .summary-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .field {
+  .conn-card {
+    --tone: var(--border-strong);
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--space-4);
+    min-width: 0;
+    padding: var(--space-5);
+    background:
+      linear-gradient(180deg, color-mix(in oklch, var(--tone) 7%, transparent), transparent 5rem), /* token-ok */
+      var(--bg-surface);
+    border: var(--border-w) solid color-mix(in oklch, var(--tone) 35%, var(--border));
+    border-left: var(--indicator-w) solid var(--tone); /* token-ok */
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
   }
+  .conn-card[data-status='healthy'] { --tone: var(--success); }
+  .conn-card[data-status='degraded'] { --tone: var(--warning); }
+  .conn-card[data-status='circuit_open'] { --tone: var(--danger); }
+  .conn-card[data-status='cooldown'] { --tone: var(--cooldown); }
 
-  .field label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
+  .conn-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
-
-  .field input {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+  .conn-title {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0);
+    min-width: 0;
+    flex: 1 1 var(--col-sm);
+  }
+  .conn-id {
     color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
-    transition: border-color 0.15s;
-    width: 100%;
-    box-sizing: border-box;
+    font-weight: var(--weight-semibold);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .conn-provider {
+    color: var(--text-3);
+    font-size: var(--text-sm);
   }
 
-  .field input:focus {
-    border-color: var(--accent);
-    outline: none;
+  .conn-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
   }
-
-  .field input::placeholder {
+  .conn-label {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
     color: var(--text-3);
   }
 
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
+  .cooldown-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0);
+    font-size: var(--text-sm);
+    color: var(--text-1);
   }
+  .cooldown-until { color: var(--tone); font-weight: var(--weight-medium); }
+  .conn-card[data-status='healthy'] .cooldown-until { color: var(--text-1); }
 
-  @keyframes slideIn {
-    from { opacity: 0; transform: translate(-50%, -48%); }
-    to { opacity: 1; transform: translate(-50%, -50%); }
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-
-  .actions-cell {
-    text-align: right;
-  }
-
-  .row-actions {
-    display: inline-flex;
-    gap: 6px;
-    justify-content: flex-end;
-  }
-
-  .models-cell {
-    max-width: 22rem;
+  .hint {
+    font-size: var(--text-xs);
+    color: var(--text-3);
   }
 
   .model-chips {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 4px;
+    gap: var(--space-1);
   }
-
   .model-chip {
-    font-family: monospace;
-    font-size: 0.75rem;
-    padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    padding: var(--space-0) var(--space-2);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-inset);
     color: var(--text-1);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
-
   .model-chip.pattern {
     border-style: dashed;
-    color: var(--text-3);
+    color: var(--text-2);
+  }
+
+  .conn-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: auto;
+    padding-top: var(--space-4);
+    border-top: var(--border-w) solid var(--border);
+  }
+  .conn-actions :global(button) { min-height: var(--control-h-sm); }
+  .conn-actions :global(button:last-child) { margin-left: auto; }
+
+  .yaml-step { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5); }
+  .yaml-note, .yaml-env-note { margin: 0; font-size: var(--text-sm); color: var(--text-2); }
+  .yaml-block {
+    position: relative;
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3);
+  }
+  .yaml-code {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading);
+    margin: 0;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text-1);
   }
 
   .confirm {
-    padding: 20px;
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-3);
   }
-
   :global(.confirm-desc) {
-    font-size: 0.875rem;
+    font-size: var(--text-sm);
     color: var(--text-2);
     margin: 0;
   }
-
   .confirm-footer {
     display: flex;
+    flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--space-2);
   }
-
   :global(.confirm-btn) {
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    padding: 0.4375rem 0.875rem;
-    border: 1px solid transparent;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    min-height: var(--control-h-sm);
+    padding: var(--space-2) var(--space-4);
+    border: var(--border-w) solid transparent;
   }
-
   :global(.confirm-btn.outline) {
     background: transparent;
     color: var(--text-2);
     border-color: var(--border-strong);
   }
-
+  :global(.confirm-btn.outline:hover) { background: var(--bg-hover); color: var(--text-1); }
   :global(.confirm-btn.danger) {
     background: var(--danger);
-    color: #fff;
+    color: var(--on-accent);
   }
-
   :global(.confirm-btn:disabled) {
     opacity: 0.45;
     cursor: not-allowed;

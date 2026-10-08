@@ -6,7 +6,7 @@
     size?: number;
   }
 
-  let { status, size = 8 }: Props = $props();
+  let { status, size }: Props = $props();
 
   const colorMap: Record<string, string> = {
     healthy: 'var(--success)',
@@ -22,7 +22,7 @@
 <span
   class="dot"
   class:pulse
-  style="--dot-color: {color}; --dot-size: {size}px"
+  style="--dot-color: {color};{size ? ` --dot-size: ${size}px` : ''}"
   title={status}
 ></span>
 
@@ -31,17 +31,17 @@
     display: inline-block;
     width: var(--dot-size);
     height: var(--dot-size);
-    border-radius: 2px;
+    border-radius: 50%;
     background: var(--dot-color);
     flex-shrink: 0;
   }
 
   @keyframes pulse {
     0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--dot-color) 50%, transparent); }
-    50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--dot-color) 0%, transparent); }
+    50% { box-shadow: 0 0 0 var(--space-1) color-mix(in oklch, var(--dot-color) 0%, transparent); }
   }
 
   .pulse {
-    animation: pulse 2.5s ease-in-out infinite;
+    animation: pulse var(--dur-pulse) ease-in-out infinite;
   }
 </style>

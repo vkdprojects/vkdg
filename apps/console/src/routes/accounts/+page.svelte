@@ -86,7 +86,9 @@
 <div class="page">
   <div class="page-header">
     <h1 class="page-title">{m.nav_accounts()}</h1>
-    <Button size="sm" onclick={() => connect()}>{m.acct_connect()}</Button>
+    <div class="page-actions">
+      <Button onclick={() => connect()}>{m.acct_connect()}</Button>
+    </div>
   </div>
 
   {#if loading}
@@ -98,7 +100,7 @@
     <div class="account-grid">
       {#each accounts as account (account.id)}
         <Card padding="0">
-          <article class="account-card">
+          <article class="account-card" class:needs-login={account.status === 'needs_login'}>
             <header class="account-header">
               <div class="account-identity">
                 <span class="provider mono">{account.provider}</span>
@@ -181,158 +183,200 @@
 </AlertDialog.Root>
 
 <style>
-  .page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1.5rem;
-  }
-
-  .page-header h1 {
-    margin: 0;
-  }
-
   .loading {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     color: var(--text-3);
-    font-size: 0.875rem;
-    padding: 16px 0;
+    font-size: var(--text-base);
+    padding: var(--space-4) 0;
   }
 
-  .overview-slot { margin-bottom: 1rem; }
+  .overview-slot { margin-bottom: var(--space-5); }
 
   .account-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-lg)), 1fr));
+    gap: var(--space-4);
+    align-items: stretch;
   }
 
   .account-card {
-    min-height: 100%;
-    padding: 1rem;
+    height: 100%;
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--space-4);
+    min-width: 0;
+  }
+
+  /* Credential needing attention: tint the edge, text still says why. */
+  .account-card.needs-login {
+    box-shadow: inset var(--indicator-w) 0 0 var(--warning);
+    border-radius: var(--radius-lg);
   }
 
   .account-header,
-  .account-details,
   .account-actions {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
 
   .account-identity {
     min-width: 0;
+    flex: 1 1 var(--col-sm);
   }
 
   .account-identity h2 {
-    margin: 3px 0 0;
+    margin: var(--space-1) 0 0;
     color: var(--text-1);
-    font-size: 0.9375rem;
-    line-height: 1.25;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     overflow-wrap: anywhere;
   }
 
-  .provider,
-  .detail-label {
-    color: var(--text-3);
+  .provider {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-0) var(--space-2);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
+    color: var(--text-2);
     font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
   }
 
   .account-status {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-2);
     flex-shrink: 0;
   }
 
+  /* Credential health strip: expiry + refresh-token presence. */
   .account-details {
-    padding-top: 0.75rem;
-    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .detail {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0);
+    min-width: 0;
+  }
+
+  .detail-label {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+
+  .detail-value {
+    color: var(--text-1);
+    font-size: var(--text-sm);
   }
 
   /* AccountCredits' panel variant is styled to bleed to a full-width strip
      (as on the provider detail page); cancel this card's own padding so it
      touches the card edges instead of floating as an inset box. */
   .credits-bleed {
-    margin: 0 -1rem;
-  }
-
-  .detail {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .detail-value {
-    color: var(--text-2);
-    font-size: 0.8125rem;
+    margin: 0 calc(var(--space-5) * -1);
   }
 
   .reason {
-    margin: -0.25rem 0 0;
-    padding: 0.625rem 0.75rem;
-    border-left: 2px solid var(--warning);
-    background: color-mix(in oklch, var(--warning) 7%, transparent);
-    color: var(--text-2);
-    font-size: 0.75rem;
-    line-height: 1.45;
+    margin: 0;
+    padding: var(--space-3) var(--space-4);
+    border-left: var(--focus-w) solid var(--warning);
+    border-radius: var(--radius-sm);
+    background: var(--warning-subtle);
+    color: var(--text-1);
+    font-size: var(--text-xs);
+    line-height: var(--leading);
     overflow-wrap: anywhere;
   }
 
   .account-actions {
     justify-content: flex-end;
+    align-items: center;
     margin-top: auto;
+    padding-top: var(--space-4);
+    border-top: var(--border-w) solid var(--border);
   }
 
   .account-actions :global(.btn + .btn) {
     margin-left: 0;
   }
 
+  @media (max-width: 480px) {
+    .account-actions { justify-content: stretch; }
+    .account-actions :global(.btn) { flex: 1 1 auto; }
+  }
+
   .confirm {
-    padding: 20px;
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-4);
+    overflow-y: auto;
   }
 
   :global(.confirm-desc) {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     color: var(--text-2);
     margin: 0;
+    line-height: var(--leading);
   }
 
   .confirm-footer {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--space-2);
+    flex-wrap: wrap;
   }
 
   :global(.confirm-btn) {
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius);
     cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    padding: 0.4375rem 0.875rem;
-    border: 1px solid transparent;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    min-height: var(--control-h);
+    padding: 0 var(--space-4);
+    border: var(--border-w) solid transparent;
+  }
+
+  :global(.confirm-btn:focus-visible) {
+    outline: var(--focus-w) solid var(--accent);
+    outline-offset: var(--focus-w);
   }
 
   :global(.confirm-btn.outline) {
     background: transparent;
-    color: var(--text-2);
+    color: var(--text-1);
     border-color: var(--border-strong);
+  }
+
+  :global(.confirm-btn.outline:hover) {
+    background: var(--bg-hover);
   }
 
   :global(.confirm-btn.danger) {
     background: var(--danger);
-    color: #fff;
+    color: var(--on-accent);
+  }
+
+  :global(.confirm-btn.danger:hover:not(:disabled)) {
+    background: color-mix(in oklch, var(--danger) 88%, var(--text-1));
   }
 
   :global(.confirm-btn:disabled) {

@@ -3,9 +3,11 @@
     /** Width in pixels. Height scales automatically (square-ish character). */
     size?: number;
     class?: string;
+    /** Soft accent glow behind the mark; use for hero placements only. */
+    glow?: boolean;
   }
 
-  let { size = 32, class: className = '' }: Props = $props();
+  let { size = 32, class: className = '', glow = false }: Props = $props();
 </script>
 
 <!--
@@ -17,7 +19,19 @@
   alt="VKDG"
   width={size}
   height={size}
-  class={className}
-  style="display:block;flex-shrink:0;object-fit:contain"
+  class="logo {className}"
+  class:glow
   aria-hidden="true"
 />
+
+<style>
+  .logo {
+    display: block;
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+
+  .glow {
+    filter: drop-shadow(0 var(--space-1) var(--space-4) color-mix(in oklch, var(--accent) 55%, transparent));
+  }
+</style>

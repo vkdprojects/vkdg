@@ -82,12 +82,15 @@
 {/if}
 
 <style>
-  .limits[data-variant='panel'] { padding: 11px 16px; background: var(--bg-inset); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
-  .limits[data-variant='compact'] { display: flex; flex-direction: column; gap: 4px; min-width: 11rem; }
-  .limits-head { display: flex; align-items: center; gap: 8px; color: var(--text-1); font-size: var(--text-sm); font-weight: 600; }
-  .plan-name { color: var(--text-3); font-size: var(--text-xs); font-weight: 500; text-transform: none; }
+  .limits[data-variant='panel'] { padding: var(--space-3) var(--space-4); background: var(--bg-inset); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: var(--space-3); }
+  .limits[data-variant='compact'] { display: flex; flex-direction: column; gap: var(--space-1); min-width: min(var(--col-sm), 100%); }
+  .limits-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-semibold); }
+  .plan-name {
+    color: var(--accent-strong); background: var(--accent-subtle); border-radius: var(--radius-full);
+    padding: var(--space-0) var(--space-3); font-size: var(--text-xs); font-weight: var(--weight-medium);
+  }
   .limits p { margin: 0; font-size: var(--text-xs); color: var(--text-2); }
-  .limits-foot { display: flex; justify-content: space-between; gap: 8px; font-size: var(--text-2xs); color: var(--text-3); }
+  .limits-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-2); font-size: var(--text-2xs); color: var(--text-3); }
   .limits-foot .checked-at { color: var(--text-3); }
   .compact-plan { color: var(--text-3); font-size: var(--text-2xs); }
   .no-credits { color: var(--text-3); }

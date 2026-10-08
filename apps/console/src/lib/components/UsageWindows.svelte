@@ -38,5 +38,5 @@
 </div>
 
 <style>
-  .windows { display: flex; flex-direction: column; gap: 10px; }
+  .windows { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 </style>

@@ -221,126 +221,41 @@
     <h1 class="page-title">{m.nav_keys()}</h1>
   </div>
 
-  <section aria-labelledby="create-heading" class="create-section">
-    <h2 id="create-heading">{m.key_create()}</h2>
-    <form onsubmit={createKey} class="create-form">
-      <div class="create-columns">
-        <div class="create-column">
-          <div class="field">
-            <label for="key-name">{m.key_name()}</label>
-            <input id="key-name" type="text" bind:value={keyName} required placeholder="e.g. ci-runner" />
-          </div>
-
-          <fieldset class="role-group">
-            <legend>{m.key_scopes()}</legend>
-            <label class="role-option">
-              <input type="checkbox" value="data_inference" bind:group={scopes} />
-              <span class="role-info">
-                <span class="role-label">{m.key_scope_inference()}</span>
-                <span class="role-desc">{m.key_scope_inference_desc()}</span>
-              </span>
-            </label>
-            <label class="role-option">
-              <input type="checkbox" value="data_image" bind:group={scopes} />
-              <span class="role-info">
-                <span class="role-label">{m.key_scope_image()}</span>
-                <span class="role-desc">{m.key_scope_image_desc()}</span>
-              </span>
-            </label>
-          </fieldset>
-        </div>
-
-        <fieldset class="role-group limits create-column">
-          <legend>{m.key_limits()}</legend>
-          <div class="field">
-            <label for="key-expires">{m.key_expires_on()}</label>
-            <input id="key-expires" type="date" bind:value={expiresOn} />
-          </div>
-          <div class="field">
-            <label for="key-models">{m.key_allowed_models()}</label>
-            <textarea id="key-models" rows="2" bind:value={allowedModels} placeholder="claude-*, gpt-5*" aria-describedby="key-models-hint"></textarea>
-            <span id="key-models-hint" class="hint">{m.key_allowed_models_hint()}</span>
-          </div>
-          <div class="field">
-            <label for="key-ips">{m.key_allowed_ips()}</label>
-            <textarea id="key-ips" rows="2" bind:value={allowedIps} placeholder="10.0.0.0/8" aria-describedby="key-ips-hint"></textarea>
-            <span id="key-ips-hint" class="hint">{m.key_allowed_ips_hint()}</span>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="key-tokens">{m.key_monthly_tokens()}</label>
-              <input id="key-tokens" type="number" min="1" step="1" bind:value={monthlyTokens} aria-describedby="key-unlimited-hint" />
-            </div>
-            <div class="field">
-              <label for="key-rpm">{m.key_rpm()}</label>
-              <input id="key-rpm" type="number" min="1" step="1" bind:value={rpm} aria-describedby="key-unlimited-hint" />
-            </div>
-          </div>
-          <span id="key-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
-          <label class="check-row">
-            <input type="checkbox" bind:checked={noLog} aria-describedby="key-no-log-hint" />
-            <span>{m.key_no_log()}</span>
-          </label>
-          <span id="key-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
-        </fieldset>
-      </div>
-
-      <!-- Backend 400s (bad CIDR, bad date…) render here, next to the form. -->
-      {#if formError}
-        <p class="error-msg" role="alert">{formError}</p>
-      {/if}
-
-      <Button type="submit" disabled={submitting}>{m.key_create()}</Button>
-    </form>
-
+  <div class="stack">
     {#if createdKey}
       {@render secretReveal(createdKey.key, m.key_store_warning())}
     {/if}
-  </section>
-
-  <section aria-labelledby="keys-heading">
-    <h2 id="keys-heading">{m.nav_keys()} ({keys.length})</h2>
     {#if regenerated}
       {@render secretReveal(regenerated.key, `${m.key_regenerated_notice({ name: regenerated.name })}. ${m.key_store_warning()}`)}
     {/if}
-    {#if loading}
-      <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
-    {:else if keys.length === 0}
-      <EmptyState title={m.key_empty()} description={m.key_empty_desc()} />
-    {:else}
-      <div class="table-wrap">
-        <table class="key-table">
-          <thead>
-            <tr>
-              <th>{m.key_table_name()}</th>
-              <th>{m.key_status()}</th>
-              <th>{m.key_scopes()}</th>
-              <th>{m.key_table_usage()}</th>
-              <th>{m.key_table_restrictions()}</th>
-              <th><span class="sr-only">{m.key_table_actions()}</span></th>
-            </tr>
-          </thead>
-          <tbody>
+
+    <section aria-labelledby="keys-heading" class="panel">
+      <div class="panel-head">
+        <h2 id="keys-heading">{m.nav_keys()}</h2>
+        <span class="count">{keys.length}</span>
+      </div>
+      <div class="panel-body">
+        {#if loading}
+          <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
+        {:else if keys.length === 0}
+          <EmptyState title={m.key_empty()} description={m.key_empty_desc()} />
+        {:else}
+          <ul class="key-list">
             {#each keys as k (k.id)}
               {@const used = (k.usage_this_month?.input_tokens ?? 0) + (k.usage_this_month?.output_tokens ?? 0)}
               {@const restrictionCount = k.allowed_models.length + k.allowed_ips.length + (k.no_log ? 1 : 0)}
               {@const expanded = expandedId === k.id}
-              <tr class="key-row" class:expanded>
-                <td>
+              <li class="key-card" class:revoked={k.status === 'revoked'}>
+                <div class="key-top">
                   <div class="key-name-cell">
                     <span class="key-name">{k.name}</span>
                     <code class="key-prefix">{k.prefix}…</code>
                   </div>
-                </td>
-                <td><Badge status={k.status === 'active' ? 'healthy' : k.status === 'disabled' ? 'cancelled' : 'failed'} label={statusLabels[k.status]()} /></td>
-                <td>
-                  <div class="scope-list" aria-label={m.key_scopes()}>
-                    {#each k.scopes as scope}
-                      <span class="chip">{scope === 'data_image' ? m.key_scope_image() : m.key_scope_inference()}</span>
-                    {/each}
-                  </div>
-                </td>
-                <td>
+                  <Badge status={k.status === 'active' ? 'healthy' : k.status === 'disabled' ? 'cancelled' : 'failed'} label={statusLabels[k.status]()} />
+                </div>
+
+                <div class="key-usage">
+                  <span class="sr-only">{m.key_table_usage()}</span>
                   <div class:unlimited={k.monthly_token_limit == null} class="key-meter">
                     <Meter
                       value={used}
@@ -351,18 +266,61 @@
                       unlimitedText={m.key_no_limit()}
                     />
                   </div>
-                </td>
-                <td>
+                </div>
+
+                <div class="key-meta">
+                  <div class="scope-list" aria-label={m.key_scopes()}>
+                    {#each k.scopes as scope}
+                      <span class="chip">{scope === 'data_image' ? m.key_scope_image() : m.key_scope_inference()}</span>
+                    {/each}
+                  </div>
                   {#if restrictionCount === 0}
                     <span class="no-restrictions">{m.key_no_restrictions()}</span>
                   {:else}
                     <span class="mono restriction-count">{restrictionCount}</span>
                   {/if}
-                </td>
-                <td class="key-actions-cell">
+                </div>
+
+                {#if expanded}
+                  <div class="key-detail">
+                    <dl class="key-dates">
+                      <div>
+                        <dt>{m.key_expires()}</dt>
+                        <dd title={k.expires_at ? formatDateTime(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
+                      </div>
+                      <div>
+                        <dt>{m.key_created()}</dt>
+                        <dd>{formatDateTime(k.created_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>{m.key_last_used()}</dt>
+                        <dd>{k.last_used_at ? formatDateTime(k.last_used_at) : m.key_never()}</dd>
+                      </div>
+                      <div>
+                        <dt>{m.key_usage_requests({ n: k.usage_this_month?.requests ?? 0 })}</dt>
+                        <dd>{#if k.requests_per_minute != null}{m.key_rpm_summary({ rpm: formatNumber(k.requests_per_minute) })}{:else}—{/if}</dd>
+                      </div>
+                    </dl>
+                    <div class="restriction-list" aria-label={m.key_restrictions()}>
+                      {#each k.allowed_models as model}
+                        <span class="chip mono">{m.key_models_count({ list: model })}</span>
+                      {/each}
+                      {#each k.allowed_ips as ip}
+                        <span class="chip mono">{m.key_ips_count({ list: ip })}</span>
+                      {/each}
+                      {#if k.no_log}<span class="chip">{m.key_no_log_summary()}</span>{/if}
+                      {#if restrictionCount === 0}
+                        <span class="no-restrictions">{m.key_no_restrictions()}</span>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+
+                <div class="key-actions">
                   <button type="button" class="detail-toggle" onclick={() => (expandedId = expanded ? null : k.id)} aria-expanded={expanded}>
                     {expanded ? m.key_hide_details() : m.key_show_details()}
                   </button>
+                  <span class="spacer"></span>
                   {#if k.status !== 'revoked'}
                     <Button variant="outline" size="sm" onclick={() => openEdit(k)} ariaLabel={`${m.key_edit()} ${k.name}`}>{m.key_edit()}</Button>
                     <Button variant="outline" size="sm" disabled={busyId === k.id} onclick={() => regenerateKey(k)} ariaLabel={`${m.key_regenerate()} ${k.name}`}>{m.key_regenerate()}</Button>
@@ -373,66 +331,111 @@
                     {/if}
                     <Button variant="danger" size="sm" onclick={() => revokeKey(k.id)} ariaLabel={`${m.key_revoke()} ${k.name}`}>{m.key_revoke()}</Button>
                   {/if}
-                </td>
-              </tr>
-              {#if expanded}
-                <tr class="key-detail-row">
-                  <td colspan="6">
-                    <div class="key-detail">
-                      <dl class="key-dates">
-                        <div>
-                          <dt>{m.key_expires()}</dt>
-                          <dd title={k.expires_at ? formatDateTime(k.expires_at) : undefined}>{k.expires_at ? humanizeDate(k.expires_at) : m.key_never()}</dd>
-                        </div>
-                        <div>
-                          <dt>{m.key_created()}</dt>
-                          <dd>{formatDateTime(k.created_at)}</dd>
-                        </div>
-                        <div>
-                          <dt>{m.key_last_used()}</dt>
-                          <dd>{k.last_used_at ? formatDateTime(k.last_used_at) : m.key_never()}</dd>
-                        </div>
-                        <div>
-                          <dt>{m.key_usage_requests({ n: k.usage_this_month?.requests ?? 0 })}</dt>
-                          <dd>{#if k.requests_per_minute != null}{m.key_rpm_summary({ rpm: formatNumber(k.requests_per_minute) })}{:else}—{/if}</dd>
-                        </div>
-                      </dl>
-                      <div class="restriction-list" aria-label={m.key_restrictions()}>
-                        {#each k.allowed_models as model}
-                          <span class="chip mono">{m.key_models_count({ list: model })}</span>
-                        {/each}
-                        {#each k.allowed_ips as ip}
-                          <span class="chip mono">{m.key_ips_count({ list: ip })}</span>
-                        {/each}
-                        {#if k.no_log}<span class="chip">{m.key_no_log_summary()}</span>{/if}
-                        {#if restrictionCount === 0}
-                          <span class="no-restrictions">{m.key_no_restrictions()}</span>
-                        {/if}
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              {/if}
+                </div>
+              </li>
             {/each}
-          </tbody>
-        </table>
+          </ul>
+        {/if}
       </div>
-    {/if}
-  </section>
+    </section>
 
-  <section aria-labelledby="claude-heading">
-    <h2 id="claude-heading">{m.key_claude_code_heading()}</h2>
-    <p class="instructions">
-      Set <code>ANTHROPIC_BASE_URL=http://localhost:8080</code> and
-      <code>ANTHROPIC_API_KEY=&lt;your-key&gt;</code> in your Claude Code config.
-    </p>
-  </section>
+    <section aria-labelledby="create-heading" class="panel">
+      <div class="panel-head">
+        <h2 id="create-heading">{m.key_create()}</h2>
+      </div>
+      <div class="panel-body">
+        <form onsubmit={createKey} class="create-form">
+          <div class="create-columns">
+            <div class="create-column">
+              <div class="field">
+                <label for="key-name">{m.key_name()}</label>
+                <input id="key-name" type="text" bind:value={keyName} required placeholder="e.g. ci-runner" />
+              </div>
+
+              <fieldset class="role-group">
+                <legend>{m.key_scopes()}</legend>
+                <label class="role-option">
+                  <input type="checkbox" value="data_inference" bind:group={scopes} />
+                  <span class="role-info">
+                    <span class="role-label">{m.key_scope_inference()}</span>
+                    <span class="role-desc">{m.key_scope_inference_desc()}</span>
+                  </span>
+                </label>
+                <label class="role-option">
+                  <input type="checkbox" value="data_image" bind:group={scopes} />
+                  <span class="role-info">
+                    <span class="role-label">{m.key_scope_image()}</span>
+                    <span class="role-desc">{m.key_scope_image_desc()}</span>
+                  </span>
+                </label>
+              </fieldset>
+            </div>
+
+            <fieldset class="role-group limits create-column">
+              <legend>{m.key_limits()}</legend>
+              <div class="field">
+                <label for="key-expires">{m.key_expires_on()}</label>
+                <input id="key-expires" type="date" bind:value={expiresOn} />
+              </div>
+              <div class="field">
+                <label for="key-models">{m.key_allowed_models()}</label>
+                <textarea id="key-models" rows="2" bind:value={allowedModels} placeholder="claude-*, gpt-5*" aria-describedby="key-models-hint"></textarea>
+                <span id="key-models-hint" class="field-hint">{m.key_allowed_models_hint()}</span>
+              </div>
+              <div class="field">
+                <label for="key-ips">{m.key_allowed_ips()}</label>
+                <textarea id="key-ips" rows="2" bind:value={allowedIps} placeholder="10.0.0.0/8" aria-describedby="key-ips-hint"></textarea>
+                <span id="key-ips-hint" class="field-hint">{m.key_allowed_ips_hint()}</span>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="key-tokens">{m.key_monthly_tokens()}</label>
+                  <input id="key-tokens" type="number" min="1" step="1" bind:value={monthlyTokens} aria-describedby="key-unlimited-hint" />
+                </div>
+                <div class="field">
+                  <label for="key-rpm">{m.key_rpm()}</label>
+                  <input id="key-rpm" type="number" min="1" step="1" bind:value={rpm} aria-describedby="key-unlimited-hint" />
+                </div>
+              </div>
+              <span id="key-unlimited-hint" class="field-hint">{m.key_unlimited_hint()}</span>
+              <label class="check-row">
+                <input type="checkbox" bind:checked={noLog} aria-describedby="key-no-log-hint" />
+                <span>{m.key_no_log()}</span>
+              </label>
+              <span id="key-no-log-hint" class="field-hint">{m.key_no_log_hint()}</span>
+            </fieldset>
+          </div>
+
+          <!-- Backend 400s (bad CIDR, bad date…) render here, next to the form. -->
+          {#if formError}
+            <p class="error-msg" role="alert">{formError}</p>
+          {/if}
+
+          <div class="form-actions">
+            <Button type="submit" disabled={submitting}>{m.key_create()}</Button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section aria-labelledby="claude-heading" class="panel">
+      <div class="panel-head">
+        <h2 id="claude-heading">{m.key_claude_code_heading()}</h2>
+      </div>
+      <div class="panel-body">
+        <p class="instructions">
+          Set <code>ANTHROPIC_BASE_URL=http://localhost:8080</code> and
+          <code>ANTHROPIC_API_KEY=&lt;your-key&gt;</code> in your Claude Code config.
+        </p>
+      </div>
+    </section>
+  </div>
 </div>
 
 {#snippet secretReveal(secret: string, notice: string)}
   <div class="created-key" role="alert">
     <div class="created-header">
-      <svg class="warning-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg class="warning-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
         <path d="M12 9v4"/><path d="M12 17h.01"/>
       </svg>
@@ -465,17 +468,17 @@
         <div class="field">
           <label for="edit-expires">{m.key_expires_on()}</label>
           <input id="edit-expires" type="date" bind:value={editExpiresOn} aria-describedby="edit-expires-hint" />
-          <span id="edit-expires-hint" class="hint">{m.key_expiry_hint()}</span>
+          <span id="edit-expires-hint" class="field-hint">{m.key_expiry_hint()}</span>
         </div>
         <div class="field">
           <label for="edit-models">{m.key_allowed_models()}</label>
           <textarea id="edit-models" rows="2" bind:value={editModels} aria-describedby="edit-models-hint"></textarea>
-          <span id="edit-models-hint" class="hint">{m.key_allowed_models_hint()}</span>
+          <span id="edit-models-hint" class="field-hint">{m.key_allowed_models_hint()}</span>
         </div>
         <div class="field">
           <label for="edit-ips">{m.key_allowed_ips()}</label>
           <textarea id="edit-ips" rows="2" bind:value={editIps} aria-describedby="edit-ips-hint"></textarea>
-          <span id="edit-ips-hint" class="hint">{m.key_allowed_ips_hint()}</span>
+          <span id="edit-ips-hint" class="field-hint">{m.key_allowed_ips_hint()}</span>
         </div>
         <div class="field-row">
           <div class="field">
@@ -487,12 +490,12 @@
             <input id="edit-rpm" type="number" min="1" step="1" bind:value={editRpm} aria-describedby="edit-unlimited-hint" />
           </div>
         </div>
-        <span id="edit-unlimited-hint" class="hint">{m.key_unlimited_hint()}</span>
+        <span id="edit-unlimited-hint" class="field-hint">{m.key_unlimited_hint()}</span>
         <label class="check-row">
           <input type="checkbox" bind:checked={editNoLog} aria-describedby="edit-no-log-hint" />
           <span>{m.key_no_log()}</span>
         </label>
-        <span id="edit-no-log-hint" class="hint">{m.key_no_log_hint()}</span>
+        <span id="edit-no-log-hint" class="field-hint">{m.key_no_log_hint()}</span>
 
         {#if editError}
           <p class="error-msg" role="alert">{editError}</p>
@@ -511,275 +514,271 @@
   .loading {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     color: var(--text-3);
-    font-size: 0.875rem;
-    padding: 16px 0;
+    font-size: var(--text-base);
+    padding: var(--space-4) 0;
   }
 
-  .create-section {
-    margin-bottom: 36px;
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
   }
 
+  .stack > :global(section) { margin-bottom: 0; }
+
+  .count {
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ───── Create form ───── */
   .create-form {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    max-width: 1100px;
+    gap: var(--space-5);
   }
 
-  /*
-   * Two-column layout: identity/scopes on the left, limits/restrictions on
-   * the right. Previously a single ~480px column left most of the page
-   * empty on anything wider than a laptop; this uses the room the page
-   * already has (see .page max-width in app.css) instead of stretching a
-   * narrow strip down the left edge.
-   */
   .create-columns {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 20px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-lg)), 1fr));
+    gap: var(--space-5);
     align-items: start;
   }
 
   .create-column {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--space-4);
+    min-width: 0;
   }
 
-  @media (max-width: 800px) {
-    .create-columns { grid-template-columns: 1fr; }
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .field label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-  }
-
-  .field input,
-  .field textarea {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
-    transition: border-color 0.15s;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  .field textarea {
-    font-family: inherit;
-    resize: vertical;
-  }
-
-  .field input:focus,
-  .field textarea:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  .field input::placeholder {
-    color: var(--text-3);
-  }
+  .field { min-width: 0; }
+  .field textarea { resize: vertical; }
 
   .role-group {
-    border: 1px solid var(--border);
+    border: var(--border-w) solid var(--border);
     border-radius: var(--radius);
-    padding: 0 12px 12px;
+    background: var(--bg-inset);
+    padding: 0 var(--space-4) var(--space-4);
     margin: 0;
+    min-width: 0;
   }
 
   .role-group legend {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-    padding: 0 4px;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    color: var(--text-1);
+    padding: 0 var(--space-2);
   }
 
   .limits {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding-top: 8px;
-  }
-
-  .field-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-  }
-
-  .hint {
-    font-size: 0.75rem;
-    color: var(--text-3);
+    gap: var(--space-3);
+    padding-top: var(--space-2);
   }
 
   .check-row {
-    display: flex;
+    flex-direction: row;
     align-items: center;
-    gap: 8px;
-    margin-top: 8px;
-    font-size: 0.875rem;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    min-height: var(--control-h);
+    font-size: var(--text-base);
+    font-weight: var(--weight-regular);
+    color: var(--text-1);
+    cursor: pointer;
   }
 
+  .check-row input { width: var(--icon); height: var(--icon); flex-shrink: 0; }
 
   .role-option {
-    display: flex;
+    flex-direction: row;
     align-items: flex-start;
-    gap: 10px;
-    padding: 8px 4px;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-1);
+    min-height: var(--control-h-lg);
     cursor: pointer;
     border-radius: var(--radius-sm);
+    font-weight: var(--weight-regular);
   }
 
   .role-option:not(:last-child) {
-    border-bottom: 1px solid var(--border);
+    border-bottom: var(--border-w) solid var(--border);
   }
 
   .role-option input[type='checkbox'] {
-    margin-top: 2px;
-    accent-color: var(--accent);
+    margin-top: var(--space-0);
+    width: var(--icon);
+    height: var(--icon);
     flex-shrink: 0;
   }
 
   .role-info {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-0);
+    min-width: 0;
   }
 
   .role-label {
-    font-size: 0.875rem;
-    font-weight: 500;
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
     color: var(--text-1);
   }
 
   .role-desc {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-regular);
     color: var(--text-3);
   }
 
+  .form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  /* ───── Revealed secret: the one bold moment on this page ───── */
   .created-key {
-    margin-top: 16px;
-    background: color-mix(in oklch, var(--warning) 8%, transparent);
-    border: 1px solid color-mix(in oklch, var(--warning) 30%, transparent);
-    border-radius: var(--radius);
-    padding: 16px;
+    margin-bottom: var(--space-5);
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    max-width: 600px;
+    gap: var(--space-4);
+    border-radius: var(--radius-lg);
+    border: var(--border-w) solid var(--accent);
+    background: color-mix(in oklch, var(--accent) 14%, var(--bg-surface));
+    box-shadow: var(--glow);
+    animation: reveal var(--dur-3) var(--ease-spring);
+  }
+
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(calc(-1 * var(--space-2))) scale(0.985); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .created-key { animation: none; }
   }
 
   .created-header {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: flex-start;
+    gap: var(--space-3);
   }
 
   .warning-icon {
     color: var(--warning);
     flex-shrink: 0;
+    margin-top: var(--space-0);
   }
 
   .created-notice {
-    font-size: 0.875rem;
-    color: var(--warning);
-    font-weight: 600;
+    font-size: var(--text-base);
+    color: var(--text-1);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading);
   }
 
   .key-box {
-    background: var(--bg-base);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 12px 16px;
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: var(--space-4);
     overflow-x: auto;
   }
 
   .key-value {
-    font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
-    font-size: 0.875rem;
+    display: block;
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-md);
     color: var(--text-1);
     word-break: break-all;
     white-space: pre-wrap;
+    user-select: all;
   }
 
   .key-copy-row {
     display: flex;
+    justify-content: flex-end;
   }
 
-  .error-msg {
-    margin-top: 8px;
-    font-size: 0.8125rem;
-    color: var(--danger);
+  /* ───── Key list ───── */
+  .key-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-xl)), 1fr));
+    gap: var(--space-4);
+    align-items: start;
   }
 
-
-  .table-wrap {
-    overflow-x: auto;
-    border: 1px solid var(--border);
+  .key-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-5);
     background: var(--bg-surface);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+    min-width: 0;
   }
 
-  .key-table {
-    width: 100%;
-    border-collapse: collapse;
-  }
+  .key-card.revoked { background: var(--bg-inset); box-shadow: none; }
+  .key-card.revoked .key-name { color: var(--text-2); }
 
-  .key-table th {
-    text-align: left;
-    padding: 0.625rem 0.875rem;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-3);
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    white-space: nowrap;
-  }
-
-  .key-table td {
-    padding: 0.5rem 0.875rem;
-    border-bottom: 1px solid var(--border);
-    vertical-align: middle;
-  }
-
-  .key-row:last-child td,
-  .key-detail-row:last-child td {
-    border-bottom: 0;
-  }
-
-  .key-row.expanded td {
-    border-bottom: 1px solid var(--border);
+  .key-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
   }
 
   .key-name-cell {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
-    min-width: 9rem;
+    gap: var(--space-1);
+    min-width: 0;
   }
 
   .key-name {
     color: var(--text-1);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
     overflow-wrap: anywhere;
   }
 
   .key-prefix {
+    align-self: flex-start;
     color: var(--text-3);
     font-size: var(--text-xs);
+  }
+
+  .key-usage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .key-meter { width: 100%; }
+  .key-meter.unlimited :global(.meter-track) { display: none; }
+  .key-meter :global(.meter-label) { display: none; }
+
+  .key-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .scope-list,
@@ -787,62 +786,59 @@
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0.375rem;
+    gap: var(--space-2);
   }
-
-  .key-meter {
-    min-width: 11rem;
-    max-width: 16rem;
-  }
-
-  .key-meter.unlimited :global(.meter-track) { display: none; }
-  .key-meter :global(.meter-label) { display: none; }
 
   .restriction-count {
     color: var(--text-2);
     font-size: var(--text-xs);
   }
 
-  .key-actions-cell {
+  .no-restrictions {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+
+  .key-actions {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.375rem;
-    text-align: right;
+    gap: var(--space-2);
+    padding-top: var(--space-4);
+    border-top: var(--border-w) solid var(--border);
   }
+
+  .key-actions .spacer { flex: 1 1 auto; }
 
   .detail-toggle {
     background: transparent;
-    border: 1px solid var(--border);
+    border: var(--border-w) solid transparent;
     border-radius: var(--radius-sm);
     color: var(--text-2);
-    font-size: var(--text-xs);
-    padding: 0.3125rem 0.625rem;
+    font-size: var(--text-sm);
+    min-height: var(--control-h-sm);
+    padding: 0 var(--space-3);
     cursor: pointer;
-    transition: border-color 0.15s, color 0.15s;
   }
 
   .detail-toggle:hover {
     color: var(--text-1);
-    border-color: var(--text-3);
-  }
-
-  .key-detail-row td {
-    background: color-mix(in oklch, var(--bg-inset) 60%, transparent);
-    padding: 0.875rem 1rem;
+    background: var(--bg-hover);
   }
 
   .key-detail {
     display: flex;
     flex-direction: column;
-    gap: 0.875rem;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    background: var(--bg-inset);
+    border-radius: var(--radius);
   }
 
   .key-dates {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-sm)), 1fr));
+    gap: var(--space-4);
     margin: 0;
   }
 
@@ -850,135 +846,43 @@
 
   .key-dates dt {
     color: var(--text-3);
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    font-size: var(--text-xs);
   }
 
   .key-dates dd {
-    margin: 0.375rem 0 0;
-    color: var(--text-2);
+    margin: var(--space-1) 0 0;
+    color: var(--text-1);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    white-space: nowrap;
+    overflow-wrap: anywhere;
   }
 
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 1.375rem;
-    padding: 0.125rem 0.4375rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
-    color: var(--text-2);
-    font-size: var(--text-2xs);
-    line-height: 1.2;
-  }
-
-  .mono { font-family: var(--font-mono); }
-
-  .no-restrictions {
-    color: var(--text-3);
-    font-size: var(--text-xs);
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
-
-  @media (max-width: 900px) {
-    .key-dates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-
-  @media (max-width: 600px) {
-    .key-dates { grid-template-columns: 1fr; }
-  }
-
-
+  /* ───── Edit dialog ───── */
   .edit-form {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 20px;
-    max-height: calc(100vh - 120px);
+    gap: var(--space-4);
+    padding: var(--space-5);
     overflow-y: auto;
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
-  .dialog-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px 20px 0;
+  /* Footer lives inside the padded form: plain button row, no extra chrome. */
+  .edit-form .dialog-footer {
+    padding: 0;
+    border-top: 0;
   }
 
-  .dialog-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  /* Same global dialog chrome as the connections and accounts pages. */
-  :global(.dialog-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 50;
-  }
-
-  :global(.dialog-content) {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 51;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    width: min(480px, calc(100vw - 32px));
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-  }
-
-  :global(.dialog-title) {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text-1);
+  .instructions {
+    font-size: var(--text-base);
+    color: var(--text-2);
+    line-height: var(--leading);
     margin: 0;
   }
 
-  :global(.dialog-close) {
-    display: flex;
-    background: transparent;
-    border: none;
-    color: var(--text-3);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-  }
-
-  :global(.dialog-close:hover) {
-    color: var(--text-1);
-    background: var(--bg-hover);
-  }
-
-
-  .instructions {
-    font-size: 0.875rem;
-    color: var(--text-2);
-    line-height: 1.6;
-  }
-
   .instructions code {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 1px 5px;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-1);
   }
 </style>

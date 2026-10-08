@@ -13,7 +13,7 @@
 
 <div class="empty-state">
   {#if icon}
-    <div class="icon">{@render icon()}</div>
+    <div class="icon" aria-hidden="true">{@render icon()}</div>
   {/if}
   <p class="title">{title}</p>
   {#if description}
@@ -30,22 +30,31 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    padding: 3rem 1.5rem;
+    gap: var(--space-2);
+    padding: var(--space-7) var(--space-5);
     text-align: center;
-    border: 1px dashed var(--border);
-    border-radius: var(--radius);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklch, var(--bg-surface) 60%, transparent);
   }
 
   .icon {
-    color: var(--text-3);
-    margin-bottom: 0.25rem;
+    display: grid;
+    place-items: center;
+    width: var(--space-7);
+    height: var(--space-7);
+    border-radius: var(--radius-full);
+    background: var(--accent-subtle);
+    box-shadow: 0 0 0 var(--space-2) color-mix(in oklch, var(--accent) 6%, transparent);
+    color: var(--accent);
+    margin-bottom: var(--space-2);
   }
 
   .title {
     font-size: var(--text-md);
-    font-weight: 500;
-    color: var(--text-2);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text-1);
     margin: 0;
   }
 
@@ -53,10 +62,14 @@
     font-size: var(--text-sm);
     color: var(--text-3);
     margin: 0;
-    max-width: 320px;
+    max-width: 36ch;
   }
 
   .action {
-    margin-top: 0.5rem;
+    margin-top: var(--space-3);
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--space-2);
   }
 </style>

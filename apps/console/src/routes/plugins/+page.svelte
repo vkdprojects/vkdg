@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { PluginSummary } from '$lib/api.js';
-  import { Badge, Card, EmptyState, Button, Spinner } from '$lib/components/index.js';
+  import { Badge, EmptyState, Button } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
   import { m } from '$lib/paraglide/messages.js';
 
@@ -101,67 +101,74 @@
 
 <div class="page">
   <div class="page-header">
-    <h1 class="page-title">{m.nav_plugins()} <span class="mono count">({plugins.length})</span></h1>
-    <Button onclick={openDialog}>{m.plugin_install()}</Button>
+    <div>
+      <h1>{m.nav_plugins()} <span class="count mono">{plugins.length}</span></h1>
+      {#if directory}
+        <p class="dir mono">{m.plugin_installed_to({ directory })}</p>
+      {/if}
+    </div>
+    <div class="page-actions">
+      <Button onclick={openDialog}>{m.plugin_install()}</Button>
+    </div>
   </div>
 
   {#if loading}
-    <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
+    <div class="plugin-grid" aria-busy="true">
+      <div class="skeleton plugin-skel"></div>
+      <div class="skeleton plugin-skel"></div>
+      <div class="skeleton plugin-skel"></div>
+    </div>
   {:else if plugins.length === 0}
     <EmptyState
       title={m.plugin_empty()}
       description={m.plugin_empty_desc()}
     />
   {:else}
-    <Card padding="0">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{m.plugin_name()}</th>
-            <th scope="col">{m.plugin_version()}</th>
-            <th scope="col">{m.plugin_kind()}</th>
-            <th scope="col">{m.plugin_models()}</th>
-            <th scope="col">{m.plugin_tags()}</th>
-            <th scope="col"><span class="sr-only">{m.common_actions()}</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each plugins as p (p.name)}
-            <tr>
-              <td>
-                <div class="plugin-name mono">{p.name}</div>
-                <div class="muted">{p.description}</div>
-              </td>
-              <td class="mono">{p.version}</td>
-              <td class="mono">{p.kind}</td>
-              <td class="muted">{p.models.join(', ') || m.common_none()}</td>
-              <td class="badges">
+    <div class="plugin-grid">
+      {#each plugins as p (p.name)}
+        <article class="plugin-card">
+          <header class="plugin-head">
+            <h3 class="plugin-name mono">{p.name}</h3>
+            <span class="plugin-version mono">{p.version}</span>
+          </header>
+          {#if p.description}<p class="plugin-desc">{p.description}</p>{/if}
+
+          <dl class="plugin-meta">
+            <div>
+              <dt>{m.plugin_kind()}</dt>
+              <dd class="mono">{p.kind}</dd>
+            </div>
+            <div>
+              <dt>{m.plugin_models()}</dt>
+              <dd class="models">{p.models.join(', ') || m.common_none()}</dd>
+            </div>
+            <div>
+              <dt>{m.plugin_tags()}</dt>
+              <dd class="badges">
                 {#each p.tags as tag (tag)}<Badge status="cooldown" label={tag} />{/each}
                 {#if p.tags.length === 0}<span class="muted">{m.common_none()}</span>{/if}
-              </td>
-              <td>
-                {#if p.removable}
-                  <Button variant="ghost" size="sm" onclick={() => remove(p.name)} ariaLabel={`${m.common_delete()} ${p.name}`}>{m.common_delete()}</Button>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </Card>
-  {/if}
+              </dd>
+            </div>
+          </dl>
 
-  {#if directory}
-    <p class="muted dir mono">{m.plugin_installed_to({ directory })}</p>
+          {#if p.removable}
+            <footer class="plugin-foot">
+              <Button variant="ghost" size="sm" onclick={() => remove(p.name)} ariaLabel={`${m.common_delete()} ${p.name}`}>{m.common_delete()}</Button>
+            </footer>
+          {/if}
+        </article>
+      {/each}
+    </div>
   {/if}
 </div>
 
-<dialog bind:this={dialogEl} class="modal" aria-labelledby="install-title">
-  <div class="modal-header">
-    <h2 id="install-title">{m.plugin_install()}</h2>
-    <button class="close-btn" onclick={closeDialog} aria-label={m.common_cancel()}>✕</button>
+<dialog bind:this={dialogEl} class="dialog-content" aria-labelledby="install-title">
+  <div class="dialog-header">
+    <h2 id="install-title" class="dialog-title">{m.plugin_install()}</h2>
+    <button class="dialog-close" onclick={closeDialog} aria-label={m.common_cancel()}>✕</button>
   </div>
-  <form onsubmit={install} class="modal-form">
+  <form onsubmit={install}>
+   <div class="dialog-body fields">
     <div class="field">
       <label for="manifest">{m.plugin_manifest_label()}</label>
       <textarea
@@ -179,8 +186,9 @@
     </div>
 
     {#if formError}<p class="form-error" role="alert">{formError}</p>{/if}
+   </div>
 
-    <div class="modal-actions">
+    <div class="dialog-footer">
       <Button type="button" variant="ghost" onclick={closeDialog}>{m.common_cancel()}</Button>
       <Button type="submit" disabled={installing}>
         {installing ? m.plugin_installing() : m.common_create()}
@@ -190,145 +198,152 @@
 </dialog>
 
 <style>
-  .page-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1.5rem;
-  }
-  .page-title {
-    margin: 0;
-  }
   .count {
     color: var(--text-3);
-    font-weight: 400;
+    font-weight: var(--weight-regular);
+    font-size: var(--text-md);
+    margin-left: var(--space-1);
   }
-  .loading {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-3);
-    font-size: var(--text-sm);
-    padding: 32px 0;
-  }
-  table {
-    margin: 0;
-  }
-  th:first-child,
-  td:first-child {
-    padding-left: 1.25rem;
-  }
-  th:last-child,
-  td:last-child {
-    padding-right: 1.25rem;
-  }
-  .plugin-name {
-    color: var(--text-1);
-    font-weight: 600;
-    font-size: var(--text-sm);
-  }
-  .muted {
-    color: var(--text-3);
-    font-size: var(--text-sm);
-  }
+
   .dir {
-    margin-top: 1rem;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
   }
+
+  .plugin-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-lg)), 1fr));
+    gap: var(--space-4);
+  }
+
+  .plugin-skel {
+    height: var(--col-sm);
+    border-radius: var(--radius-lg);
+  }
+
+  .plugin-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-5);
+    background: var(--bg-surface);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+    min-width: 0;
+  }
+
+  .plugin-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .plugin-name {
+    margin: 0;
+    font-size: var(--text-base);
+    font-weight: var(--weight-semibold);
+    color: var(--text-1);
+    overflow-wrap: anywhere;
+  }
+
+  .plugin-version {
+    flex: none;
+    color: var(--text-3);
+  }
+
+  .plugin-desc {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+
+  .plugin-meta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin: 0;
+    padding-top: var(--space-3);
+    border-top: var(--border-w) solid var(--border);
+    font-size: var(--text-sm);
+  }
+
+  .plugin-meta > div {
+    display: grid;
+    grid-template-columns: var(--col-xs) minmax(0, 1fr);
+    gap: var(--space-3);
+    align-items: baseline;
+  }
+
+  .plugin-meta dt {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+
+  .plugin-meta dd {
+    margin: 0;
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+  }
+
+  .models {
+    color: var(--text-2);
+  }
+
   .badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.25rem;
+    gap: var(--space-1);
   }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .modal {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text-1);
-    padding: 0;
-    width: min(560px, calc(100vw - 32px));
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
-  }
-  .modal::backdrop {
-    background: rgba(0, 0, 0, 0.5);
-  }
-  .modal-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 20px 24px 0;
-  }
-  .modal-header h2 {
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 0;
-  }
-  .close-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-3);
-    cursor: pointer;
-    font-size: 1rem;
-    line-height: 1;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-    transition: color 0.1s;
-  }
-  .close-btn:hover {
-    color: var(--text-1);
-  }
-  .modal-form {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 20px 24px 24px;
-  }
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-  .field label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-  }
-  textarea {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-family: var(--font-mono);
-    font-size: 0.8125rem;
-    padding: 0.4375rem 0.625rem;
-    width: 100%;
-    box-sizing: border-box;
-    transition: border-color 0.15s;
-  }
-  textarea:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-  input[type='file'] {
-    font-size: 0.8125rem;
-    color: var(--text-2);
-  }
-  .form-error {
-    font-size: 0.8125rem;
-    color: var(--danger);
-    margin: 0;
-  }
-  .modal-actions {
+
+  .plugin-foot {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 4px;
+    margin-top: auto;
+    padding-top: var(--space-1);
+  }
+
+  /* native <dialog>: global .dialog-content supplies chrome; reset UA defaults + style the backdrop */
+  dialog.dialog-content {
+    padding: 0;
+    margin: 0;
+    color: var(--text-1);
+    width: var(--dialog-w-lg);
+  }
+
+  dialog.dialog-content:not([open]) {
+    display: none;
+  }
+
+  dialog.dialog-content::backdrop {
+    background: var(--bg-scrim);
+    backdrop-filter: var(--glass-blur);
+  }
+
+  .dialog-content form {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+  }
+
+  textarea {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    resize: vertical;
+    min-height: var(--col-xs);
+  }
+
+  input[type='file'] {
+    font-size: var(--text-sm);
+    color: var(--text-2);
+    padding: var(--space-2);
+  }
+
+  .form-error {
+    font-size: var(--text-sm);
+    color: var(--danger);
+    margin: 0;
   }
 </style>

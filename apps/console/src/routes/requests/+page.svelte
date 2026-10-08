@@ -2,11 +2,11 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { RequestStatusFilter, RequestSummary } from '$lib/api.js';
-  import { Badge, Button, EmptyState, Select, Spinner } from '$lib/components/index.js';
+  import { Badge, Button, EmptyState, Spinner } from '$lib/components/index.js';
   import { formatNumber, formatDateTime, formatTime } from '$lib/format.js';
   import { m } from '$lib/paraglide/messages.js';
   import { Dialog } from 'bits-ui';
-  import { PauseIcon, PlayIcon, XIcon } from 'lucide-svelte';
+  import { PauseIcon, PlayIcon, SearchIcon, XIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let requests = $state<RequestSummary[]>([]);
@@ -115,14 +115,17 @@
 
 <div class="page">
   <div class="page-header">
-    <h1 class="page-title">{m.nav_requests()}</h1>
-    <div class="header-actions">
-      <div class="filter">
-        <Select label={m.request_filter()} options={filterOptions} value={statusFilter} onchange={onFilterChange} />
-      </div>
+    <div>
+      <h1>{m.nav_requests()}</h1>
+      <p class="refresh-note" aria-live="polite">
+        <span class="live-dot" class:paused></span>
+        {paused ? m.request_paused() : m.request_live()}
+      </p>
+    </div>
+    <div class="page-actions">
       <Button
         variant="outline"
-        size="sm"
+        size="md"
         onclick={() => (paused = !paused)}
         ariaLabel={paused ? m.request_resume_label() : m.request_pause_label()}
       >
@@ -131,72 +134,94 @@
     </div>
   </div>
 
-  <p class="refresh-note" aria-live="polite">{paused ? m.request_paused() : m.request_live()}</p>
+  <div class="toolbar">
+    <div class="segmented" role="group" aria-label={m.request_filter()}>
+      {#each filterOptions as opt (opt.value)}
+        <button
+          type="button"
+          aria-pressed={statusFilter === opt.value}
+          onclick={() => onFilterChange(opt.value)}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
 
-  <section aria-labelledby="search-heading">
-    <h2 id="search-heading">{m.request_search()}</h2>
-    <form onsubmit={search} class="search-form">
-      <label>
-        {m.request_id_label()}
-        <input type="text" bind:value={searchId} placeholder="req_..." />
+    <form onsubmit={search} class="search-form" aria-labelledby="search-heading">
+      <h2 id="search-heading" class="sr-only">{m.request_search()}</h2>
+      <label class="search-field">
+        <span class="sr-only">{m.request_id_label()}</span>
+        <span class="search-icon" aria-hidden="true"><SearchIcon size={14} /></span>
+        <input type="text" bind:value={searchId} placeholder="req_..." aria-label={m.request_id_label()} />
       </label>
       <Button type="submit" size="md">{m.request_search_button()}</Button>
     </form>
-    {#if searchError}
-      <p class="error-msg" role="alert">{searchError}</p>
-    {/if}
-  </section>
+  </div>
+  {#if searchError}
+    <p class="error-msg" role="alert">{searchError}</p>
+  {/if}
 
-  <section aria-labelledby="recent-heading">
-    <h2 id="recent-heading">{m.request_recent()} ({requests.length})</h2>
+  <section class="panel" aria-labelledby="recent-heading">
+    <div class="panel-head">
+      <h2 id="recent-heading">{m.request_recent()}</h2>
+      <span class="count mono">{requests.length}</span>
+    </div>
     {#if loading}
-      <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
+      <div class="panel-body">
+        <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
+      </div>
     {:else if requests.length === 0}
-      <EmptyState title={m.request_empty()} description={m.request_empty_desc()} />
+      <div class="panel-body">
+        <EmptyState title={m.request_empty()} description={m.request_empty_desc()} />
+      </div>
     {:else}
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">{m.request_time()}</th>
-            <th scope="col">{m.request_model()}</th>
-            <th scope="col">{m.request_api_type()}</th>
-            <th scope="col">{m.request_status()}</th>
-            <th scope="col">{m.request_connection()}</th>
-            <th scope="col">{m.request_duration()}</th>
-            <th scope="col">{m.request_tokens()}</th>
-            <th scope="col">{m.request_cost()}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each requests as r (r.request_id)}
-            <tr class="clickable" onclick={() => openDetail(r.request_id)}>
-              <td class="mono">
-                <!-- The button makes the row reachable by keyboard; the row click is a mouse shortcut. -->
-                <button
-                  type="button"
-                  class="row-link"
-                  aria-label={m.request_open_detail({ id: r.request_id })}
-                  onclick={(e) => { e.stopPropagation(); openDetail(r.request_id); }}
-                >
-                  {formatTime(r.started_at_ms)}
-                </button>
-              </td>
-              <td>{r.model}</td>
-              <td class="mono">{r.api_type}</td>
-              <td class="status-cell">
-                <Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} />
-                {#if r.stop_reason}
-                  <span class="stop-badge stop-badge--{r.stop_reason}">{r.stop_reason}</span>
-                {/if}
-              </td>
-              <td class="mono">{r.connection_id ?? m.common_none()}</td>
-              <td class="mono">{fmtDuration(r.duration_ms)}</td>
-              <td class="mono">{fmtTokens(r)}</td>
-              <td class="mono">{fmtCost(r.cost_microdollars)}</td>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">{m.request_time()}</th>
+              <th scope="col">{m.request_model()}</th>
+              <th scope="col">{m.request_api_type()}</th>
+              <th scope="col">{m.request_status()}</th>
+              <th scope="col">{m.request_connection()}</th>
+              <th scope="col">{m.request_duration()}</th>
+              <th scope="col">{m.request_tokens()}</th>
+              <th scope="col">{m.request_cost()}</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each requests as r (r.request_id)}
+              <tr class="clickable" onclick={() => openDetail(r.request_id)}>
+                <td class="mono">
+                  <!-- The button makes the row reachable by keyboard; the row click is a mouse shortcut. -->
+                  <button
+                    type="button"
+                    class="row-link"
+                    aria-label={m.request_open_detail({ id: r.request_id })}
+                    onclick={(e) => { e.stopPropagation(); openDetail(r.request_id); }}
+                  >
+                    {formatTime(r.started_at_ms)}
+                  </button>
+                </td>
+                <td class="model-cell">{r.model}</td>
+                <td class="mono">{r.api_type}</td>
+                <td>
+                  <div class="status-cell">
+                    <Badge status={r.status} label={statusLabels[r.status]?.() ?? r.status} />
+                    {#if r.stop_reason}
+                      <span class="stop-badge stop-badge--{r.stop_reason}">{r.stop_reason}</span>
+                    {/if}
+                  </div>
+                </td>
+                <td class="mono">{r.connection_id ?? m.common_none()}</td>
+                <td class="mono">{fmtDuration(r.duration_ms)}</td>
+                <td class="mono">{fmtTokens(r)}</td>
+                <td class="mono">{fmtCost(r.cost_microdollars)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
   </section>
 </div>
@@ -208,7 +233,7 @@
       <div class="drawer-header">
         <Dialog.Title class="drawer-title">{m.request_detail_title()}</Dialog.Title>
         <Dialog.Close class="drawer-close" aria-label={m.common_close()}>
-          <XIcon size={16} aria-hidden="true" />
+          <XIcon size={18} aria-hidden="true" />
         </Dialog.Close>
       </div>
 
@@ -314,6 +339,7 @@
             {#if d.decision.candidates_excluded.length === 0}
               <p class="hint">{m.request_excluded_none()}</p>
             {:else}
+              <div class="table-wrap drawer-table">
               <table>
                 <thead>
                   <tr>
@@ -327,6 +353,7 @@
                   {/each}
                 </tbody>
               </table>
+              </div>
             {/if}
           {:else}
             <p class="hint">{m.request_no_decision()}</p>
@@ -338,301 +365,331 @@
 </Dialog.Root>
 
 <style>
-  .page-header {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.5rem;
-  }
-
-  .page-header h1 {
-    margin: 0;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: flex-end;
-    gap: 8px;
-  }
-
-  .filter {
-    min-width: 160px;
-  }
-
   .refresh-note {
-    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
     color: var(--text-3);
-    margin-bottom: 1.5rem;
+    margin: var(--space-2) 0 0;
+  }
+
+  .live-dot {
+    width: var(--dot-size);
+    height: var(--dot-size);
+    border-radius: var(--radius-full);
+    background: var(--success);
+    box-shadow: 0 0 0 var(--space-1) color-mix(in oklch, var(--success) 25%, transparent);
+    animation: pulse var(--dur-pulse) ease-in-out infinite;
+  }
+
+  .live-dot.paused {
+    background: var(--text-3);
+    box-shadow: none;
+    animation: none;
+  }
+
+  @keyframes pulse {
+    50% { box-shadow: 0 0 0 var(--space-2) color-mix(in oklch, var(--success) 8%, transparent); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot { animation: none; }
+  }
+
+  /* Toolbar: segmented status filter + id search */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .search-form {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 1 1 var(--dialog-w);
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .search-field {
+    position: relative;
+    flex: 1 1 auto;
+    max-width: var(--dialog-w);
+    min-width: 0;
+  }
+
+  .search-field input {
+    padding-left: var(--space-6);
+    min-height: var(--control-h-sm);
+    border-radius: var(--radius-full);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .search-icon {
+    position: absolute;
+    left: var(--space-3);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-3);
+    display: flex;
+    pointer-events: none;
+  }
+
+  .search-form :global(.btn) { min-height: var(--control-h-sm); }
+
+  @media (max-width: 640px) {
+    .toolbar { flex-direction: column; align-items: stretch; }
+    .search-form { flex: 1 1 auto; justify-content: stretch; }
+    .search-field { max-width: none; }
+  }
+
+  .count {
+    font-size: var(--text-xs);
+    color: var(--text-2);
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-full);
+    padding: var(--space-0) var(--space-3);
   }
 
   .loading {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     color: var(--text-3);
-    font-size: 0.875rem;
-    padding: 16px 0;
+    font-size: var(--text-sm);
+    padding: var(--space-3) 0;
   }
 
-  .search-form {
-    display: flex;
-    gap: 0.75rem;
-    align-items: flex-end;
-    flex-wrap: wrap;
-  }
+  /* Table */
+  .panel table { min-width: calc(var(--space-8) * 11); }
+  .panel th { background: var(--bg-inset); }
 
-  .search-form input {
-    min-width: 280px;
-  }
-
-  .clickable {
-    cursor: pointer;
-  }
+  .clickable { cursor: pointer; }
+  .model-cell { color: var(--text-1); font-weight: var(--weight-medium); white-space: nowrap; }
 
   .row-link {
     background: none;
     border: none;
-    padding: 0;
+    padding: var(--space-1) 0;
+    min-height: var(--control-h-sm);
     color: var(--accent);
     font: inherit;
     cursor: pointer;
     white-space: nowrap;
   }
 
-  .row-link:hover {
-    text-decoration: underline;
-  }
-
-  :global(.drawer-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 50;
-  }
-
-  :global(.drawer-content) {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 51;
-    width: min(520px, 100vw);
-    background: var(--bg-surface);
-    border-left: 1px solid var(--border);
-    box-shadow: -8px 0 32px rgba(0, 0, 0, 0.25);
-    overflow-y: auto;
-  }
-
-  :global(.drawer-title) {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-
-  :global(.drawer-close) {
-    display: flex;
-    background: transparent;
-    border: none;
-    color: var(--text-3);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-  }
-
-  :global(.drawer-close:hover) {
-    color: var(--text-1);
-    background: var(--bg-hover);
-  }
-
-  .drawer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .drawer-body {
-    padding: 20px;
-  }
-
-  .drawer-subtitle {
-    font-size: 0.875rem;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 1.5rem 0 0.75rem;
-  }
-
-  .drawer-subtitle.small {
-    font-size: 0.8125rem;
-    margin-top: 1rem;
-  }
-
-  .info-grid {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 0.375rem 1.25rem;
-    font-size: 0.875rem;
-    margin: 0;
-  }
-
-  dt {
-    color: var(--text-3);
-    font-weight: 500;
-  }
-
-  dd {
-    margin: 0;
-    color: var(--text-2);
-    overflow-wrap: anywhere;
-  }
-
-  .hint {
-    font-size: 0.8125rem;
-    color: var(--text-3);
-  }
+  .row-link:hover { color: var(--accent-hover); text-decoration: underline; }
 
   .status-cell {
     display: flex;
     align-items: center;
-    gap: 0.375rem;
+    gap: var(--space-2);
     flex-wrap: wrap;
   }
 
+  .stop-badge,
+  .cache-badge,
+  .timeline-label {
+    display: inline-block;
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-medium);
+    padding: var(--space-0) var(--space-2);
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+  }
+
   .stop-badge {
-    display: inline-block;
-    font-size: 0.7rem;
-    font-weight: 500;
-    padding: 1px 6px;
-    border-radius: 9999px;
-    background: var(--bg-muted, #e5e7eb);
-    color: var(--text-3);
-    white-space: nowrap;
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    color: var(--text-2);
   }
 
-  .stop-badge--end_turn {
-    background: #d1fae5;
-    color: #065f46;
-  }
-
-  .stop-badge--max_tokens {
-    background: #fed7aa;
-    color: #92400e;
-  }
-
-  .stop-badge--tool_use {
-    background: #dbeafe;
-    color: #1e40af;
-  }
-
-
-  .cache-badge {
-    display: inline-block;
-    font-size: 0.7rem;
-    font-weight: 500;
-    padding: 1px 6px;
-    border-radius: 9999px;
-    white-space: nowrap;
-  }
-
+  .stop-badge--end_turn,
   .cache-badge--hit {
-    background: #d1fae5;
-    color: #065f46;
+    background: var(--success-subtle);
+    border: var(--border-w) solid color-mix(in oklch, var(--success) 28%, transparent);
+    color: var(--success);
   }
+
+  .stop-badge--max_tokens,
+  .timeline-label--overhead {
+    background: var(--warning-subtle);
+    border: var(--border-w) solid color-mix(in oklch, var(--warning) 28%, transparent);
+    color: var(--warning);
+  }
+
+  .stop-badge--tool_use,
+  .timeline-label--ttfb {
+    background: var(--accent-subtle);
+    border: var(--border-w) solid color-mix(in oklch, var(--accent) 28%, transparent);
+    color: var(--accent);
+  }
+
+  /* Drawer content (chrome comes from global .drawer-*) */
+  .drawer-subtitle {
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    color: var(--text-1);
+    margin: var(--space-6) 0 var(--space-3);
+  }
+
+  .drawer-subtitle.small {
+    font-size: var(--text-xs);
+    color: var(--text-2);
+    margin-top: var(--space-4);
+  }
+
+  .info-grid {
+    display: grid;
+    grid-template-columns: minmax(calc(var(--space-7) * 2), max-content) minmax(0, 1fr);
+    gap: 0;
+    font-size: var(--text-sm);
+    margin: 0;
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .info-grid dt,
+  .info-grid dd {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--border-w) solid var(--border);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .info-grid dt:nth-last-of-type(1),
+  .info-grid dd:nth-last-of-type(1) { border-bottom: 0; }
+
+  dt {
+    color: var(--text-3);
+    font-weight: var(--weight-medium);
+  }
+
+  dd {
+    margin: 0;
+    color: var(--text-1);
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 420px) {
+    .info-grid { grid-template-columns: minmax(0, 1fr); }
+    .info-grid dt { padding-bottom: 0; border-bottom: 0; font-size: var(--text-xs); }
+    .info-grid dd { padding-top: var(--space-0); }
+  }
+
+  .hint {
+    font-size: var(--text-sm);
+    color: var(--text-3);
+  }
+
+  .drawer-table {
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .drawer-table table { min-width: 0; }
 
   .ctx-bar {
     display: inline-block;
     vertical-align: middle;
-    width: 80px;
-    height: 8px;
-    background: var(--border, #e5e7eb);
-    border-radius: 4px;
+    width: calc(var(--space-8) * 1.5);
+    height: var(--meter-h);
+    background: var(--border);
+    border-radius: var(--radius-full);
     overflow: hidden;
-    margin-right: 0.375rem;
+    margin-right: var(--space-2);
   }
 
   .ctx-bar__fill {
     display: block;
     height: 100%;
-    background: #3b82f6;
-    border-radius: 4px;
-    transition: width 0.2s ease;
+    background: var(--accent);
+    border-radius: var(--radius-full);
+    transition: width var(--dur-3) var(--ease-out);
   }
+
   .error-text {
-    color: var(--color-error, #dc2626);
-    font-size: 0.8125rem;
+    color: var(--danger);
+    font-size: var(--text-xs);
     word-break: break-all;
   }
 
   .timeline {
     list-style: none;
-    padding: 0;
+    padding: 0 0 0 var(--space-4);
     margin: 0;
-    border-left: 2px solid var(--border);
-    padding-left: 1rem;
+    border-left: var(--focus-w) solid var(--border-strong);
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: var(--space-2);
   }
 
   .timeline-item {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.375rem;
-    font-size: 0.8125rem;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
     color: var(--text-2);
   }
 
-  .timeline-item.timeline-ttfb {
-    color: var(--text-1);
-    font-weight: 500;
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: calc(-1 * var(--space-4) - var(--dot-size) / 2 - var(--focus-w) / 2);
+    top: 50%;
+    width: var(--dot-size);
+    height: var(--dot-size);
+    margin-top: calc(-0.5 * var(--dot-size));
+    border-radius: var(--radius-full);
+    background: var(--bg-surface);
+    border: var(--focus-w) solid var(--border-strong);
   }
 
+  .timeline-item.timeline-ttfb,
   .timeline-item.timeline-overhead {
     color: var(--text-1);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
+  }
+
+  .timeline-item.timeline-ttfb::before,
+  .timeline-item.timeline-overhead::before {
+    border-color: var(--accent);
+    background: var(--accent);
   }
 
   .timeline-phase {
-    font-family: var(--font-mono, monospace);
-    font-size: 0.75rem;
-    color: var(--text-3);
-    min-width: 6.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-2);
+    min-width: calc(var(--space-8) * 1.5);
   }
 
   .timeline-ts {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-3);
   }
 
   .timeline-delta {
-    font-size: 0.75rem;
-    background: var(--bg-muted, #f3f4f6);
+    font-size: var(--text-xs);
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
     color: var(--text-2);
-    padding: 1px 5px;
-    border-radius: 4px;
-    font-family: var(--font-mono, monospace);
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
   }
 
-  .timeline-label {
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 1px 6px;
-    border-radius: 9999px;
-    white-space: nowrap;
-  }
-
-  .timeline-label--ttfb {
-    background: #dbeafe;
-    color: #1e40af;
-  }
-
-  .timeline-label--overhead {
-    background: #fef9c3;
-    color: #854d0e;
-  }
+  .timeline-label { font-weight: var(--weight-semibold); }
 </style>

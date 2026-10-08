@@ -295,15 +295,15 @@
         </button>
       </div>
 
-      <div class="body" aria-live="polite">
+      <div class="dialog-body body" aria-live="polite">
         {#if step === 'pick'}
           <form onsubmit={start} class="fields">
             <Select label={m.acct_provider()} options={providers} bind:value={selected} disabled={busy} />
 
             {#if loadingMethods}
-              <div class="muted"><Spinner size="sm" /> {m.common_loading()}</div>
+              <div class="muted status-row"><Spinner size="sm" /> {m.common_loading()}</div>
             {:else if methods.length === 0}
-              <p class="muted">{m.acct_no_methods()}</p>
+              <p class="muted status-row">{m.acct_no_methods()}</p>
             {:else}
               {#if methods.length > 1}
                 <!-- Cards per método: mais claro que um dropdown quando >1 opção -->
@@ -367,7 +367,7 @@
                 {/if}
               {/each}
             {/if}
-            <div class="footer">
+            <div class="dialog-footer">
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
               <Button type="submit" disabled={busy || !method}>
                 {#if busy}<Spinner size="sm" />{/if}
@@ -393,12 +393,12 @@
             <ExternalLink size={14} aria-hidden="true" />
             {m.acct_open_verification()}
           </a>
-          <div class="muted" role="status">
+          <div class="muted status-row" role="status">
             <Spinner size="sm" /> {m.acct_waiting()}
           </div>
           <!-- Countdown updates every second; keep it out of the live region to avoid chatter. -->
-          <p class="muted mono" aria-live="off">{m.acct_expires_in({ time: fmtTime(secondsLeft) })}</p>
-          <div class="footer">
+          <p class="muted mono status-row" aria-live="off">{m.acct_expires_in({ time: fmtTime(secondsLeft) })}</p>
+          <div class="dialog-footer">
             <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
           </div>
         {:else if step === 'pkce' && flow?.flow === 'authorization_code_pkce'}
@@ -407,9 +407,9 @@
             <div class="pkce-auto">
               <div class="pkce-icon spin">⟳</div>
               <p class="step-intro">Authorize in the popup window…</p>
-              <p class="muted">The window opened at claude.ai. After you sign in, this dialog completes automatically.</p>
+              <p class="muted status-row">The window opened at claude.ai. After you sign in, this dialog completes automatically.</p>
             </div>
-            <div class="footer">
+            <div class="dialog-footer">
               <Button variant="outline" onclick={() => (pkceAutoCapture = false)}>{m.acct_enter_code_manually()}</Button>
               <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
             </div>
@@ -448,7 +448,7 @@
                   bind:value={pkceCode}
                 />
               </div>
-              <div class="footer">
+              <div class="dialog-footer">
                 <Button variant="outline" onclick={() => (open = false)}>{m.common_cancel()}</Button>
                 <Button type="submit" disabled={busy || !pkceCode.trim()}>
                   {#if busy}<Spinner size="sm" />{/if}
@@ -462,7 +462,7 @@
             <AlertTriangle size={16} aria-hidden="true" />
             <p>{errorMsg}</p>
           </div>
-          <div class="footer">
+          <div class="dialog-footer">
             <Button variant="outline" onclick={() => (open = false)}>{m.acct_close()}</Button>
             <Button onclick={() => { reset(); loadMethods(selected); }}>{m.acct_retry()}</Button>
           </div>
@@ -473,213 +473,136 @@
 </Dialog.Root>
 
 <style>
-  :global(.dialog-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 50;
-  }
-
-  :global(.dialog-content) {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    z-index: 51;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    width: min(480px, calc(100vw - 32px));
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-  }
-
-  :global(.dialog-title) {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--text-1);
-    margin: 0;
-  }
-
-  .dialog-close {
-    display: flex;
-    background: transparent;
-    border: none;
-    color: var(--text-3);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--radius-sm);
-  }
-
-  .dialog-close:hover {
-    color: var(--text-1);
-    background: var(--bg-hover);
-  }
-
-  .dialog-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px 20px 0;
-  }
-
   .dialog-heading {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-2);
     min-width: 0;
   }
 
   .step-tag {
-    color: var(--text-3);
+    color: var(--text-2);
     font-size: var(--text-xs);
-    padding: 0.0625rem 0.375rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    padding: var(--space-0) var(--space-2);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius-full);
+    background: var(--bg-elevated);
     text-transform: lowercase;
   }
 
   .body {
-    padding: 20px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: var(--space-4);
+    flex: 1 1 auto;
+    min-height: 0;
   }
 
-  .fields {
+  /* Footers sit inside the padded body: plain button row, no extra chrome. */
+  .body :global(.dialog-footer) {
+    padding: 0;
+    border-top: 0;
+  }
+
+  .status-row {
     display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .field label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-  }
-
-  .field input {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
-  }
-
-  .field input:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  .footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    margin: 0;
   }
 
   .step-intro {
     color: var(--text-2);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
+    line-height: var(--leading);
     margin: 0;
   }
 
   .code-box {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    background: var(--bg-base);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 14px 16px;
+    gap: var(--space-2);
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: var(--space-4);
   }
 
   .code-eyebrow {
     color: var(--text-3);
-    font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: var(--text-xs);
   }
 
   .code-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
 
   .user-code {
-    font-size: 1.75rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-bold);
+    letter-spacing: var(--tracking-dot);
     color: var(--text-1);
+    overflow-wrap: anywhere;
   }
 
   .verify-link {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
+    min-height: var(--control-h);
     color: var(--accent);
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .muted {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text-3);
-    font-size: 0.8125rem;
-    margin: 0;
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
   }
 
   .error {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
+    gap: var(--space-2);
     color: var(--danger);
     background: var(--danger-subtle);
-    border: 1px solid color-mix(in oklch, var(--danger) 34%, transparent);
-    border-radius: var(--radius-sm);
-    padding: 10px 12px;
+    border: var(--border-w) solid color-mix(in oklch, var(--danger) 34%, transparent);
+    border-radius: var(--radius);
+    padding: var(--space-3) var(--space-4);
   }
 
   .error :global(svg) {
     flex-shrink: 0;
-    margin-top: 0.125rem;
+    margin-top: var(--space-0);
   }
 
   .error p {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     margin: 0;
     color: var(--text-1);
+    overflow-wrap: anywhere;
   }
-
 
   .method-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 8px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-sm)), 1fr));
+    gap: var(--space-2);
   }
 
   .method-card {
     position: relative;
     align-items: flex-start;
     background: var(--bg-elevated);
-    border: 1px solid var(--border);
+    border: var(--border-w) solid var(--border);
     border-radius: var(--radius);
+    color: inherit;
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 12px;
+    gap: var(--space-1);
+    min-height: var(--control-h-lg);
+    padding: var(--space-3) var(--space-4);
     text-align: left;
-    transition: border-color 0.12s;
     width: 100%;
   }
 
@@ -687,69 +610,71 @@
     border-color: var(--accent);
   }
 
-
   .method-card.selected {
     border-color: var(--accent);
     background: var(--accent-subtle);
+    box-shadow: 0 0 0 var(--border-w) var(--accent);
   }
 
   :global(.method-check) {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: var(--space-2);
+    right: var(--space-2);
     color: var(--accent);
   }
 
-
   .method-icon {
-    font-size: 1.25rem;
+    font-size: var(--text-lg);
     line-height: 1;
   }
 
   .method-label {
     color: var(--text-1);
-    font-size: 0.875rem;
-    font-weight: 600;
+    font-size: var(--text-base);
+    font-weight: var(--weight-semibold);
+    padding-right: var(--space-4);
   }
 
   .method-hint {
     color: var(--text-3);
-    font-size: 0.75rem;
-    line-height: 1.3;
+    font-size: var(--text-xs);
+    line-height: var(--leading);
   }
 
   .social-choice {
     border: none;
     margin: 0;
     padding: 0;
+    min-width: 0;
   }
 
-  .field-label {
-    color: var(--text-2);
-    font-size: 0.8125rem;
-    font-weight: 500;
-    margin-bottom: 0.5rem;
+  .social-choice .field-label {
+    margin-bottom: var(--space-2);
     display: block;
+    padding: 0;
   }
 
   .social-options {
     display: flex;
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   .social-opt {
+    position: relative;
+    flex-direction: row;
     align-items: center;
     background: var(--bg-elevated);
-    border: 1px solid var(--border);
+    border: var(--border-w) solid var(--border);
     border-radius: var(--radius);
     cursor: pointer;
     display: flex;
-    gap: 6px;
-    padding: 8px 14px;
-    font-size: 0.875rem;
-    font-weight: 500;
+    gap: var(--space-2);
+    min-height: var(--control-h);
+    padding: 0 var(--space-4);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
     color: var(--text-2);
-    transition: border-color 0.12s;
   }
 
   .social-opt input[type='radio'] {
@@ -759,6 +684,11 @@
   }
 
   .social-opt:hover { border-color: var(--accent); }
+
+  .social-opt:has(input:focus-visible) {
+    outline: var(--focus-w) solid var(--accent);
+    outline-offset: var(--focus-w);
+  }
 
   .social-opt.checked {
     border-color: var(--accent);
@@ -770,26 +700,51 @@
     color: var(--accent);
   }
 
+  .pkce-section {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .pkce-url-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .pkce-url {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   .pkce-auto {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
-    padding: 12px 0;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
     text-align: center;
   }
 
   .pkce-icon {
-    font-size: 2rem;
+    font-size: var(--text-2xl);
     line-height: 1;
   }
 
   .pkce-icon.spin {
-    animation: spin 1.2s linear infinite;
+    animation: spin calc(var(--dur-3) * 3) linear infinite;
     color: var(--accent);
   }
 
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pkce-icon.spin { animation: none; }
   }
 </style>

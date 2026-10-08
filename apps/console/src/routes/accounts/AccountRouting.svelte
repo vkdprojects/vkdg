@@ -211,53 +211,60 @@
   .routing {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--space-3);
+    min-width: 0;
   }
 
   .eyebrow {
     margin: 0;
-    color: var(--text-3);
-    font-size: var(--text-2xs);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    color: var(--text-1);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
   }
 
   .idle {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--space-3);
     flex-wrap: wrap;
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-inset);
+    border: var(--border-w) dashed var(--border-strong);
+    border-radius: var(--radius);
   }
 
   .idle-note {
-    color: var(--text-3);
-    font-size: 0.8125rem;
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    min-width: 0;
+    flex: 1 1 var(--col-sm);
   }
 
   .connection {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .connection + .connection {
-    padding-top: 0.75rem;
-    border-top: 1px solid var(--border);
+    gap: var(--space-3);
+    padding: var(--space-4);
+    background: var(--bg-inset);
+    border: var(--border-w) solid var(--border);
+    border-radius: var(--radius);
+    min-width: 0;
   }
 
   .conn-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: var(--space-3);
     flex-wrap: wrap;
   }
 
   .conn-status {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: var(--space-2);
+    flex-wrap: wrap;
     min-width: 0;
   }
 
@@ -269,22 +276,23 @@
 
   .conn-meta {
     display: flex;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
     color: var(--text-3);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .numbers {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-xs)), 1fr));
+    gap: var(--space-3);
   }
 
   .conn-actions {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 8px;
+    gap: var(--space-2);
     flex-wrap: wrap;
   }
 
@@ -295,24 +303,20 @@
 
   .test-badge {
     display: inline-block;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    padding: var(--space-0) var(--space-2);
     overflow-wrap: anywhere;
   }
 
   .test-badge.ok {
-    background: color-mix(in oklch, var(--success) 15%, transparent);
+    background: var(--success-subtle);
     color: var(--success);
   }
 
   .test-badge.err {
-    background: color-mix(in oklch, var(--danger) 15%, transparent);
+    background: var(--danger-subtle);
     color: var(--danger);
-  }
-
-  .mono {
-    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   }
 </style>

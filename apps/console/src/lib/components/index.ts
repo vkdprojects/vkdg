@@ -13,3 +13,5 @@ export { default as AccountCredits } from './AccountCredits.svelte';
 export { default as Stat } from './Stat.svelte';
 export { default as UsageWindows } from './UsageWindows.svelte';
 export { default as UsageOverview } from './UsageOverview.svelte';
+export { default as ProviderLogo } from './ProviderLogo.svelte';
+export { default as UserMenu } from './UserMenu.svelte';

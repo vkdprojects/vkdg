@@ -1,0 +1,191 @@
+/*
+ * VKDG design tokens.
+ *
+ * Three layers. Components consume ONLY layer 2/3 — never a raw value.
+ *   1. Knobs      --hue-* / --l-* / --c-*   (brand + theme inputs)
+ *   2. Semantic   --bg-* --text-* --accent --success ... --space-* --radius-*
+ *   3. Component  --control-h-* --z-* --icon-* --dialog-* --scene-*
+ *
+ * Palette is derived from the logo (static/logo.svg):
+ *   ink   rgb(18,33,40)    = oklch(0.238 0.024 229)  -> --hue-neutral
+ *   teal  rgb(34,139,150)  = oklch(0.585 0.091 206)  -> --hue-accent
+ *   cream rgb(224,236,220) = oklch(0.93  0.025 138)  -> --hue-text
+ *
+ * Theming: derived tokens are declared on `:root, [data-theme]`, so any
+ * subtree can opt into a scheme with `data-theme="dark|light"` and the whole
+ * palette recomputes there (e.g. the login scene is always dark).
+ * Lint: `bun run lint:tokens` rejects raw colors/lengths in .svelte styles.
+ */
+
+/* ── 1. Knobs ─────────────────────────────────────────────────────────── */
+:root {
+  --hue-neutral: 229;
+  --hue-accent: 206;
+  --hue-text: 138;
+  --hue-success: 155;
+  --hue-warning: 80;
+  --hue-danger: 25;
+  --hue-cooldown: 250;
+}
+
+:root, [data-theme="dark"] {
+  --l-base: 0.155; --l-surface: 0.19; --l-elevated: 0.225; --l-inset: 0.135;
+  --c-neutral: 0.02;
+  --l-text: 0.96;
+  --l-sem: 0.76; --c-sem: 0.16;
+  --l-accent: 0.72; --c-accent: 0.12;
+  --l-on-accent: 0.16;
+  --a-glass: 0.55; --a-glass-strong: 0.78;
+  --a-highlight: 0.1; --a-shadow: 0.7;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"], [data-theme="light"] {
+  --l-base: 0.985; --l-surface: 1; --l-elevated: 0.97; --l-inset: 0.96;
+  --l-text: 0.22;
+  --l-sem: 0.56; --c-sem: 0.15;
+  --l-accent: 0.52; --c-accent: 0.1;
+  --l-on-accent: 0.99;
+  --a-glass: 0.6; --a-glass-strong: 0.82;
+  --a-highlight: 0.9; --a-shadow: 0.22;
+  color-scheme: light;
+}
+
+/* Wide-gamut screens (P3/OLED): same hues, more chroma. sRGB stays logo-exact. */
+@media (color-gamut: p3) {
+  :root, [data-theme="dark"] { --c-accent: 0.15; --c-sem: 0.19; }
+  :root[data-theme="light"], [data-theme="light"] { --c-accent: 0.13; --c-sem: 0.18; }
+}
+
+/* ── 2. Semantic (recomputed per themed subtree) ──────────────────────── */
+:root, [data-theme] {
+  --bg-base:     oklch(var(--l-base) var(--c-neutral) var(--hue-neutral));
+  --bg-surface:  oklch(var(--l-surface) var(--c-neutral) var(--hue-neutral));
+  --bg-elevated: oklch(var(--l-elevated) var(--c-neutral) var(--hue-neutral));
+  --bg-inset:    oklch(var(--l-inset) var(--c-neutral) var(--hue-neutral));
+  --bg-hover:    oklch(var(--l-text) 0.02 var(--hue-neutral) / 0.06);
+  --bg-scrim:    oklch(0.1 0.02 var(--hue-neutral) / 0.55);
+
+  --text-1: oklch(var(--l-text) 0.022 var(--hue-text));
+  --text-2: oklch(var(--l-text) 0.02 var(--hue-text) / 0.68);
+  --text-3: oklch(var(--l-text) 0.02 var(--hue-text) / 0.44);
+
+  --border:        oklch(var(--l-text) 0.03 var(--hue-neutral) / 0.1);
+  --border-strong: oklch(var(--l-text) 0.04 var(--hue-neutral) / 0.2);
+
+  --accent:        oklch(var(--l-accent) var(--c-accent) var(--hue-accent));
+  --accent-hover:  oklch(calc(var(--l-accent) + 0.05) var(--c-accent) var(--hue-accent));
+  --accent-active: oklch(calc(var(--l-accent) - 0.06) var(--c-accent) var(--hue-accent));
+  --accent-subtle: color-mix(in oklch, var(--accent) 14%, transparent);
+  --accent-strong: color-mix(in oklch, var(--accent) 42%, transparent);
+  --on-accent:     oklch(var(--l-on-accent) 0.03 var(--hue-accent));
+
+  --success:  oklch(var(--l-sem) var(--c-sem) var(--hue-success));
+  --warning:  oklch(calc(var(--l-sem) + 0.06) var(--c-sem) var(--hue-warning));
+  --danger:   oklch(calc(var(--l-sem) - 0.06) calc(var(--c-sem) + 0.02) var(--hue-danger));
+  --cooldown: oklch(var(--l-sem) 0.05 var(--hue-cooldown));
+  --success-subtle:  color-mix(in oklch, var(--success) 14%, transparent);
+  --warning-subtle:  color-mix(in oklch, var(--warning) 14%, transparent);
+  --danger-subtle:   color-mix(in oklch, var(--danger) 14%, transparent);
+  --cooldown-subtle: color-mix(in oklch, var(--cooldown) 14%, transparent);
+
+  /* Liquid glass */
+  --glass-bg:        oklch(var(--l-surface) var(--c-neutral) var(--hue-neutral) / var(--a-glass));
+  --glass-bg-strong: oklch(var(--l-surface) var(--c-neutral) var(--hue-neutral) / var(--a-glass-strong));
+  --glass-border:    oklch(var(--l-text) 0.02 var(--hue-text) / 0.1);
+  --glass-highlight: inset 0 1px 0 oklch(1 0 0 / var(--a-highlight));
+  --glass-blur:      blur(22px) saturate(1.6);
+  --glass-shadow:    var(--glass-highlight), 0 20px 40px -24px oklch(0.1 0.03 var(--hue-neutral) / var(--a-shadow));
+
+  --shadow-1: var(--glass-highlight), 0 1px 2px oklch(0.1 0.02 var(--hue-neutral) / calc(var(--a-shadow) * 0.4));
+  --shadow-2: var(--glass-highlight), 0 12px 32px -12px oklch(0.1 0.03 var(--hue-neutral) / var(--a-shadow));
+  --glow:     0 0 0 1px var(--accent-strong), 0 8px 28px -8px color-mix(in oklch, var(--accent) 55%, transparent);
+  --ring:     0 0 0 3px var(--accent-subtle);
+
+  --dot-color: oklch(var(--l-text) 0 0 / 0.07);
+  --dot-field: radial-gradient(circle at 1px 1px, var(--dot-color) 1px, transparent 1.5px) 0 0 / var(--dot-gap) var(--dot-gap);
+
+  color: var(--text-1);
+}
+
+/* Theme-independent layer 2 */
+:root {
+  --space-0: 0.125rem;
+  --space-1: 0.25rem;  --space-2: 0.5rem;  --space-3: 0.75rem; --space-4: 1rem;
+  --space-5: 1.5rem;   --space-6: 2rem;    --space-7: 3rem;    --space-8: 4rem;
+  --page-gutter: clamp(var(--space-4), 3cqw, 2.5rem);
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius:    10px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-full: 999px;
+
+  --border-w: 1px;
+  --focus-w: 2px;
+
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'SF Mono', ui-monospace, monospace;
+  --font-dot:  'Doto Variable', var(--font-mono);
+
+  --text-2xs: 0.6875rem;
+  --text-xs:  0.75rem;
+  --text-sm:  0.8125rem;
+  --text-base: 0.875rem;
+  --text-md:  1rem;
+  --text-lg:  1.125rem;
+  --text-xl:  1.5rem;
+  --text-2xl: 2rem;
+  --text-3xl: 2.5rem;
+  --text-hero: clamp(2rem, 1.4rem + 2.4cqw, 3rem);
+
+  --weight-regular: 450; --weight-medium: 550; --weight-semibold: 620; --weight-bold: 720;
+  --weight-dot: 850; /* Doto thins out at display sizes; keep dots dense */
+  --leading-tight: 1.1; --leading: 1.5;
+  --tracking-tight: -0.03em; --tracking-dot: 0.04em;
+  --measure: 72ch;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 120ms; --dur-2: 220ms; --dur-3: 420ms;
+  --dur-spin: 700ms;   /* loaders */
+  --dur-pulse: 2.5s;   /* live status dots */
+  --dur-blink: 1s;     /* text c‍ursor */
+  --dur-ambient: 14s;  /* slow scene motion */
+  --lift: translateY(-2px);
+  --press: scale(0.97);
+
+  /* ── 3. Component tokens ── */
+  --control-h-sm: 2rem;      /* 28-32px: dense table actions */
+  --control-h:    2.375rem;  /* ~38px: default; >=36px touch target */
+  --control-h-lg: 2.75rem;   /* 44px: primary/hero CTAs, mobile */
+  --control-px:   var(--space-3);
+
+  --icon-xs: 12px; --icon-sm: 14px; --icon: 16px; --icon-lg: 20px; --icon-xl: 32px;
+  --dot-size: 8px;
+  --dot-gap: 18px;
+  --meter-h: 8px;
+
+  --z-behind: -1;
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-topbar: 20;
+  --z-scrim: 25;
+  --z-nav: 30;
+  --z-dialog: 50;
+  --z-toast: 60;
+
+  /* Grid column floors for repeat(auto-fit, minmax(min(100%, X), 1fr)) */
+  --col-xs: 8rem; --col-sm: 10rem; --col-md: 14rem; --col-lg: 20rem; --col-xl: 26rem;
+  --indicator-w: 3px; /* active nav bar, status edge */
+
+  --sidebar-w: 15rem;
+  --sidebar-w-collapsed: 3.75rem;
+  --topbar-h: 52px;
+  --dialog-w: min(34rem, 100vw - 2 * var(--space-4));
+  --dialog-w-lg: min(48rem, 100vw - 2 * var(--space-4));
+  --drawer-w: min(36rem, 100vw);
+
+  --bp-sm: 480px; --bp-md: 800px; --bp-lg: 1000px; /* reference only: media queries can't read vars */
+}

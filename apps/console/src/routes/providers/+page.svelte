@@ -1,37 +1,469 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { ExternalLink, ArrowRight } from 'lucide-svelte';
+  import { onMount, tick } from 'svelte';
+  import { ExternalLink, ChevronRight, Search, XIcon, TriangleAlert } from 'lucide-svelte';
+  import { toast } from 'svelte-sonner';
   import { api } from '$lib/api.js';
   import type { Account, ConnectionSummary, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
-  type Filter = 'all' | 'oauth_ide' | 'llm_api' | 'compatible';
-  let providers=$state<OAuthProvider[]>([]), accounts=$state<Account[]>([]), connections=$state<ConnectionSummary[]>([]), loading=$state(true), filter=$state<Filter>('all');
-  const filtered=$derived(filter==='all'?providers:providers.filter(p=>p.category===filter));
-  const statusLabels:Record<string,()=>string>={healthy:m.connection_status_healthy,degraded:m.connection_status_degraded,circuit_open:m.connection_status_circuit_open,cooldown:m.connection_status_cooldown,unknown:m.connection_status_unknown};
-  const categoryLabels:Record<string,()=>string>={oauth_ide:m.providers_filter_oauth_ide,llm_api:m.providers_filter_llm_api,compatible:m.providers_filter_compatible};
-  const filters:{value:Filter;label:()=>string}[]=[{value:'all',label:m.providers_filter_all},{value:'oauth_ide',label:m.providers_filter_oauth_ide},{value:'llm_api',label:m.providers_filter_llm_api},{value:'compatible',label:m.providers_filter_compatible}];
-  function accountsFor(id:string){return accounts.filter(a=>a.provider===id)}
-  function connectionsFor(id:string){return connections.filter(c=>c.provider===id)}
-  function dominantStatus(id:string){const cs=connectionsFor(id);return cs.find(c=>c.status==='circuit_open')?.status??cs.find(c=>c.status==='degraded')?.status??cs.find(c=>c.status==='cooldown')?.status??cs[0]?.status??'unknown'}
-  onMount(async()=>{try{const [p,a,c]=await Promise.all([api.oauthProviders(),api.listAccounts(),api.listConnections()]);providers=p.items;accounts=a.items;connections=c.items}finally{loading=false}});
+  import { Button, EmptyState, Meter, Spinner, ProviderLogo } from '$lib/components/index.js';
+
+  type Category = 'oauth_ide' | 'llm_api' | 'compatible';
+  type Filter = 'all' | Category;
+  type Mode = 'all' | 'configured';
+
+  const MODE_KEY = 'vkdg.providers.mode';
+  const FLASH_KEY = 'vkdg.providers.flash';
+  const POLL_MS = 5000;
+
+  let providers = $state<OAuthProvider[]>([]);
+  let accounts = $state<Account[]>([]);
+  let connections = $state<ConnectionSummary[]>([]);
+  let loading = $state(true);
+  let filter = $state<Filter>('all');
+  let query = $state('');
+  let mode = $state<Mode>(
+    typeof localStorage !== 'undefined' && localStorage.getItem(MODE_KEY) === 'configured' ? 'configured' : 'all',
+  );
+  let refreshFailed = false;
+
+  const categoryOrder: Category[] = ['oauth_ide', 'llm_api', 'compatible'];
+  const categoryLabels: Record<Category, () => string> = {
+    oauth_ide: m.providers_filter_oauth_ide,
+    llm_api: m.providers_filter_llm_api,
+    compatible: m.providers_filter_compatible,
+  };
+  const modes: { value: Mode; label: () => string }[] = [
+    { value: 'all', label: m.providers_mode_all },
+    { value: 'configured', label: m.providers_mode_configured },
+  ];
+
+  /** Per-provider rollup, rebuilt once per poll instead of per card per render. */
+  interface Health {
+    accounts: number;
+    needsLogin: number;
+    connections: number;
+    connected: number;
+    degraded: number;
+    error: number;
+    active: number;
+    max: number;
+    configured: boolean;
+  }
+  const health = $derived.by(() => {
+    const map = new Map<string, Health>();
+    const get = (id: string) => {
+      let h = map.get(id);
+      if (!h) map.set(id, (h = { accounts: 0, needsLogin: 0, connections: 0, connected: 0, degraded: 0, error: 0, active: 0, max: 0, configured: false }));
+      return h;
+    };
+    for (const a of accounts) {
+      const h = get(a.provider);
+      h.accounts++;
+      if (a.status === 'needs_login') h.needsLogin++;
+      h.configured = true;
+    }
+    for (const c of connections) {
+      const h = get(c.provider);
+      h.connections++;
+      h.configured = true;
+      h.active += c.active_requests;
+      h.max += c.max_concurrent;
+      if (c.status === 'healthy') h.connected++;
+      else if (c.status === 'degraded' || c.status === 'cooldown') h.degraded++;
+      else if (c.status === 'circuit_open') h.error++;
+    }
+    return map;
+  });
+  const empty: Health = { accounts: 0, needsLogin: 0, connections: 0, connected: 0, degraded: 0, error: 0, active: 0, max: 0, configured: false };
+  const healthOf = (id: string) => health.get(id) ?? empty;
+
+  const needle = $derived(query.trim().toLowerCase());
+  const searched = $derived(needle ? providers.filter((p) => p.display_name.toLowerCase().includes(needle)) : providers);
+
+  /** Pill badges follow the search, so they always say what the grid would show. */
+  const pills = $derived.by(() => {
+    const count = (list: OAuthProvider[]) => ({ configured: list.filter((p) => healthOf(p.id).configured).length, total: list.length });
+    return [
+      { value: 'all' as Filter, label: m.providers_filter_all, ...count(searched) },
+      ...categoryOrder.map((c) => ({ value: c as Filter, label: categoryLabels[c], ...count(searched.filter((p) => p.category === c)) })),
+    ];
+  });
+
+  const visible = $derived(
+    searched.filter((p) => (filter === 'all' || p.category === filter) && (mode === 'all' || healthOf(p.id).configured)),
+  );
+  const sections = $derived(
+    categoryOrder
+      .map((c) => ({ category: c, items: visible.filter((p) => p.category === c) }))
+      .filter((s) => s.items.length > 0),
+  );
+
+  function setMode(next: Mode) {
+    mode = next;
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {
+      // Private mode may deny storage; the choice still applies for this session.
+    }
+  }
+  function clearSearch() {
+    query = '';
+  }
+
+  const healthStates: { key: 'connected' | 'degraded' | 'error'; label: () => string }[] = [
+    { key: 'connected', label: m.providers_health_connected },
+    { key: 'degraded', label: m.providers_health_degraded },
+    { key: 'error', label: m.providers_health_error },
+  ];
+
+  async function load(initial = false) {
+    try {
+      if (initial) {
+        const [p, a, c] = await Promise.all([api.oauthProviders(), api.listAccounts(), api.listConnections()]);
+        providers = p.items;
+        accounts = a.items;
+        connections = c.items;
+      } else {
+        // Provider catalog is static; only live state is refreshed.
+        const [a, c] = await Promise.all([api.listAccounts(), api.listConnections()]);
+        accounts = a.items;
+        connections = c.items;
+      }
+      refreshFailed = false;
+    } catch (e) {
+      // One toast per failure streak: a down gateway must not spam every 5s.
+      if (initial || !refreshFailed) toast.error(initial ? (e as Error).message : m.providers_refresh_failed());
+      refreshFailed = true;
+    } finally {
+      loading = false;
+    }
+  }
+
+  /** Remember which card was opened so the list can find it again on back-navigation. */
+  function remember(id: string) {
+    try {
+      sessionStorage.setItem(FLASH_KEY, id);
+    } catch {
+      // Non-critical: only the return highlight is lost.
+    }
+  }
+
+  async function flashReturned() {
+    let id: string | null = null;
+    try {
+      id = sessionStorage.getItem(FLASH_KEY);
+      sessionStorage.removeItem(FLASH_KEY);
+    } catch {
+      return;
+    }
+    if (!id) return;
+    await tick();
+    const el = document.querySelector<HTMLElement>(`[data-provider-id="${CSS.escape(id)}"]`);
+    if (!el) return;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+    if (reduce) return;
+    el.animate(
+      [
+        { boxShadow: 'var(--glow)', transform: 'scale(1.015)' },
+        { boxShadow: 'var(--shadow-1)', transform: 'scale(1)' },
+      ],
+      { duration: 900, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+    );
+  }
+
+  onMount(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let first = true;
+    const sync = () => {
+      clearInterval(timer);
+      timer = undefined;
+      if (document.visibilityState !== 'visible') return;
+      if (first) {
+        first = false;
+        load(true).then(flashReturned);
+      } else {
+        load();
+      }
+      timer = setInterval(load, POLL_MS);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', sync);
+    };
+  });
 </script>
+
 <div class="page inventory">
-  <div class="page-header"><div><h1>{m.providers_title()}</h1><p>{m.providers_inventory_subtitle()}</p></div></div>
-  <div class="filters" role="tablist" aria-label={m.providers_filter_label()}>{#each filters as f}<button role="tab" aria-selected={filter===f.value} class:active={filter===f.value} onclick={()=>filter=f.value}>{f.label()}</button>{/each}</div>
-  {#if loading}<div class="loading"><Spinner size="sm"/>{m.common_loading()}</div>
-  {:else if filtered.length===0}<EmptyState title={m.providers_empty()} description={m.providers_connect_first()}/>
-  {:else}<div class="table-wrap"><table><thead><tr><th>{m.connection_provider()}</th><th>{m.providers_category()}</th><th>{m.provider_detail_accounts()}</th><th>{m.nav_connections()}</th><th>{m.connection_status()}</th><th>{m.gateway_concurrency()}</th><th><span class="sr-only">{m.common_actions()}</span></th></tr></thead><tbody>
-    {#each filtered as p (p.id)}
-      {@const pa=accountsFor(p.id)}{@const pc=connectionsFor(p.id)}{@const status=dominantStatus(p.id)}
-      <tr><td><div class="provider-cell"><span class="icon" style:background={p.icon_color}>{p.icon_char}</span><div><a class="provider-link" href="/providers/{encodeURIComponent(p.id)}">{p.display_name}</a>{#if p.site_url}<a class="site" href={p.site_url} target="_blank" rel="noopener noreferrer" aria-label={m.providers_open_site({name:p.display_name})}><ExternalLink size={12}/></a>{/if}<small>{p.description??p.id}</small></div></div></td>
-      <td>{(categoryLabels[p.category]??(()=>p.category))()}</td>
-      <td><strong class="mono">{pa.filter(a=>a.status==='active').length}</strong> {m.providers_active_short()}{#if pa.some(a=>a.status==='needs_login')}<span class="auth-alert">{pa.filter(a=>a.status==='needs_login').length} {m.acct_status_needs_login()}</span>{/if}</td>
-      <td class="mono">{pc.length}</td><td><div class="status"><StatusDot {status}/><Badge {status} label={(statusLabels[status]??m.connection_status_unknown)()}/></div></td>
-      <td class="mono">{pc.reduce((n,c)=>n+c.active_requests,0)} / {pc.reduce((n,c)=>n+c.max_concurrent,0)||'—'}</td><td><a class="open" href="/providers/{encodeURIComponent(p.id)}" aria-label={m.providers_open_detail({name:p.display_name})}><ArrowRight size={15}/></a></td></tr>
+  <div class="page-header">
+    <div>
+      <h1>{m.providers_title()}</h1>
+      <p>{m.providers_inventory_subtitle()}</p>
+    </div>
+    <span class="live" title={m.providers_live_hint()}><span class="live-dot" aria-hidden="true"></span>{m.providers_live()}</span>
+  </div>
+
+  <div class="toolbar glass">
+    <label class="search">
+      <Search size={14} aria-hidden="true" />
+      <span class="sr-only">{m.providers_search_label()}</span>
+      <input type="search" bind:value={query} placeholder={m.providers_search_placeholder()} autocomplete="off" spellcheck="false" />
+      {#if query}
+        <button type="button" class="clear" onclick={clearSearch} aria-label={m.providers_clear_search()}><XIcon size={14} /></button>
+      {/if}
+    </label>
+
+    <div class="segmented pills" role="group" aria-label={m.providers_filter_label()}>
+      {#each pills as f (f.value)}
+        <button
+          type="button"
+          aria-pressed={filter === f.value}
+          aria-label="{f.label()} · {m.providers_configured_total({ configured: f.configured, total: f.total })}"
+          onclick={() => (filter = f.value)}
+        >
+          {f.label()}
+          <span class="pill-count mono" aria-hidden="true">{#key f.configured}<b class="tick">{f.configured}</b>{/key}/{f.total}</span>
+        </button>
+      {/each}
+    </div>
+
+    <div class="segmented" role="group" aria-label={m.providers_mode_label()}>
+      {#each modes as md (md.value)}
+        <button type="button" aria-pressed={mode === md.value} onclick={() => setMode(md.value)}>{md.label()}</button>
+      {/each}
+    </div>
+  </div>
+
+  {#if loading}
+    <div class="loading"><Spinner size="sm" />{m.common_loading()}</div>
+  {:else if providers.length === 0}
+    <EmptyState title={m.providers_empty()} description={m.providers_connect_first()} />
+  {:else if sections.length === 0}
+    {#if needle}
+      <EmptyState title={m.providers_no_match_title({ query: query.trim() })} description={m.providers_no_match_hint()}>
+        {#snippet icon()}<Search size={20} />{/snippet}
+        {#snippet action()}<Button variant="outline" onclick={clearSearch}>{m.providers_clear_search()}</Button>{/snippet}
+      </EmptyState>
+    {:else}
+      <EmptyState title={m.providers_none_configured_title()} description={m.providers_none_configured_hint()}>
+        {#snippet action()}<Button variant="outline" onclick={() => setMode('all')}>{m.providers_show_all()}</Button>{/snippet}
+      </EmptyState>
+    {/if}
+  {:else}
+    {#each sections as s (s.category)}
+      <section class="group" aria-labelledby="cat-{s.category}">
+        <header class="group-head">
+          <span class="cat-dot" data-cat={s.category} aria-hidden="true"></span>
+          <h2 id="cat-{s.category}">{categoryLabels[s.category]()}</h2>
+          <span class="chip">{#key s.items.length}<b class="tick">{s.items.length}</b>{/key}</span>
+        </header>
+
+        <div class="grid-auto" style="--grid-min: var(--col-lg)">
+          {#each s.items as p (p.id)}
+            {@const h = healthOf(p.id)}
+            <article class="card" data-provider-id={p.id} data-state={h.error ? 'error' : h.degraded ? 'degraded' : h.connected ? 'healthy' : 'idle'}>
+              <div class="card-top">
+                <ProviderLogo id={p.id} name={p.display_name} fallbackChar={p.icon_char} fallbackColor={p.icon_color} />
+                <div class="card-id">
+                  <a class="provider-link" href="/providers/{encodeURIComponent(p.id)}" onclick={() => remember(p.id)} aria-label={m.providers_open_detail({ name: p.display_name })}>{p.display_name}</a>
+                  <span class="category"><span class="cat-dot" data-cat={p.category} aria-hidden="true"></span>{categoryLabels[p.category]?.() ?? p.category}</span>
+                </div>
+                {#if p.site_url}
+                  <a class="site" href={p.site_url} target="_blank" rel="noopener noreferrer" aria-label={m.providers_open_site({ name: p.display_name })}><ExternalLink size={14} /></a>
+                {/if}
+                <ChevronRight class="chev" size={16} aria-hidden="true" />
+              </div>
+
+              <p class="desc">{p.description ?? p.id}</p>
+
+              <div class="foot">
+                <div class="health" aria-live="off">
+                  {#if h.connections === 0}
+                    <span class="hchip none">{m.providers_health_none()}</span>
+                  {:else}
+                    {#each healthStates as st (st.key)}
+                      {@const n = h[st.key]}
+                      {#if n > 0}
+                        <span class="hchip" data-tone={st.key}><span class="hdot" aria-hidden="true"></span>{#key n}<b class="tick">{n}</b>{/key}{st.label()}</span>
+                      {/if}
+                    {/each}
+                  {/if}
+                  {#if h.needsLogin > 0}
+                    <span class="hchip" data-tone="warn"><TriangleAlert size={12} aria-hidden="true" />{m.providers_accounts_need_login({ n: h.needsLogin })}</span>
+                  {/if}
+                </div>
+
+                {#if h.connections > 0}
+                  <div class="flight">
+                    <span class="flight-label">{m.providers_in_flight()}</span>
+                    <span class="flight-num mono">{#key h.active}<b class="tick">{h.active}</b>{/key}/{h.max || '—'}</span>
+                    <div class="flight-bar">
+                      <Meter bare value={h.active} limit={h.max || null} ariaLabel={m.providers_in_flight_aria({ active: h.active, max: h.max })} />
+                    </div>
+                  </div>
+                {/if}
+              </div>
+            </article>
+          {/each}
+        </div>
+      </section>
     {/each}
-  </tbody></table></div>{/if}
+  {/if}
 </div>
+
 <style>
-  .page-header h1{margin:0 0 3px}.page-header p{margin:0;font-size:var(--text-sm)}.filters{display:flex;gap:4px;margin:18px 0 12px}.filters button{background:var(--bg-surface);border:1px solid var(--border);color:var(--text-2);padding:5px 11px;cursor:pointer;font-size:var(--text-xs)}.filters button.active{color:var(--text-1);border-color:var(--accent);box-shadow:inset 0 -2px var(--accent)}.loading{display:flex;gap:8px;align-items:center;color:var(--text-3)}.table-wrap{overflow-x:auto;border:1px solid var(--border)}table{min-width:850px}.provider-cell{display:flex;align-items:center;gap:10px;min-width:235px}.icon{width:30px;height:30px;border-radius:4px;display:grid;place-items:center;color:#fff;font-weight:700}.provider-link{color:var(--accent);text-decoration:none;font-weight:550}
+  .page-header p { font-size: var(--text-sm); }
+
+  .live {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    font-size: var(--text-xs); color: var(--text-3); min-height: var(--control-h-sm);
+  }
+  .live-dot {
+    width: var(--space-2); height: var(--space-2); border-radius: var(--radius-full); background: var(--success);
+    animation: live-pulse var(--dur-pulse) ease-in-out infinite;
+  }
+  @keyframes live-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--success) 50%, transparent); }
+    50% { box-shadow: 0 0 0 var(--space-1) color-mix(in oklch, var(--success) 0%, transparent); }
+  }
+
+  /* ── Sticky glass toolbar ───────────────────────────────────────────── */
+  .toolbar {
+    position: sticky; top: var(--topbar-h); z-index: var(--z-sticky);
+    display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3);
+    padding: var(--space-2) var(--space-3); margin-bottom: var(--space-5);
+    border-radius: var(--radius-lg);
+  }
+  .search {
+    position: relative; display: flex; flex-direction: row; align-items: center; gap: 0; flex: 1 1 var(--col-md); min-width: 0;
+    color: var(--text-3);
+  }
+  .search > :global(svg) { position: absolute; left: var(--control-px); top: 50%; translate: 0 -50%; pointer-events: none; z-index: var(--z-raised); }
+  .search input { padding-left: var(--space-6); padding-right: var(--space-6); min-height: var(--control-h); }
+  .search input::-webkit-search-cancel-button { display: none; }
+  .clear {
+    position: absolute; right: var(--space-1); display: grid; place-items: center;
+    width: var(--control-h-sm); height: var(--control-h-sm); border: 0; border-radius: var(--radius-full);
+    background: transparent; color: var(--text-3); cursor: pointer;
+  }
+  .clear:hover { color: var(--text-1); background: var(--bg-hover); }
+
+  /* Segmented groups must scroll inside themselves, never widen the page. */
+  .pills { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .pills::-webkit-scrollbar { display: none; }
+  .segmented > button { display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap; cursor: pointer; }
+  .pill-count { font-size: var(--text-2xs); color: var(--text-3); }
+  .segmented > button[aria-pressed='true'] .pill-count { color: var(--accent); }
+  .pill-count :global(b), .chip :global(b) { font-weight: inherit; }
+
+  .loading { display: flex; gap: var(--space-2); align-items: center; color: var(--text-3); padding: var(--space-6) 0; }
+
+  /* ── Category sections ──────────────────────────────────────────────── */
+  .group { margin-bottom: var(--space-6); }
+  .group-head { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); min-width: 0; }
+  .group-head h2 { margin: 0; font-size: var(--text-md); }
+
+  .cat-dot {
+    --cat: var(--text-3);
+    display: inline-block; flex-shrink: 0; width: var(--space-2); height: var(--space-2);
+    border-radius: var(--radius-full); background: var(--cat);
+  }
+  .cat-dot[data-cat='oauth_ide'] { --cat: var(--accent); }
+  .cat-dot[data-cat='llm_api'] { --cat: var(--success); }
+  .cat-dot[data-cat='compatible'] { --cat: var(--cooldown); }
+
+  /* ── Card ───────────────────────────────────────────────────────────── */
+  .card {
+    --tone: var(--border-strong);
+    position: relative; display: flex; flex-direction: column; gap: var(--space-3); min-width: 0;
+    padding: var(--space-5); background: var(--bg-surface);
+    border: var(--border-w) solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-1);
+    transition: border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+  }
+  .card::before {
+    content: ''; position: absolute; left: 0; top: var(--space-4); bottom: var(--space-4);
+    width: var(--indicator-w); border-radius: var(--radius-full); background: var(--tone);
+    opacity: 0; transition: opacity var(--dur-2) var(--ease-out), background var(--dur-2) var(--ease-out);
+  }
+  .card[data-state='healthy'] { --tone: var(--success); }
+  .card[data-state='degraded'] { --tone: var(--warning); }
+  .card[data-state='error'] { --tone: var(--danger); }
+  .card:not([data-state='idle'])::before { opacity: 1; }
+  .card:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); box-shadow: var(--shadow-2); transform: var(--lift); }
+  .card:focus-within { border-color: var(--accent); box-shadow: var(--ring); }
+
+  .card-top { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+  .card-id { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-0); }
+
+  .provider-link {
+    color: var(--text-1); text-decoration: none; font-weight: var(--weight-semibold); font-size: var(--text-md);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; outline: none;
+  }
+  .provider-link:hover { color: var(--accent); }
+  /* stretch the primary link over the whole card; the site link stays above it */
+  .provider-link::after { content: ''; position: absolute; inset: 0; border-radius: var(--radius-lg); }
+  .site {
+    position: relative; z-index: var(--z-raised); flex-shrink: 0;
+    display: inline-grid; place-items: center; width: var(--control-h-sm); height: var(--control-h-sm);
+    border-radius: var(--radius-full); color: var(--text-3); text-decoration: none;
+  }
+  .site:hover { color: var(--accent); background: var(--bg-hover); }
+  .card-top :global(.chev) {
+    flex-shrink: 0; color: var(--accent); opacity: 0; transform: translateX(calc(var(--space-2) * -1));
+    transition: opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-spring);
+  }
+  .card:hover :global(.chev), .card:focus-within :global(.chev) { opacity: 1; transform: none; }
+
+  .category { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-3); }
+
+  .desc {
+    margin: 0; font-size: var(--text-sm); color: var(--text-2); line-height: var(--leading);
+    display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    min-height: var(--space-7);
+  }
+
+  /* ── Live footer ────────────────────────────────────────────────────── */
+  .foot {
+    display: flex; flex-direction: column; gap: var(--space-3); margin-top: auto;
+    padding-top: var(--space-3); border-top: var(--border-w) solid var(--border);
+  }
+  .health { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-height: var(--space-5); }
+  .hchip {
+    --t: var(--text-3);
+    display: inline-flex; align-items: center; gap: var(--space-1);
+    padding: var(--space-0) var(--space-2); border-radius: var(--radius-full);
+    font-size: var(--text-xs); font-weight: var(--weight-medium); color: var(--t);
+    background: color-mix(in oklch, var(--t) 14%, transparent);
+  }
+  .hchip[data-tone='connected'] { --t: var(--success); }
+  .hchip[data-tone='degraded'] { --t: var(--warning); }
+  .hchip[data-tone='error'] { --t: var(--danger); }
+  .hchip[data-tone='warn'] { --t: var(--warning); }
+  .hchip.none { background: transparent; padding-left: 0; }
+  .hdot { width: var(--space-1); height: var(--space-1); border-radius: var(--radius-full); background: var(--t); }
+  .hchip b { font-family: var(--font-mono); font-weight: var(--weight-semibold); }
+
+  .flight { display: grid; grid-template-columns: auto 1fr auto; align-items: center; column-gap: var(--space-3); }
+  .flight-label { font-size: var(--text-xs); color: var(--text-3); }
+  .flight-num { font-size: var(--text-xs); color: var(--text-2); text-align: right; grid-column: 3; grid-row: 1; }
+  .flight-bar { grid-column: 2; grid-row: 1; min-width: 0; }
+
+  /* One-shot tick whenever a keyed counter remounts with a new value. */
+  .tick { display: inline-block; font-weight: inherit; animation: tick var(--dur-3) var(--ease-spring); }
+  @keyframes tick {
+    from { opacity: 0.2; transform: scale(1.35); color: var(--accent); }
+  }
+
+  @media (max-width: 480px) {
+    .toolbar { top: var(--topbar-h); }
+    .toolbar > .segmented { max-width: 100%; }
+    .card { padding: var(--space-4); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .card, .card:hover { transition: none; transform: none; }
+    .card::before, .card-top :global(.chev) { transition: none; }
+    .tick, .live-dot { animation: none; }
+  }
 </style>

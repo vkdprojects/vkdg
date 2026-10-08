@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Card, Input, Spinner, CopyButton, Badge } from '$lib/components/index.js';
-  import { Zap, ArrowRight, ArrowLeft, CheckCircle2 } from 'lucide-svelte';
+  import { Zap, ArrowRight, ArrowLeft, CheckCircle2, Check } from 'lucide-svelte';
   import { m } from '$lib/paraglide/messages.js';
 
   // ── state ──────────────────────────────────────────────────────────────────
@@ -56,11 +56,15 @@
   }
 </script>
 
-<div class="wizard-wrap">
+<div class="page wizard-wrap">
   <!-- ── step indicator ──────────────────────────────────────────────────── -->
-  <div class="step-bar" role="progressbar" aria-valuemin={1} aria-valuemax={5} aria-valuenow={step} aria-label={m.setup_progress_label()}>
+  <div class="stepper" role="progressbar" aria-valuemin={1} aria-valuemax={5} aria-valuenow={step} aria-label={m.setup_progress_label()}>
     {#each [1, 2, 3, 4, 5] as s}
-      <div class="step-dot" class:active={step === s} class:done={step > s}></div>
+      <div class="step-node" class:active={step === s} class:done={step > s}>
+        <span class="step-circle">
+          {#if step > s}<Check size={14} strokeWidth={3} aria-hidden="true" />{:else}{s}{/if}
+        </span>
+      </div>
     {/each}
   </div>
 
@@ -211,125 +215,167 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
-    min-height: 100%;
-    padding: 3rem 2rem 4rem;
+    padding-top: var(--space-6);
   }
 
-  /* ── step indicator ──────────────────────────────────────────────────── */
-  .step-bar {
+  /* ── stepper ─────────────────────────────────────────────────────────── */
+  .stepper {
     display: flex;
-    gap: 8px;
-    margin-bottom: 3rem;
+    align-items: center;
+    margin: 0 0 var(--space-6);
+    width: 100%;
+    max-width: calc(var(--space-8) * 5.5);
   }
 
-  .step-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 2px;
+  .step-node {
+    display: flex;
+    align-items: center;
+    flex: 1;
+  }
+
+  .step-node:last-child { flex: 0; }
+
+  /* connector line to the next node */
+  .step-node:not(:last-child)::after {
+    content: '';
+    flex: 1;
+    height: var(--focus-w);
+    margin: 0 var(--space-2);
+    border-radius: var(--radius-full);
     background: var(--border-strong);
-    transition: background 0.2s, transform 0.2s;
+    transition: background var(--dur-3) var(--ease-out);
   }
 
-  .step-dot.active {
+  .step-node.done:not(:last-child)::after {
     background: var(--accent);
-    transform: scale(1.4);
   }
 
-  .step-dot.done {
-    background: var(--success);
+  .step-circle {
+    display: grid;
+    place-items: center;
+    width: var(--control-h-sm);
+    height: var(--control-h-sm);
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    font-variant-numeric: tabular-nums;
+    transition: background var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out),
+                border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out),
+                transform var(--dur-2) var(--ease-spring);
+  }
+
+  .step-node.active .step-circle {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+    color: var(--accent);
+    box-shadow: var(--ring);
+    transform: scale(1.08);
+  }
+
+  .step-node.done .step-circle {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--on-accent);
   }
 
   /* ── steps ───────────────────────────────────────────────────────────── */
   .step {
     width: 100%;
-    max-width: 640px;
+    max-width: calc(var(--space-8) * 10);
+    animation: step-in var(--dur-3) var(--ease-out);
   }
 
-  .narrow-step {
-    max-width: 480px;
-  }
+  @keyframes step-in { from { opacity: 0; transform: translateY(var(--space-2)); } }
+
+  .narrow-step { max-width: calc(var(--space-8) * 7.5); }
 
   .center-step {
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    gap: 1rem;
+    gap: var(--space-4);
+    padding-top: var(--space-4);
   }
 
-  /* ── step 1: welcome ─────────────────────────────────────────────────── */
+  /* ── step 1: welcome (the one bold moment) ───────────────────────────── */
   .hero-icon {
-    width: 64px;
-    height: 64px;
-    border-radius: var(--radius);
-    background: var(--accent-subtle);
-    border: 1px solid var(--border-strong);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--accent);
-    margin-bottom: 0.5rem;
+    width: calc(var(--space-8) * 1.125);
+    height: calc(var(--space-8) * 1.125);
+    border-radius: var(--radius-lg);
+    background: var(--accent);
+    display: grid;
+    place-items: center;
+    color: var(--on-accent);
+    box-shadow: var(--glow);
+    margin-bottom: var(--space-2);
   }
 
   .wizard-title {
     font-size: var(--text-xl);
-    font-weight: 700;
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-tight);
     color: var(--text-1);
-    margin: 0 0 0.25rem;
-    line-height: 1.2;
+    margin: 0 0 var(--space-1);
+    line-height: var(--leading-tight);
+    text-wrap: balance;
   }
+
+  .center-step .wizard-title { font-size: var(--text-hero); }
 
   .wizard-sub {
     font-size: var(--text-base);
     color: var(--text-2);
-    margin: 0 0 1.5rem;
-    line-height: 1.5;
+    margin: 0 0 var(--space-5);
+    line-height: var(--leading);
+    max-width: 52ch;
+    overflow-wrap: anywhere;
   }
 
-  .wizard-sub a {
-    color: var(--accent);
-    text-decoration: none;
-  }
+  .center-step .wizard-sub { margin-bottom: var(--space-3); }
 
-  .wizard-sub a:hover {
-    text-decoration: underline;
-  }
+  .wizard-sub a:hover { text-decoration: underline; }
 
   /* ── step 2: providers ───────────────────────────────────────────────── */
   .provider-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, calc(var(--space-8) * 3.75)), 1fr));
+    gap: var(--space-3);
+    margin-top: var(--space-5);
   }
 
   .provider-card {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0.875rem 1rem;
+    gap: var(--space-3);
+    min-height: var(--control-h-lg);
+    padding: var(--space-3) var(--space-4);
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
+    box-shadow: var(--shadow-1);
+    color: inherit;
+    font: inherit;
     cursor: pointer;
     text-align: left;
-    transition: border-color 0.15s, background 0.15s;
   }
 
   .provider-card:hover {
-    border-color: var(--border-strong);
+    border-color: var(--accent-strong);
     background: var(--bg-elevated);
+    transform: var(--lift);
   }
 
-  .provider-card:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
+  .provider-card:active { transform: var(--press); }
 
   .provider-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 2px;
+    width: var(--dot-size);
+    height: var(--dot-size);
+    border-radius: var(--radius-full);
     background: var(--accent);
     flex-shrink: 0;
   }
@@ -338,17 +384,18 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--space-0);
     min-width: 0;
   }
 
   .provider-name {
     font-size: var(--text-sm);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
     color: var(--text-1);
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
   }
 
   .provider-desc {
@@ -359,28 +406,32 @@
   :global(.provider-arrow) {
     color: var(--text-3);
     flex-shrink: 0;
+    transition: transform var(--dur-2) var(--ease-out), color var(--dur-1) ease;
+  }
+
+  .provider-card:hover :global(.provider-arrow) {
+    color: var(--accent);
+    transform: translateX(var(--space-1));
   }
 
   /* ── step 3: API key ─────────────────────────────────────────────────── */
-  .form-group {
-    margin-bottom: 1.5rem;
-  }
+  .form-group { margin-bottom: var(--space-5); }
 
   .key-note {
     font-size: var(--text-xs);
     color: var(--text-3);
-    margin: 0.5rem 0 0;
+    margin: var(--space-2) 0 0;
   }
 
   .action-row {
     display: flex;
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: var(--space-2);
     align-items: center;
+    justify-content: space-between;
   }
 
-  .justify-end {
-    justify-content: flex-end;
-  }
+  .justify-end { justify-content: flex-end; }
 
   /* ── step 4: testing ─────────────────────────────────────────────────── */
   .testing-label {
@@ -390,57 +441,69 @@
   }
 
   .success-icon {
+    display: grid;
+    place-items: center;
+    width: calc(var(--space-8) * 1.125);
+    height: calc(var(--space-8) * 1.125);
+    border-radius: var(--radius-full);
+    background: var(--success-subtle);
     color: var(--success);
+    animation: pop-in var(--dur-3) var(--ease-spring);
   }
+
+  @keyframes pop-in { from { opacity: 0; transform: scale(0.5); } }
 
   .success-label {
     color: var(--success);
-    font-weight: 500;
+    font-weight: var(--weight-medium);
   }
 
   /* ── step 5: ready ───────────────────────────────────────────────────── */
   .endpoint-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 0.625rem 0.875rem;
-    background: var(--bg-elevated);
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+    background: var(--bg-inset);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    margin-bottom: 1.5rem;
+    border-radius: var(--radius);
+    margin-bottom: var(--space-5);
   }
 
   .endpoint-url {
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: var(--text-sm);
     color: var(--accent);
+    background: none;
+    border: 0;
+    padding: 0;
   }
 
   .divider {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
     color: var(--text-3);
-    font-size: var(--text-xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
   }
 
   .divider::before,
   .divider::after {
     content: '';
     flex: 1;
-    height: 1px;
+    height: var(--border-w);
     background: var(--border);
   }
 
   .code-blocks {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-bottom: 2rem;
+    gap: var(--space-3);
+    margin-bottom: var(--space-6);
   }
 
   .code-block {
@@ -452,49 +515,59 @@
 
   .code-label {
     display: block;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-3);
-    padding: 0.5rem 0.875rem 0.25rem;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    color: var(--text-2);
+    padding: var(--space-3) var(--space-4) 0;
   }
 
   .code-line {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 0.5rem 0.875rem 0.625rem;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3) var(--space-3) var(--space-4);
   }
 
   .code-line code {
+    flex: 1 1 calc(var(--space-8) * 3.5);
+    min-width: 0;
     font-size: var(--text-sm);
     color: var(--text-1);
-    word-break: break-all;
+    overflow-wrap: anywhere;
   }
 
   .btn-link {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 0.625rem 1.25rem;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: var(--control-h-lg);
+    padding: var(--space-2) var(--space-5);
     background: var(--accent);
-    color: var(--bg-base);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    font-weight: 600;
-    text-decoration: none;
-    transition: background 0.1s;
+    color: var(--on-accent);
+    border-radius: var(--radius);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
     white-space: nowrap;
+    box-shadow: var(--shadow-1);
   }
 
   .btn-link:hover {
     background: var(--accent-hover);
+    color: var(--on-accent);
+    transform: var(--lift);
   }
 
-  .btn-link:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+  .btn-link:active { transform: var(--press); }
+
+  @media (max-width: 480px) {
+    .action-row > :global(*) { flex: 1 1 auto; }
+    .justify-end .btn-link { width: 100%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .provider-card:hover, .btn-link:hover { transform: none; }
   }
 </style>

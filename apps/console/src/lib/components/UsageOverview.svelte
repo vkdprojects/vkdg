@@ -35,7 +35,7 @@
         <h2>{m.usage_overview_title()}</h2>
         <p>{m.usage_overview_desc()}</p>
       </header>
-      <div class="grid" style="--cols: {columns.length}">
+      <div class="scroll"><div class="grid" style="--cols: {columns.length}">
         <div class="cell head-cell">{m.usage_overview_account()}</div>
         {#each columns as col (col)}<div class="cell head-cell">{usageLabels[col]()}</div>{/each}
         {#each rows as row (row.account.id)}
@@ -54,27 +54,28 @@
             {/each}
           {/if}
         {/each}
-      </div>
+      </div></div>
     </section>
   </Card>
 {/if}
 
 <style>
-  .overview { padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
-  .head h2 { margin: 0; font-size: 0.9375rem; color: var(--text-1); }
-  .head p { margin: 2px 0 0; font-size: var(--text-xs); color: var(--text-2); }
+  .overview { padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+  .head h2 { margin: 0; border: 0; padding: 0; font-size: var(--text-md); color: var(--text-1); }
+  .head p { margin: var(--space-0) 0 0; font-size: var(--text-xs); color: var(--text-2); }
+  .scroll { overflow-x: auto; margin: 0 calc(var(--space-5) * -1); padding: 0 var(--space-5); }
   .grid {
     display: grid;
-    grid-template-columns: minmax(10rem, 1.2fr) repeat(var(--cols), minmax(8rem, 1fr));
-    column-gap: 16px;
-    row-gap: 10px;
+    grid-template-columns: minmax(var(--col-xs), 1.2fr) repeat(var(--cols), minmax(var(--col-xs), 1fr));
+    column-gap: var(--space-5);
+    row-gap: var(--space-4);
     align-items: center;
-    overflow-x: auto;
+    min-width: max-content;
   }
-  .head-cell { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.06em; }
+  .head-cell { color: var(--text-3); font-size: var(--text-xs); font-weight: var(--weight-medium); padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
   .who { display: flex; flex-direction: column; min-width: 0; }
-  .provider { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.06em; }
-  .label { color: var(--text-1); font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .provider { color: var(--text-3); font-size: var(--text-2xs); }
+  .label { color: var(--text-1); font-size: var(--text-sm); font-weight: var(--weight-medium); overflow-wrap: anywhere; }
   .span { grid-column: 2 / -1; }
   .none { color: var(--text-3); }
 </style>

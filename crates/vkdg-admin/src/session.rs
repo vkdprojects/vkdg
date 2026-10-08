@@ -6,17 +6,19 @@
 //! restarts. The password is stored as an argon2id PHC hash in a `0600` file
 //! next to `accounts.db`. Recovery is `vkdg admin set-password` on the host.
 //!
-//! Sessions live in memory and expire after [`SESSION_IDLE`] without use; a
-//! restart signs everyone out. Failed sign-ins are throttled per client
-//! address (resolved like the data plane, trusted proxies included).
+//! Sessions survive restarts: they are persisted in a `sessions` table inside
+//! `gateway.db` and reloaded on startup. A session unused for [`SESSION_IDLE`]
+//! is expired both on access and on the next startup load. Failed sign-ins are
+//! throttled per client address (resolved like the data plane).
 
 use parking_lot::{Mutex, RwLock};
+use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use vkdg_core::net::IpNet;
 
@@ -66,6 +68,8 @@ pub struct SessionStore {
     failures: Mutex<HashMap<Option<IpAddr>, (Instant, u32)>>,
     global: Mutex<(Instant, u32)>,
     idle: Duration,
+    /// Persistent session store. `None` = in-memory only (tests).
+    db: Option<Mutex<Connection>>,
 }
 
 impl SessionStore {
@@ -98,7 +102,84 @@ impl SessionStore {
             failures: Mutex::new(HashMap::new()),
             global: Mutex::new((Instant::now(), 0)),
             idle: SESSION_IDLE,
+            db: None,
         }
+    }
+
+    /// Attach a persistent SQLite connection for session survival across restarts.
+    /// Initialises the schema and loads unexpired sessions from the DB.
+    pub fn with_db(self: Arc<Self>, conn: Connection) -> Arc<Self> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS admin_sessions (
+                 session_id TEXT PRIMARY KEY NOT NULL,
+                 user_id    TEXT NOT NULL,
+                 role       TEXT NOT NULL,
+                 last_seen  INTEGER NOT NULL
+             );",
+        )
+        .ok();
+        // Load unexpired sessions.
+        let cutoff = now_secs().saturating_sub(self.idle.as_secs());
+        {
+            let mut map = self.sessions.write();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT session_id, user_id, role, last_seen
+                       FROM admin_sessions WHERE last_seen >= ?1",
+                )
+                .expect("prepare load sessions");
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![i64::try_from(cutoff).unwrap_or(i64::MAX)],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .expect("query sessions");
+            let idle_secs = self.idle.as_secs();
+            for row in rows.flatten() {
+                let (sid, uid, role_str, last_seen_secs) = row;
+                let elapsed = now_secs().saturating_sub(u64::try_from(last_seen_secs).unwrap_or(0));
+                if elapsed >= idle_secs {
+                    continue;
+                }
+                let last_seen = Instant::now()
+                    .checked_sub(Duration::from_secs(
+                        elapsed.min(idle_secs.saturating_sub(1)),
+                    ))
+                    .unwrap_or_else(Instant::now);
+                map.insert(
+                    sid.clone(),
+                    Live {
+                        session: Session {
+                            session_id: sid,
+                            user_id: uid,
+                            role: role_from_str(&role_str),
+                        },
+                        last_seen,
+                    },
+                );
+            }
+        }
+        // Delete expired rows.
+        conn.execute(
+            "DELETE FROM admin_sessions WHERE last_seen < ?1",
+            rusqlite::params![i64::try_from(cutoff).unwrap_or(i64::MAX)],
+        )
+        .ok();
+        // SAFETY: Arc::get_mut is fine here — caller owns the only reference.
+        let store = Arc::try_unwrap(self).unwrap_or_else(|_arc| {
+            panic!("with_db called after Arc was shared");
+        });
+        Arc::new(Self {
+            db: Some(Mutex::new(conn)),
+            ..store
+        })
     }
 
     // ── Password ──────────────────────────────────────────────────────────────
@@ -186,7 +267,7 @@ impl SessionStore {
 
     // ── Sessions ──────────────────────────────────────────────────────────────
 
-    /// A new admin session.
+    /// A new admin session, persisted to DB if configured.
     pub fn issue(&self) -> Session {
         let session = Session {
             session_id: Uuid::new_v4().to_string(),
@@ -200,6 +281,21 @@ impl SessionStore {
                 last_seen: Instant::now(),
             },
         );
+        if let Some(db) = &self.db {
+            db.lock()
+                .execute(
+                    "INSERT OR REPLACE INTO admin_sessions
+                         (session_id, user_id, role, last_seen)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        &session.session_id,
+                        &session.user_id,
+                        role_to_str(&session.role),
+                        i64::try_from(now_secs()).unwrap_or(i64::MAX)
+                    ],
+                )
+                .ok();
+        }
         session
     }
 
@@ -210,14 +306,38 @@ impl SessionStore {
         let live = sessions.get_mut(session_id)?;
         if now.duration_since(live.last_seen) >= self.idle {
             sessions.remove(session_id);
+            if let Some(db) = &self.db {
+                db.lock()
+                    .execute(
+                        "DELETE FROM admin_sessions WHERE session_id = ?1",
+                        rusqlite::params![session_id],
+                    )
+                    .ok();
+            }
             return None;
         }
         live.last_seen = now;
+        if let Some(db) = &self.db {
+            db.lock()
+                .execute(
+                    "UPDATE admin_sessions SET last_seen = ?1 WHERE session_id = ?2",
+                    rusqlite::params![i64::try_from(now_secs()).unwrap_or(i64::MAX), session_id],
+                )
+                .ok();
+        }
         Some(live.session.clone())
     }
 
     pub fn revoke(&self, session_id: &str) {
         self.sessions.write().remove(session_id);
+        if let Some(db) = &self.db {
+            db.lock()
+                .execute(
+                    "DELETE FROM admin_sessions WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                )
+                .ok();
+        }
     }
 
     // ── Throttling ────────────────────────────────────────────────────────────
@@ -236,15 +356,15 @@ impl SessionStore {
         let now = Instant::now();
         let over = |(start, count): (Instant, u32), limit: u32| {
             let elapsed = now.duration_since(start);
-            (elapsed < FAILURE_WINDOW && count >= limit).then(|| FAILURE_WINDOW - elapsed)
+            (elapsed < FAILURE_WINDOW && count >= limit)
+                .then(|| FAILURE_WINDOW.checked_sub(elapsed).unwrap())
         };
-        if let Some(wait) = over(*self.global.lock(), MAX_GLOBAL_FAILURES) {
+        let global_val = *self.global.lock();
+        if let Some(wait) = over(global_val, MAX_GLOBAL_FAILURES) {
             return Some(wait);
         }
-        self.failures
-            .lock()
-            .get(&ip)
-            .and_then(|w| over(*w, MAX_FAILURES))
+        let val = self.failures.lock().get(&ip).copied();
+        val.and_then(|w| over(w, MAX_FAILURES))
     }
 
     pub fn record_failure(&self, ip: Option<IpAddr>) {
@@ -306,6 +426,28 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(tmp, path)
+}
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn role_to_str(role: &Role) -> &'static str {
+    match role {
+        Role::Admin => "admin",
+        Role::Operator => "operator",
+        Role::Viewer => "viewer",
+    }
+}
+
+fn role_from_str(s: &str) -> Role {
+    match s {
+        "operator" => Role::Operator,
+        "viewer" => Role::Viewer,
+        _ => Role::Admin,
+    }
 }
 
 #[cfg(test)]
@@ -405,7 +547,7 @@ mod tests {
     #[test]
     fn throttle_map_is_bounded() {
         let (s, _d) = store();
-        for i in 0..(MAX_TRACKED as u32 + 500) {
+        for i in 0..(u32::try_from(MAX_TRACKED).unwrap_or(u32::MAX) + 500) {
             s.record_failure(Some(IpAddr::from(i.to_be_bytes())));
         }
         assert!(s.tracked() <= MAX_TRACKED);

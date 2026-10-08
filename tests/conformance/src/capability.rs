@@ -25,8 +25,8 @@ fn make_config(id: &str, capabilities: CapabilitySet) -> ConnectionConfig {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-/// Wrong impl this catches: eligible_for_operation that ignores the capability
-/// check (e.g. falls through to eligible() without filtering) would return the
+/// Wrong impl this catches: `eligible_for_operation` that ignores the capability
+/// check (e.g. falls through to `eligible()` without filtering) would return the
 /// connection even though its capabilities set is empty, causing silent
 /// fail-open routing to an incapable backend.
 #[test]
@@ -49,7 +49,7 @@ fn unsupported_capability_is_explicit_error_not_fail_open() {
 }
 
 /// Wrong impl this catches: a capability check that uses == instead of
-/// is_superset, causing a connection that supports exactly the required set to
+/// `is_superset`, causing a connection that supports exactly the required set to
 /// be incorrectly excluded.
 #[test]
 fn connection_with_exact_capability_is_eligible() {
@@ -70,7 +70,7 @@ fn connection_with_exact_capability_is_eligible() {
     );
 }
 
-/// Wrong impl this catches: a capability check that requires empty required_caps
+/// Wrong impl this catches: a capability check that requires empty `required_caps`
 /// to return nothing — empty means "no filter", all healthy connections pass.
 #[test]
 fn empty_required_caps_matches_all_healthy_connections() {
@@ -112,7 +112,7 @@ fn partial_capability_match_is_not_eligible() {
     );
 }
 
-/// Unit check: CapabilitySet operations work correctly.
+/// Unit check: `CapabilitySet` operations work correctly.
 /// PASSES — these are already-implemented standard collection operations.
 #[test]
 fn capability_set_contains_and_insert() {
@@ -145,7 +145,7 @@ fn all_capability_variants_exist() {
 // ── IP policy (scenario: ip_allowlist_blocks_request) ─────────────────────────
 
 /// Plausible wrong impl: blocklist doesn't override allowlist.
-/// Scenario: spec/scenarios/ip_allowlist_blocks_request.yaml
+/// Scenario: `spec/scenarios/ip_allowlist_blocks_request.yaml`
 #[test]
 fn ip_policy_blocklist_wins_over_allowlist() {
     use vkdg_core::net::IpRules;
@@ -159,7 +159,7 @@ fn ip_policy_blocklist_wins_over_allowlist() {
 
 /// Plausible wrong impl: non-empty allowlist with no matching entry silently
 /// allows the request instead of blocking it.
-/// Scenario: spec/scenarios/ip_allowlist_blocks_request.yaml (contract: unlisted IPs blocked)
+/// Scenario: `spec/scenarios/ip_allowlist_blocks_request.yaml` (contract: unlisted IPs blocked)
 #[test]
 fn ip_policy_allowlist_blocks_unlisted_ip() {
     use vkdg_core::net::IpRules;

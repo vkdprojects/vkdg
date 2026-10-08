@@ -169,6 +169,7 @@ mod tests {
     fn nets(entries: &[&str]) -> Vec<IpNet> {
         entries.iter().map(|e| e.parse().unwrap()).collect()
     }
+    #[allow(clippy::unnecessary_wraps)] // returns Option<IpAddr> to match allows() signature
     fn ip(s: &str) -> Option<IpAddr> {
         Some(s.parse().unwrap())
     }

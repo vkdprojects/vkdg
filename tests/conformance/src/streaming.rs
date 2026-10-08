@@ -38,7 +38,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
     let conn_id = ConnectionId("stream-bp".into());
     let config = ConnectionConfig {
         id: conn_id.clone(),
-        provider: ProviderKind::Custom { base_url },
+        provider: ProviderKind::AnthropicCompat { base_url },
         auth: AuthKind::ApiKey {
             env_var: "VKDG_SMOKE_KEY".into(),
         },
@@ -88,7 +88,7 @@ fn make_streaming_pipeline(base_url: String) -> Arc<PipelineState> {
 
 // ── encode_event (already implemented, GREEN) ──────────────────────────────────
 
-/// Plausible wrong impl: encode_event omits the leading "data: " prefix,
+/// Plausible wrong impl: `encode_event` omits the leading "data: " prefix,
 /// breaking SSE client parsers that require it.
 /// PASSES.
 #[test]
@@ -125,7 +125,7 @@ fn encode_event_completed_emits_done_frame() {
 
 // ── SseParser: basic round-trip ────────────────────────────────────────────────
 
-/// Plausible wrong impl: push() treats a partial buffer as a complete event
+/// Plausible wrong impl: `push()` treats a partial buffer as a complete event
 /// and emits it early, producing a garbled payload.
 /// RED: fails if parser emits an event before the \n\n terminator arrives.
 #[test]
@@ -135,8 +135,7 @@ fn parser_does_not_emit_partial_event() {
     let events = parser.push(b"data: {\"hello\":");
     assert!(
         events.is_empty(),
-        "Must not emit event from partial chunk (no \\n\\n yet); got {:?}",
-        events
+        "Must not emit event from partial chunk (no \\n\\n yet); got {events:?}"
     );
 }
 
@@ -154,16 +153,14 @@ fn parser_reassembles_event_split_at_arbitrary_byte() {
         let ea = parser.push(a);
         assert!(
             ea.is_empty(),
-            "split_at={split}: partial chunk must not emit event; got {:?}",
-            ea
+            "split_at={split}: partial chunk must not emit event; got {ea:?}"
         );
 
         let eb = parser.push(b);
         assert_eq!(
             eb.len(),
             1,
-            "split_at={split}: completing the frame must emit exactly 1 event; got {:?}",
-            eb
+            "split_at={split}: completing the frame must emit exactly 1 event; got {eb:?}"
         );
         assert_eq!(
             eb[0].data, "hello world",
@@ -174,7 +171,7 @@ fn parser_reassembles_event_split_at_arbitrary_byte() {
 
 /// Plausible wrong impl: parser flushes its buffer between calls, so the
 /// second push sees no prior data and never finds the delimiter.
-/// RED: fails if state isn't preserved across push() calls.
+/// RED: fails if state isn't preserved across `push()` calls.
 #[test]
 fn parser_preserves_buffer_across_push_calls() {
     let mut parser = SseParser::new();
@@ -185,8 +182,7 @@ fn parser_preserves_buffer_across_push_calls() {
     assert_eq!(
         events.len(),
         1,
-        "Delimiter arriving in a separate push must complete the buffered event; got {:?}",
-        events
+        "Delimiter arriving in a separate push must complete the buffered event; got {events:?}"
     );
     assert_eq!(events[0].data, "payload");
 }
@@ -194,8 +190,8 @@ fn parser_preserves_buffer_across_push_calls() {
 // ── SseParser: [DONE] sentinel ────────────────────────────────────────────────
 
 /// Plausible wrong impl: parser treats "data: [DONE]" as a normal data event
-/// and emits a ConversationEvent, confusing the downstream consumer.
-/// For the SSE layer: [DONE] IS emitted as an SseEvent with data="[DONE]".
+/// and emits a `ConversationEvent`, confusing the downstream consumer.
+/// For the SSE layer: [DONE] IS emitted as an `SseEvent` with data="[DONE]".
 /// The CALLER (pipeline) is responsible for recognising and stopping.
 /// RED: fails if parser silently drops [DONE] instead of surfacing it.
 #[test]
@@ -225,22 +221,20 @@ fn parser_drops_empty_event_without_panic() {
     let events = parser.push(b"\n\n");
     assert!(
         events.is_empty(),
-        "Empty event (bare \\n\\n) must be silently dropped; got {:?}",
-        events
+        "Empty event (bare \\n\\n) must be silently dropped; got {events:?}"
     );
 }
 
 /// Plausible wrong impl: comment-only events (lines starting with ':') are
 /// treated as data, polluting the event stream with keep-alive noise.
-/// RED: fails if comments leak through as SseEvents.
+/// RED: fails if comments leak through as `SseEvents`.
 #[test]
 fn parser_drops_comment_only_event() {
     let mut parser = SseParser::new();
     let events = parser.push(b": keep-alive\n\n");
     assert!(
         events.is_empty(),
-        "Comment-only event must be dropped; got {:?}",
-        events
+        "Comment-only event must be dropped; got {events:?}"
     );
 }
 
@@ -257,8 +251,7 @@ fn parser_extracts_multiple_events_from_one_push() {
     assert_eq!(
         events.len(),
         2,
-        "Two complete events in one push must both be returned; got {:?}",
-        events
+        "Two complete events in one push must both be returned; got {events:?}"
     );
     assert_eq!(events[0].data, "first");
     assert_eq!(events[1].data, "second");
@@ -268,7 +261,7 @@ fn parser_extracts_multiple_events_from_one_push() {
 
 /// Plausible wrong impl: the `event:` field is ignored, so typed events
 /// (e.g. "event: ping") lose their type tag downstream.
-/// RED: fails if event_type is None when an `event:` line was present.
+/// RED: fails if `event_type` is None when an `event:` line was present.
 #[test]
 fn parser_captures_event_type_field() {
     let mut parser = SseParser::new();
@@ -285,7 +278,7 @@ fn parser_captures_event_type_field() {
 
 /// Plausible wrong impl: a partial frame left in the buffer at EOF is silently
 /// emitted as a complete event, producing corrupted data.
-/// RED: fails if push() of non-terminated bytes eventually leaks an event.
+/// RED: fails if `push()` of non-terminated bytes eventually leaks an event.
 #[test]
 fn parser_does_not_emit_unterminated_frame_at_eof() {
     let mut parser = SseParser::new();
@@ -293,26 +286,24 @@ fn parser_does_not_emit_unterminated_frame_at_eof() {
     let events = parser.push(b"data: incomplete");
     assert!(
         events.is_empty(),
-        "Unterminated frame must not be emitted; got {:?}",
-        events
+        "Unterminated frame must not be emitted; got {events:?}"
     );
     // A second push with more data (but still no terminator) also must not emit.
     let events2 = parser.push(b" continues but never ends");
     assert!(
         events2.is_empty(),
-        "Continued unterminated frame must not emit; got {:?}",
-        events2
+        "Continued unterminated frame must not emit; got {events2:?}"
     );
 }
 
 // ── Slow client ───────────────────────────────────────────────────────────────
 
 /// Plausible wrong impl: pipeline collects the entire upstream body into Bytes before
-/// returning the Response (e.g. resp.bytes().await instead of resp.bytes_stream()),
+/// returning the Response (e.g. resp.bytes().await instead of `resp.bytes_stream()`),
 /// causing OOM with long responses and breaking backpressure to the upstream reader.
 ///
-/// Proof: Body::from_stream(stream) has size_hint().upper() == None (unknown length,
-/// truly lazy). Body::from(bytes) has size_hint().upper() == Some(n) (pre-buffered).
+/// Proof: `Body::from_stream(stream)` has `size_hint().upper()` == None (unknown length,
+/// truly lazy). `Body::from(bytes)` has `size_hint().upper()` == Some(n) (pre-buffered).
 /// A regression to eager buffering would produce Some(n) and this test would fail.
 #[tokio::test]
 async fn slow_client_backpressure_no_unbounded_buffer() {
@@ -351,6 +342,7 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     });
     let ctx = PipelineCtx::new(envelope);
 
@@ -395,9 +387,9 @@ async fn slow_client_backpressure_no_unbounded_buffer() {
 
 // ── think-tag stripping (scenario: think_tags_stripped_by_default) ────────────
 
-/// Plausible wrong impl: think tags not stripped when strip_think_tags=true.
-/// Scenario: spec/scenarios/think_tags_stripped_by_default.yaml
-/// PASSES — strip_think_tags is already implemented.
+/// Plausible wrong impl: think tags not stripped when `strip_think_tags=true`.
+/// Scenario: `spec/scenarios/think_tags_stripped_by_default.yaml`
+/// PASSES — `strip_think_tags` is already implemented.
 #[test]
 fn sse_parser_strips_think_tags_by_default() {
     use vkdg_http::sse::strip_think_tags;
@@ -415,7 +407,7 @@ fn sse_parser_strips_think_tags_by_default() {
 
 /// Plausible wrong impl: stripping modifies content outside think blocks,
 /// corrupting the factual part of the response.
-/// Scenario: spec/scenarios/think_tags_stripped_by_default.yaml (invariant: text outside not modified)
+/// Scenario: `spec/scenarios/think_tags_stripped_by_default.yaml` (invariant: text outside not modified)
 /// PASSES.
 #[test]
 fn sse_parser_think_stripping_preserves_content() {
@@ -428,7 +420,7 @@ fn sse_parser_think_stripping_preserves_content() {
     );
 }
 
-/// Plausible wrong impl: SseParser.new() has strip_think_tags=false by default,
+/// Plausible wrong impl: `SseParser.new()` has `strip_think_tags=false` by default,
 /// leaking reasoning tokens to clients that don't opt in.
 /// PASSES — default is true.
 #[test]
@@ -440,7 +432,7 @@ fn sse_parser_defaults_to_stripping_think_tags() {
     );
 }
 
-/// Plausible wrong impl: with_think_tags() does not disable stripping,
+/// Plausible wrong impl: `with_think_tags()` does not disable stripping,
 /// so clients that opt in still have reasoning stripped.
 /// PASSES.
 #[test]

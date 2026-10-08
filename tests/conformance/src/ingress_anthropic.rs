@@ -5,7 +5,7 @@
 use bytes::Bytes;
 use vkdg_core::VkdgError;
 use vkdg_ingress_anthropic::decode_request;
-use vkdg_operations::Operation;
+use vkdg_operations::{MessageContent, Operation, Role};
 
 /// Contract: valid Anthropic request body decodes to Conversation operation.
 /// PASSES.
@@ -21,11 +21,10 @@ async fn decode_valid_messages_request() {
         }"#,
     );
 
-    let result = decode_request(body);
+    let result = decode_request(&body);
     assert!(
         result.is_ok(),
-        "decode_request must succeed on valid body; got {:?}",
-        result
+        "decode_request must succeed on valid body; got {result:?}"
     );
 
     let (model, op) = result.unwrap();
@@ -36,7 +35,7 @@ async fn decode_valid_messages_request() {
             assert_eq!(req.messages.len(), 1);
             assert!(!req.stream, "stream defaults to false when absent");
         }
-        other => panic!("Expected Operation::Conversation, got {:?}", other),
+        other => panic!("Expected Operation::Conversation, got {other:?}"),
     }
 }
 
@@ -53,37 +52,61 @@ async fn decode_valid_stream_flag_preserved() {
         }"#,
     );
 
-    let (_, op) = decode_request(body).unwrap();
+    let (_, op) = decode_request(&body).unwrap();
     match op {
         Operation::Conversation(req) => {
             assert!(req.stream, "stream=true must be preserved through decode");
         }
-        other => panic!("Expected Conversation, got {:?}", other),
+        other => panic!("Expected Conversation, got {other:?}"),
     }
 }
 
-/// Contract: invalid JSON body returns Err(VkdgError::ConfigInvalid { field: "body" }).
+/// Contract: invalid JSON body returns `Err(VkdgError::ConfigInvalid` { field: "body" }).
 /// PASSES.
 #[tokio::test]
 async fn decode_invalid_json_returns_config_invalid() {
     let body = Bytes::from("not json at all }{");
-    let result = decode_request(body);
+    let result = decode_request(&body);
 
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { ref field, .. }) if field == "body"),
-        "invalid JSON must produce ConfigInvalid{{field:\"body\"}}; got {:?}",
-        result
+        "invalid JSON must produce ConfigInvalid{{field:\"body\"}}; got {result:?}"
     );
 }
 
-/// Contract: empty body returns Err(VkdgError::ConfigInvalid { field: "body" }).
+/// Contract: empty body returns `Err(VkdgError::ConfigInvalid` { field: "body" }).
 /// PASSES.
 #[tokio::test]
 async fn decode_empty_body_returns_config_invalid() {
-    let result = decode_request(Bytes::new());
+    let result = decode_request(&Bytes::new());
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { ref field, .. }) if field == "body"),
-        "empty body must produce ConfigInvalid{{field:\"body\"}}; got {:?}",
-        result
+        "empty body must produce ConfigInvalid{{field:\"body\"}}; got {result:?}"
+    );
+}
+
+/// Contract: decode round-trips the full operation structure, not just the model.
+/// WEAK version only checked model string — this also verifies message structure.
+#[tokio::test]
+async fn decode_round_trips_full_operation() {
+    let body = Bytes::from(
+        r#"{"model":"claude-3-5-sonnet-20241022","max_tokens":100,"messages":[{"role":"user","content":"hello"}]}"#,
+    );
+    let (model, op) = decode_request(&body).expect("valid body must decode");
+    assert_eq!(model, "claude-3-5-sonnet-20241022");
+
+    let Operation::Conversation(req) = op else {
+        panic!("expected Operation::Conversation");
+    };
+    assert_eq!(req.messages.len(), 1, "must have exactly 1 message");
+    assert_eq!(
+        req.messages[0].role,
+        Role::User,
+        "first message role must be User"
+    );
+    assert!(
+        matches!(&req.messages[0].content, MessageContent::Text(t) if t == "hello"),
+        "first message content must be Text(\"hello\"), got: {:?}",
+        req.messages[0].content
     );
 }

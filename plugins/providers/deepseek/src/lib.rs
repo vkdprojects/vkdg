@@ -1,4 +1,4 @@
-//! VKDG provider: DeepSeek (OpenAI-compatible endpoint).
+//! VKDG provider: `DeepSeek` (OpenAI-compatible endpoint).
 use vkdg_provider_sdk::openai_compat::OpenAiCompatAdapter;
 
 pub fn provider() -> OpenAiCompatAdapter {

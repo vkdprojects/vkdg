@@ -27,7 +27,7 @@ pub trait TokenRefresher: Send + Sync {
 
 // ── Credential manager ────────────────────────────────────────────────────────
 
-/// Cached OAuth2 token per connection.
+/// Cached `OAuth2` token per connection.
 /// Intentionally does NOT derive Debug — contains a sensitive token.
 struct StoredToken {
     access_token: String,
@@ -104,14 +104,15 @@ impl CredentialManager {
                 .get_oauth2_token(&conn.id, token_url, client_id, client_secret_env, scopes)
                 .await
                 .map(Credential::bearer),
-            AuthKind::Account { account_id } => self.get_account_token(account_id).await,
+            AuthKind::Account { account_id } => self.account_credential(account_id).await,
         }
     }
 
     /// Resolve an account credential, refreshing through the provider plugin when the
     /// token expires within [`REFRESH_AHEAD`]. One refresh per account at a time; the
-    /// refreshed tokens are persisted before they are returned.
-    async fn get_account_token(&self, account_id: &str) -> Result<Credential> {
+    /// refreshed tokens are persisted before they are returned. Also used outside the
+    /// request path (e.g. reading an account's usage) so those calls get a live token.
+    pub async fn account_credential(&self, account_id: &str) -> Result<Credential> {
         let backend = self
             .accounts
             .as_ref()
@@ -206,6 +207,7 @@ impl CredentialManager {
                         message: format!(
                             "account {account_id}: token expired and refresh failed: {e}"
                         ),
+                        retry_after: None,
                     });
                 }
             }
@@ -274,7 +276,7 @@ impl CredentialManager {
         // Conditional write: bump generation so a delayed concurrent writer never overwrites
         // a newer token.
         let mut tokens = self.tokens.write().await;
-        let current_gen = tokens.get(conn_id).map(|t| t.generation).unwrap_or(0);
+        let current_gen = tokens.get(conn_id).map_or(0, |t| t.generation);
         tokens.insert(
             conn_id.clone(),
             StoredToken {
@@ -287,7 +289,7 @@ impl CredentialManager {
         Ok(new_token)
     }
 
-    /// client_credentials grant (standard M2M OAuth2 flow).
+    /// `client_credentials` grant (standard M2M `OAuth2` flow).
     async fn refresh_token(
         token_url: &str,
         client_id: &str,
@@ -312,6 +314,7 @@ impl CredentialManager {
             .map_err(|e| VkdgError::UpstreamError {
                 code: 0,
                 message: format!("OAuth2 request failed: {e}"),
+                retry_after: None,
             })?;
 
         if !resp.status().is_success() {
@@ -319,6 +322,7 @@ impl CredentialManager {
             return Err(VkdgError::UpstreamError {
                 code: status,
                 message: format!("OAuth2 token endpoint returned {status}"),
+                retry_after: None,
             });
         }
 
@@ -354,7 +358,7 @@ fn serve_without_refresh(acct: &Account) -> Option<Result<Credential>> {
             let (status, message) = reason
                 .split_once(": ")
                 .and_then(|(code, msg)| code.parse::<u16>().ok().map(|c| (c, msg.to_owned())))
-                .unwrap_or((401, reason.clone()));
+                .unwrap_or_else(|| (401, reason.clone()));
             Err(VkdgError::CredentialRevoked {
                 status,
                 message: format!("account {}: {message}; run `vkdg login` again", acct.id),
@@ -453,7 +457,7 @@ mod tests {
     /// their own refresh, resulting in N HTTP calls instead of 1.
     /// Singleflight must ensure exactly 1 refresh call.
     ///
-    /// Cannot hit a real token endpoint; uses a missing env var (ConfigInvalid)
+    /// Cannot hit a real token endpoint; uses a missing env var (`ConfigInvalid`)
     /// as a signal that the refresh path was entered. All N tasks must receive
     /// the same error type — not a mix from racing independent refreshes.
     #[tokio::test]
@@ -494,8 +498,7 @@ mod tests {
         for result in &results {
             assert!(
                 matches!(result, Err(VkdgError::ConfigInvalid { .. })),
-                "all concurrent callers must fail with ConfigInvalid (missing secret), got {:?}",
-                result
+                "all concurrent callers must fail with ConfigInvalid (missing secret), got {result:?}"
             );
         }
     }

@@ -29,7 +29,7 @@ fn component(body: &str) -> Vec<u8> {
 }
 
 /// Smallest valid component — nothing exported, nothing imported.
-const EMPTY_COMPONENT: &str = r#"(component)"#;
+const EMPTY_COMPONENT: &str = r"(component)";
 
 /// A component wrapping a core module that loops forever.
 const SPIN_FOREVER: &str = r#"

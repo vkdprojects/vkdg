@@ -27,6 +27,7 @@ rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 # ── macOS ─────────────────────────────────────────────────────────────────────
 # ld64 is fast enough on Apple Silicon. No override needed.
+# split-debuginfo is set in Cargo.toml [profile.dev] (config.toml ignores profile.*).
 
 # ── Dev profile ───────────────────────────────────────────────────────────────
 [profile.dev]

@@ -1,7 +1,7 @@
 //! Webhook dispatcher for async job lifecycle events.
 //!
 //! When a job transitions to Succeeded, Failed, or Cancelled and has a
-//! webhook_url configured, sends a POST with the job state as JSON body.
+//! `webhook_url` configured, sends a POST with the job state as JSON body.
 //! Non-blocking: failures are logged but do not affect the job state.
 //!
 //! Phase E: retry with exponential backoff, signature header (HMAC-SHA256).
@@ -23,7 +23,7 @@ pub fn dispatch(record: &JobRecord, webhook_url: &str) {
     });
     tokio::spawn(async move {
         match send_webhook(&url, event, &payload).await {
-            Ok(_) => tracing::debug!(url = %url, "webhook delivered"),
+            Ok(()) => tracing::debug!(url = %url, "webhook delivered"),
             Err(e) => tracing::warn!(url = %url, error = %e, "webhook delivery failed"),
         }
     });
@@ -70,7 +70,7 @@ mod tests {
     use uuid::Uuid;
     use vkdg_core::ConnectionId;
 
-    /// Plausible wrong impl: state_to_event returns same string for all states.
+    /// Plausible wrong impl: `state_to_event` returns same string for all states.
     #[test]
     fn events_are_distinct() {
         assert_ne!(
@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(payload["owner"], "client-1");
     }
 
-    /// Plausible wrong impl: state_to_event for Failed variant ignores the reason field.
+    /// Plausible wrong impl: `state_to_event` for Failed variant ignores the reason field.
     #[test]
     fn failed_event_consistent_regardless_of_reason() {
         assert_eq!(
@@ -137,8 +137,8 @@ mod tests {
         );
     }
 
-    /// Plausible wrong impl: dispatch() does not actually POST to the webhook_url,
-    /// either because tokio::spawn is never awaited or the URL is silently ignored.
+    /// Plausible wrong impl: `dispatch()` does not actually POST to the `webhook_url`,
+    /// either because `tokio::spawn` is never awaited or the URL is silently ignored.
     #[tokio::test]
     async fn dispatch_delivers_post_to_webhook_url() {
         use axum::{extract::State, routing::post, Router};
@@ -190,11 +190,19 @@ mod tests {
             webhook_url: None,
         };
 
-        let webhook_url = format!("http://127.0.0.1:{}/webhook", port);
+        let webhook_url = format!("http://127.0.0.1:{port}/webhook");
         dispatch(&record, &webhook_url);
 
-        // Wait for async delivery (dispatch is fire-and-forget)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Wait for async delivery (dispatch is fire-and-forget). Poll with a
+        // ceiling instead of a fixed sleep: under full-workspace load delivery
+        // can exceed 100ms.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while call_count.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("webhook not delivered within 2s");
 
         assert_eq!(
             call_count.load(Ordering::Relaxed),
@@ -205,7 +213,7 @@ mod tests {
         let _ = shutdown_tx.send(());
     }
 
-    /// Plausible wrong impl: dispatch() silently swallows 4xx/5xx errors
+    /// Plausible wrong impl: `dispatch()` silently swallows 4xx/5xx errors
     /// without logging them.
     #[tokio::test]
     async fn dispatch_logs_failure_on_non_2xx() {

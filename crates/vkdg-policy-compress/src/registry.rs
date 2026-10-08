@@ -1,4 +1,4 @@
-//! Pack registry — maps ContentClass to the active FilterPack.
+//! Pack registry — maps `ContentClass` to the active `FilterPack`.
 //!
 //! Packs are dispatched in insertion order, so the first registered pack
 //! for a class wins. `GenericPack` is always registered last so it acts
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::class::ContentClass;
 use crate::FilterPack;
 
-/// Registry of FilterPack implementations.
+/// Registry of `FilterPack` implementations.
 ///
 /// Lookup is O(n) in registration order — deterministic and predictable.
 /// Register specific packs before `GenericPack`; the first match wins.

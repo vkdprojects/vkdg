@@ -1,9 +1,14 @@
+pub mod catalog;
 pub mod combos;
+pub mod config;
 pub mod connections;
 pub mod keys;
+pub mod model_sync;
 pub mod oauth;
 pub mod plugins;
 pub mod requests;
+pub mod response;
 pub mod routes;
 pub mod session;
+pub mod stats;
 pub mod system;

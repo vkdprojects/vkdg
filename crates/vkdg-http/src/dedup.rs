@@ -7,7 +7,7 @@
 //! This prevents thundering-herd on cache misses and reduces upstream load
 //! during bursts of identical requests (common in eval pipelines and CI).
 //!
-//! Implementation: tokio::sync::Notify per in-flight key.
+//! Implementation: `tokio::sync::Notify` per in-flight key.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -114,7 +114,7 @@ mod tests {
             // which is owned by the closure, satisfying 'static.
             tokio::time::timeout(std::time::Duration::from_millis(200), notify2.notified())
                 .await
-                .expect("waiter must be notified within 200ms")
+                .expect("waiter must be notified within 200ms");
         });
         // Yield to let the spawned task poll notified() at least once before we
         // fire complete(); tokio::sync::Notify is edge-triggered.

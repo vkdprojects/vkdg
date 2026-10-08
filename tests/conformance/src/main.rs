@@ -1,10 +1,15 @@
 mod admission;
 mod capability;
+mod codex;
+mod dialect_translation;
 mod fake_upstream;
 mod fusion_chain;
 mod ingress_anthropic;
+mod prompt_caching;
 mod routing;
+mod session_affinity;
 mod smoke;
 mod state_machine;
+mod stream_failover;
 mod stream_translation;
 mod streaming;

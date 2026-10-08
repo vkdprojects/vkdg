@@ -85,6 +85,7 @@ impl JobManager {
     ///
     /// Full implementation requires a `list_by_state` query on `JobStore`
     /// (Phase D backlog). Returns an empty list for now so callers compile.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)] // stub; async for API compatibility with the future real impl
     pub async fn reconcile_after_restart(
         &self,
         _running_timeout_secs: u64,
@@ -96,14 +97,11 @@ impl JobManager {
 // ── Transition guard ──────────────────────────────────────────────────────────
 
 fn validate_transition(from: &JobState, to: &JobState) -> vkdg_core::Result<()> {
-    use JobState::*;
+    use JobState::{Cancelled, Expired, Failed, Queued, Running, Succeeded};
     let ok = matches!(
         (from, to),
-        (Queued, Running)
-            | (Running, Succeeded)
-            | (Running, Failed { .. })
-            | (Running, Cancelled)
-            | (Queued, Cancelled)
+        (Queued, Running | Cancelled)
+            | (Running, Succeeded | Failed { .. } | Cancelled)
             | (_, Expired)
     );
     if ok {
@@ -127,7 +125,7 @@ mod tests {
         JobManager::new(Arc::new(store))
     }
 
-    /// Plausible defect: create_job returns wrong id or creates no record.
+    /// Plausible defect: `create_job` returns wrong id or creates no record.
     #[tokio::test]
     async fn create_and_get_job() {
         let mgr = manager();

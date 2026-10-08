@@ -84,6 +84,7 @@ impl ExternalServiceClient {
             return Err(VkdgError::UpstreamError {
                 code: 503,
                 message: "circuit open".into(),
+                retry_after: None,
             });
         }
         let url = format!("{}{}", self.base_url, path);
@@ -99,6 +100,7 @@ impl ExternalServiceClient {
                 VkdgError::UpstreamError {
                     code: 0,
                     message: e.to_string(),
+                    retry_after: None,
                 }
             })?;
         if !resp.status().is_success() {
@@ -106,12 +108,14 @@ impl ExternalServiceClient {
             return Err(VkdgError::UpstreamError {
                 code: resp.status().as_u16(),
                 message: "external service error".into(),
+                retry_after: None,
             });
         }
         self.breaker.record_success();
         resp.bytes().await.map_err(|e| VkdgError::UpstreamError {
             code: 0,
             message: e.to_string(),
+            retry_after: None,
         })
     }
 }

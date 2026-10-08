@@ -58,6 +58,7 @@ fn make_ctx(model: &str) -> (PipelineCtx, Operation) {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     });
     (PipelineCtx::new(envelope), op)
 }
@@ -72,7 +73,7 @@ fn make_two_connection_pipeline(
     let id2 = ConnectionId("conn-2".into());
     let cfg1 = ConnectionConfig {
         id: id1.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: first_url,
         },
         auth: AuthKind::ApiKey {
@@ -87,7 +88,7 @@ fn make_two_connection_pipeline(
     };
     let cfg2 = ConnectionConfig {
         id: id2.clone(),
-        provider: ProviderKind::Custom {
+        provider: ProviderKind::AnthropicCompat {
             base_url: second_url,
         },
         auth: AuthKind::ApiKey {
@@ -126,7 +127,7 @@ fn make_two_connection_pipeline(
 // ── Fusion tests ──────────────────────────────────────────────────────────────
 
 /// Fusion dispatches to both connections simultaneously; the first to respond wins.
-/// Both respond with AnthropicOk, so response must be 200 and both fakes must be called.
+/// Both respond with `AnthropicOk`, so response must be 200 and both fakes must be called.
 ///
 /// Plausible wrong impl: Fusion dispatches sequentially so the second connection is only
 /// tried after the first returns — parallelism is never exercised.
@@ -208,10 +209,10 @@ async fn fusion_returns_error_when_all_branches_fail() {
 
 // ── PromptChain tests ─────────────────────────────────────────────────────────
 
-/// PromptChain runs both steps sequentially and returns the final step's response.
+/// `PromptChain` runs both steps sequentially and returns the final step's response.
 /// Step 0's response ("draft answer") is injected as an assistant message before step 1.
 ///
-/// Plausible wrong impl: PromptChain runs step 1 without injecting step 0's response,
+/// Plausible wrong impl: `PromptChain` runs step 1 without injecting step 0's response,
 /// so step 1 sees only the original user message with no prior context.
 ///
 /// We verify end-to-end correctness by asserting: both fakes called once, final body
@@ -290,9 +291,9 @@ async fn prompt_chain_step1_receives_step0_response_as_context() {
     );
 }
 
-/// PromptChain aborts immediately when step 0 fails; step 1 must never be called.
+/// `PromptChain` aborts immediately when step 0 fails; step 1 must never be called.
 ///
-/// Plausible wrong impl: PromptChain continues to step 1 even when step 0 fails,
+/// Plausible wrong impl: `PromptChain` continues to step 1 even when step 0 fails,
 /// because the `?` on `fusion_one_target` is missing or errors are swallowed.
 #[tokio::test]
 async fn prompt_chain_aborts_on_step_failure() {

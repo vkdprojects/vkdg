@@ -273,7 +273,10 @@ impl VirtualKeyStore {
                  WHERE key_id = ?1 AND period = ?2",
                 params![key_id.0, current_period()],
                 |r| {
-                    let n = |i| r.get::<_, i64>(i).map(|v| v.max(0) as u64);
+                    let n = |i| {
+                        r.get::<_, i64>(i)
+                            .map(|v| u64::try_from(v.max(0)).unwrap_or(0))
+                    };
                     Ok(KeyUsage {
                         input_tokens: n(0)?,
                         output_tokens: n(1)?,
@@ -470,7 +473,9 @@ fn row_to_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<VirtualKey> {
             .iter()
             .map(|e| e.parse().map_err(|m: String| policy_err(11, m)))
             .collect::<rusqlite::Result<_>>()?,
-        monthly_token_limit: row.get::<_, Option<i64>>(12)?.map(|v| v.max(0) as u64),
+        monthly_token_limit: row
+            .get::<_, Option<i64>>(12)?
+            .map(|v| u64::try_from(v.max(0)).unwrap_or(0)),
         requests_per_minute: row.get(13)?,
         disabled_at: policy_time(row, 14)?,
         no_log: row.get(15)?,
@@ -776,12 +781,15 @@ mod tests {
             .unwrap()
             .with_cache_ttl(Duration::from_secs(60));
         let (key, raw) = store.create(NewKey::named("k")).unwrap();
-        assert!(store
-            .authenticate(&raw)
-            .unwrap()
-            .unwrap()
-            .allowed_models
-            .is_empty());
+        assert_eq!(
+            store
+                .authenticate(&raw)
+                .unwrap()
+                .unwrap()
+                .allowed_models
+                .len(),
+            0
+        );
         let updated = store
             .update(
                 &key.id,

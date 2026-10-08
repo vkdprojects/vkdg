@@ -49,6 +49,33 @@ pub struct RequestRecord {
     /// provider declares no price for the model (subscription, free tier).
     #[serde(default)]
     pub cost_microdollars: Option<u64>,
+    /// Model stop reason: `end_turn`, `max_tokens`, `tool_use`, `stop_sequence`.
+    /// Absent until the stream ends. Key for diagnosing empty responses.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    /// Error message when status is `failed`. Never contains prompt text.
+    #[serde(default)]
+    pub error_message: Option<String>,
+    /// Whether extended reasoning (thinking) was requested by the client.
+    #[serde(default)]
+    pub thinking_requested: Option<bool>,
+    /// Number of messages in the conversation (proxy for context depth).
+    #[serde(default)]
+    pub message_count: Option<u32>,
+    /// Pipeline phase timestamps: [(`phase_name`, `unix_ms`), ...].
+    /// Populated at request start; absent when the record was written by an older build.
+    #[serde(default)]
+    pub state_transitions: Option<Vec<(String, i64)>>,
+    /// Prompt cache tokens: read from and written to the provider's cache.
+    /// Absent when the provider reported no cache activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u64>,
+    /// Kiro context window usage as a percentage (0–100+). Only set when the
+    /// Kiro provider reported a `contextUsageEvent`. Absent for all other providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage_pct: Option<f64>,
 }
 
 /// Status of a row whose response body is still being sent.
@@ -102,8 +129,8 @@ impl RequestLog {
         })
     }
 
-    pub fn push(&self, r: RequestRecord) {
-        let Ok(json) = serde_json::to_string(&r) else {
+    pub fn push(&self, r: &RequestRecord) {
+        let Ok(json) = serde_json::to_string(r) else {
             return;
         };
         let conn = self.conn.lock();
@@ -128,15 +155,19 @@ impl RequestLog {
     }
 
     /// Settle a row once its response body is done: record the tokens it
-    /// reported and, for a row still `pending`, the final status (`completed`
-    /// when the body ran to the end, `cancelled` when the client hung up) and
-    /// the duration including the stream. Unknown ids are ignored.
+    /// reported, the stop reason, and the final status when still `pending`:
+    /// `completed` when the stream completed cleanly or reached EOF without
+    /// errors, `failed` when an error frame arrived or the stream was truncated
+    /// before a terminal event, and `cancelled` when the client disconnected
+    /// before a completed response.
     pub fn finish(
         &self,
         id: &str,
         tokens: vkdg_core::pricing::BilledTokens,
-        body_ended: bool,
+        status: Option<&str>,
         price: Option<&vkdg_core::pricing::ModelPrice>,
+        stop_reason: Option<String>,
+        context_usage_pct: Option<f64>,
     ) {
         let conn = self.conn.lock();
         let Ok(json) = conn.query_row(
@@ -154,8 +185,22 @@ impl RequestLog {
             r.output_tokens = Some(tokens.output);
             r.cost_microdollars = price.map(|p| p.cost_microdollars(tokens));
         }
+        if tokens.cache_read > 0 {
+            r.cache_read_tokens = Some(tokens.cache_read);
+        }
+        if tokens.cache_write > 0 {
+            r.cache_write_tokens = Some(tokens.cache_write);
+        }
+        if let Some(sr) = stop_reason {
+            r.stop_reason = Some(sr);
+        }
+        if let Some(pct) = context_usage_pct {
+            r.context_usage_pct = Some(pct);
+        }
         if r.status == STATUS_PENDING {
-            r.status = if body_ended { "completed" } else { "cancelled" }.into();
+            if let Some(status) = status {
+                status.clone_into(&mut r.status);
+            }
             r.duration_ms = Some(chrono::Utc::now().timestamp_millis() - r.started_at_ms);
         }
         let Ok(json) = serde_json::to_string(&r) else {
@@ -281,6 +326,8 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
+            gateway_store: None,
+            config_tx: None,
         }
     }
 
@@ -313,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn list_requests_returns_records() {
         let state = make_state();
-        state.request_log.push(RequestRecord {
+        state.request_log.push(&RequestRecord {
             request_id: "req-1".into(),
             model: "claude-3-opus".into(),
             api_type: "messages".into(),
@@ -326,8 +373,16 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
+            state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            context_usage_pct: None,
         });
-        state.request_log.push(RequestRecord {
+        state.request_log.push(&RequestRecord {
             request_id: "req-2".into(),
             model: "claude-3-sonnet".into(),
             api_type: "messages".into(),
@@ -340,6 +395,14 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
+            state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            context_usage_pct: None,
         });
         let headers = authed_headers(&state);
         let resp = list_requests(
@@ -373,6 +436,14 @@ mod tests {
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message: None,
+            thinking_requested: None,
+            message_count: None,
+            state_transitions: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            context_usage_pct: None,
         }
     }
 
@@ -387,7 +458,7 @@ mod tests {
                 .iter()
                 .enumerate()
             {
-                log.push(record(&format!("r{i}"), st));
+                log.push(&record(&format!("r{i}"), st));
             }
         }
         let log = RequestLog::open(&path, 3).unwrap();
@@ -409,9 +480,9 @@ mod tests {
     #[test]
     fn finish_settles_pending_rows_only() {
         let log = RequestLog::new();
-        log.push(record("streamed", STATUS_PENDING));
-        log.push(record("dropped", STATUS_PENDING));
-        log.push(record("failed", "failed"));
+        log.push(&record("streamed", STATUS_PENDING));
+        log.push(&record("dropped", STATUS_PENDING));
+        log.push(&record("failed", "failed"));
         use vkdg_core::pricing::{BilledTokens, ModelPrice};
         let t = |input, output| BilledTokens {
             input,
@@ -419,10 +490,17 @@ mod tests {
             ..BilledTokens::default()
         };
         let price = ModelPrice::new("m", 3_000_000, 15_000_000);
-        log.finish("streamed", t(11, 4), true, Some(&price));
-        log.finish("dropped", t(11, 1), false, None);
-        log.finish("failed", t(0, 0), true, Some(&price));
-        log.finish("unknown", t(1, 1), true, None);
+        log.finish(
+            "streamed",
+            t(11, 4),
+            Some("completed"),
+            Some(&price),
+            None,
+            None,
+        );
+        log.finish("dropped", t(11, 1), Some("cancelled"), None, None, None);
+        log.finish("failed", t(0, 0), Some("failed"), Some(&price), None, None);
+        log.finish("unknown", t(1, 1), Some("completed"), None, None, None);
 
         let r = log.get("streamed").unwrap();
         assert_eq!(r.status, "completed");
@@ -438,5 +516,62 @@ mod tests {
         assert_eq!(f.duration_ms, Some(1), "a settled row keeps its duration");
         let (done, _) = log.list(10, Some("completed"));
         assert_eq!(done.len(), 1, "status column follows the record");
+    }
+
+    // Without these the console cannot show whether prompt caching works: the
+    // numbers the provider reported must land on the stored row.
+    #[test]
+    fn finish_records_cache_read_and_write_tokens() {
+        use vkdg_core::pricing::BilledTokens;
+        let log = RequestLog::new();
+        log.push(&record("cached", STATUS_PENDING));
+        log.push(&record("cold", STATUS_PENDING));
+        let tokens = |cache_read, cache_write| BilledTokens {
+            input: 310,
+            output: 5,
+            cache_read,
+            cache_write,
+        };
+        log.finish(
+            "cached",
+            tokens(200, 100),
+            Some("completed"),
+            None,
+            None,
+            None,
+        );
+        log.finish("cold", tokens(0, 0), Some("completed"), None, None, None);
+        let r = log.get("cached").unwrap();
+        assert_eq!(
+            (r.cache_read_tokens, r.cache_write_tokens),
+            (Some(200), Some(100))
+        );
+        let r = log.get("cold").unwrap();
+        assert_eq!(
+            (r.cache_read_tokens, r.cache_write_tokens),
+            (None, None),
+            "no cache activity stays absent, not zero"
+        );
+    }
+
+    // History rows written before the cache fields existed must still load.
+    #[test]
+    fn a_record_stored_without_cache_fields_still_deserializes() {
+        let mut json = serde_json::to_value(record("old", "completed")).unwrap();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("cache_read_tokens");
+        obj.remove("cache_write_tokens");
+        let r: RequestRecord = serde_json::from_value(json).unwrap();
+        assert_eq!((r.cache_read_tokens, r.cache_write_tokens), (None, None));
+
+        let mut with = record("new", "completed");
+        with.cache_read_tokens = Some(7);
+        with.cache_write_tokens = Some(9);
+        let back: RequestRecord =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(
+            (back.cache_read_tokens, back.cache_write_tokens),
+            (Some(7), Some(9))
+        );
     }
 }

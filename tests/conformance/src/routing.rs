@@ -31,8 +31,8 @@ fn conn(id: &str) -> ConnectionId {
     ConnectionId(id.to_string())
 }
 
-/// Contract: Router with no routes returns NoEligibleConnection.
-/// PASSES — Router::route is already implemented.
+/// Contract: Router with no routes returns `NoEligibleConnection`.
+/// PASSES — `Router::route` is already implemented.
 #[tokio::test]
 async fn no_eligible_connection_returns_error_no_routes() {
     let router = Router::new(vec![]);
@@ -44,13 +44,12 @@ async fn no_eligible_connection_returns_error_no_routes() {
         .await;
     assert!(
         matches!(result, Err(VkdgError::NoRouteMatched)),
-        "Expected NoRouteMatched with empty route table; got {:?}",
-        result
+        "Expected NoRouteMatched with empty route table; got {result:?}"
     );
 }
 
 /// Contract: Router with a matching route but all candidates excluded returns
-/// NoEligibleConnection. PASSES.
+/// `NoEligibleConnection`. PASSES.
 #[tokio::test]
 async fn no_eligible_connection_all_candidates_excluded() {
     let route = RouteConfig {
@@ -71,12 +70,11 @@ async fn no_eligible_connection_all_candidates_excluded() {
         .await;
     assert!(
         matches!(result, Err(VkdgError::NoEligibleConnection)),
-        "Expected NoEligibleConnection when only candidate is excluded; got {:?}",
-        result
+        "Expected NoEligibleConnection when only candidate is excluded; got {result:?}"
     );
 }
 
-/// Contract: FallbackChain skips excluded connections and selects the first
+/// Contract: `FallbackChain` skips excluded connections and selects the first
 /// non-excluded candidate. PASSES.
 #[tokio::test]
 async fn fallback_chain_skips_excluded_selects_second() {
@@ -134,13 +132,12 @@ async fn router_glob_prefix_match() {
             .await;
         assert!(
             result.is_ok(),
-            "Glob 'claude-3*' should match '{model}'; got {:?}",
-            result
+            "Glob 'claude-3*' should match '{model}'; got {result:?}"
         );
     }
 }
 
-/// Contract: model with no matching route returns NoEligibleConnection.
+/// Contract: model with no matching route returns `NoEligibleConnection`.
 /// PASSES.
 #[tokio::test]
 async fn router_no_matching_route_for_model() {
@@ -160,15 +157,14 @@ async fn router_no_matching_route_for_model() {
         .await;
     assert!(
         matches!(result, Err(VkdgError::NoRouteMatched)),
-        "Model not matching any route must return NoRouteMatched; got {:?}",
-        result
+        "Model not matching any route must return NoRouteMatched; got {result:?}"
     );
 }
 
-/// Invariant: Router alone with no matching routes returns NoRouteMatched;
+/// Invariant: Router alone with no matching routes returns `NoRouteMatched`;
 /// the pipeline's auto-route fallback (not the router) handles zero-config routing.
-/// Plausible wrong impl: pipeline calls router.route() without a fallback and
-/// returns NoRouteMatched even when a catalog connection serves the model.
+/// Plausible wrong impl: pipeline calls `router.route()` without a fallback and
+/// returns `NoRouteMatched` even when a catalog connection serves the model.
 #[tokio::test]
 async fn auto_routing_invariant_router_alone_returns_no_eligible() {
     let router = Router::new(vec![]);
@@ -208,8 +204,7 @@ async fn prompt_chain_empty_steps_returns_config_invalid() {
         .await;
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { .. })),
-        "empty PromptChain must return ConfigInvalid, got {:?}",
-        result
+        "empty PromptChain must return ConfigInvalid, got {result:?}"
     );
 }
 
@@ -285,8 +280,7 @@ async fn prompt_chain_rejects_step_connection_not_in_targets() {
         .await;
     assert!(
         matches!(result, Err(VkdgError::ConfigInvalid { .. })),
-        "step connection_id not in targets must return ConfigInvalid, got {:?}",
-        result
+        "step connection_id not in targets must return ConfigInvalid, got {result:?}"
     );
 }
 

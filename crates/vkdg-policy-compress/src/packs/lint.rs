@@ -1,7 +1,7 @@
 //! Lint output filter packs.
 //!
 //! Two packs cover common JS ecosystem linters:
-//! - `EslintOutputPack` — ESLint / Prettier / Biome output.
+//! - `EslintOutputPack` — `ESLint` / Prettier / Biome output.
 //! - `NpmAuditPack`     — `npm audit` vulnerability reports.
 //!
 //! Both filter to actionable lines only, capping output at a small limit.
@@ -9,7 +9,7 @@
 use crate::class::ContentClass;
 use crate::FilterPack;
 
-/// Compresses ESLint (and Prettier/Biome) output.
+/// Compresses `ESLint` (and Prettier/Biome) output.
 ///
 /// Retains only lines that mention `"error"`, `"warning"`, or `"problem"`.
 /// At most 20 lines are kept.
@@ -17,7 +17,7 @@ use crate::FilterPack;
 pub struct EslintOutputPack;
 
 impl FilterPack for EslintOutputPack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:eslint-output"
     }
 
@@ -25,7 +25,7 @@ impl FilterPack for EslintOutputPack {
         ContentClass::EslintOutput
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses ESLint/Prettier/Biome output; keeps first 20 error/warning lines"
     }
 
@@ -39,7 +39,7 @@ impl FilterPack for EslintOutputPack {
             .iter()
             .filter(|l| l.contains("error") || l.contains("warning") || l.contains("problem"))
             .take(20)
-            .map(|s| s.to_string())
+            .map(|s| (*s).to_string())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -53,7 +53,7 @@ impl FilterPack for EslintOutputPack {
 pub struct NpmAuditPack;
 
 impl FilterPack for NpmAuditPack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:npm-audit"
     }
 
@@ -61,7 +61,7 @@ impl FilterPack for NpmAuditPack {
         ContentClass::NpmAudit
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses npm audit output; keeps severity/vulnerability summary lines"
     }
 
@@ -81,7 +81,7 @@ impl FilterPack for NpmAuditPack {
                     || l.contains("npm audit fix")
             })
             .take(15)
-            .map(|s| s.to_string())
+            .map(|s| (*s).to_string())
             .collect::<Vec<_>>()
             .join("\n")
     }

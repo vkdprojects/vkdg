@@ -1,13 +1,13 @@
 use crate::handlers::requests::RequestLog;
 use crate::session::SessionStore;
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
-use vkdg_config::ConfigRx;
+use vkdg_config::{ConfigRx, ConfigTx, GatewayStore};
 use vkdg_connections::ConnectionCatalog;
 
 #[derive(Clone)]
@@ -29,9 +29,13 @@ pub struct AdminState {
     /// Fires a smoke request through a specific connection and returns latency and status.
     /// `None` = no data plane, the endpoint answers 503.
     pub connection_tester: Option<ConnectionTester>,
+    /// Persistent store for connections/routes; `None` = read-only (no CRUD).
+    pub gateway_store: Option<Arc<GatewayStore>>,
+    /// Sender to push a new snapshot after every store write.
+    pub config_tx: Option<ConfigTx>,
 }
 
-/// Sends one smoke request (`"Hello"`, max_tokens=1) through the named connection
+/// Sends one smoke request (`"Hello"`, `max_tokens=1`) through the named connection
 /// and returns `(latency_ms, ok, error)`. Spawned as a blocking task if needed.
 pub type ConnectionTester = Arc<
     dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ConnectionTestResult> + Send>>
@@ -69,15 +73,27 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/connections",
-            get(crate::handlers::connections::list_connections),
+            get(crate::handlers::connections::list_connections)
+                .post(crate::handlers::connections::create_connection),
         )
         .route(
             "/admin/v1/connections/{id}",
-            get(crate::handlers::connections::get_connection),
+            get(crate::handlers::connections::get_connection)
+                .put(crate::handlers::connections::update_connection)
+                .patch(crate::handlers::connections::patch_connection)
+                .delete(crate::handlers::connections::delete_connection),
         )
         .route(
             "/admin/v1/connections/{id}/test",
             axum::routing::post(crate::handlers::connections::test_connection),
+        )
+        .route(
+            "/admin/v1/connections/{id}/reset-cooldown",
+            axum::routing::post(crate::handlers::connections::reset_connection_cooldown),
+        )
+        .route(
+            "/admin/v1/connections/{id}/models/sync",
+            post(crate::handlers::model_sync::sync_models),
         )
         .route(
             "/admin/v1/keys",
@@ -101,11 +117,16 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/routes",
-            get(crate::handlers::routes::list_routes),
+            get(crate::handlers::routes::list_routes).post(crate::handlers::routes::create_route),
         )
         .route(
             "/admin/v1/routes/preview",
             get(crate::handlers::routes::preview_route),
+        )
+        .route(
+            "/admin/v1/routes/{id}",
+            put(crate::handlers::routes::update_route)
+                .delete(crate::handlers::routes::delete_route),
         )
         .route(
             "/admin/v1/requests",
@@ -160,6 +181,24 @@ pub fn build_admin_router(state: AdminState) -> Router {
         .route(
             "/admin/v1/accounts/{id}",
             delete(crate::handlers::oauth::delete_account),
+        )
+        .route(
+            "/admin/v1/accounts/{id}/connection",
+            post(crate::handlers::oauth::enable_account),
+        )
+        .route(
+            "/admin/v1/config/export",
+            get(crate::handlers::config::export_config),
+        )
+        .route("/admin/v1/stats", get(crate::handlers::stats::get_stats))
+        .route("/metrics", get(crate::handlers::stats::get_metrics))
+        .route(
+            "/admin/v1/catalog/{provider}",
+            get(crate::handlers::catalog::get_catalog).put(crate::handlers::catalog::put_catalog),
+        )
+        .route(
+            "/admin/v1/catalog/{provider}/import-url",
+            post(crate::handlers::catalog::import_catalog_url),
         )
         .with_state(state)
 }

@@ -193,6 +193,7 @@
   "connection_sync_models": "Sincronizar modelos",
   "connection_models_synced": "{count} modelos sincronizados",
   "connection_models_more": "+{n} mais",
+  "connection_models_dialog_title": "Modelos · {id} ({count})",
   "connection_empty_desc": "Adicione uma conexão de provedor para começar a rotear requisições.",
   "connection_auto_refresh": "Atualiza a cada 5s enquanto esta aba está visível.",
   "connection_reset_cooldown": "Resetar resfriamento",

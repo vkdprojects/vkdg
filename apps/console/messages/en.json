@@ -209,6 +209,7 @@
   "connection_sync_models": "Sync models",
   "connection_models_synced": "{count} models synced",
   "connection_models_more": "+{n} more",
+  "connection_models_dialog_title": "Models · {id} ({count})",
   "connection_empty_desc": "Add a provider connection to start routing requests.",
   "connection_auto_refresh": "Refreshes every 5s while this tab is visible.",
   "connection_reset_cooldown": "Reset cooldown",

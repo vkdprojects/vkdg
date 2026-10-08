@@ -17,6 +17,7 @@ export { default as ProviderLogo } from './ProviderLogo.svelte';
 export { default as UserMenu } from './UserMenu.svelte';
 export { default as AddConnectionDialog } from './AddConnectionDialog.svelte';
 export { default as ConfirmDeleteDialog } from './ConfirmDeleteDialog.svelte';
+export { default as ConnectionModelsDialog } from './ConnectionModelsDialog.svelte';
 export { default as PageCount } from './PageCount.svelte';
 export { default as SkeletonRows } from './SkeletonRows.svelte';
 export { default as SurfaceCard } from './SurfaceCard.svelte';

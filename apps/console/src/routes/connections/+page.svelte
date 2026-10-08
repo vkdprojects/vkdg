@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/api.js';
   import type { ConnectionSummary } from '$lib/api.js';
-  import { AddConnectionDialog, Badge, Button, ConfirmDeleteDialog, EmptyState, Meter, RefreshButton, Spinner, Stat } from '$lib/components/index.js';
+  import { AddConnectionDialog, Badge, Button, ConfirmDeleteDialog, ConnectionModelsDialog, EmptyState, Meter, RefreshButton, Spinner, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatTime, formatRelativeFrom } from '$lib/format.js';
   import { deleteConnection, syncConnectionModels } from '$lib/connection-actions.js';
@@ -48,8 +48,15 @@
     await load();
   }
 
-  // Models chips: show a few entries, the rest go into the tooltip.
+  // Models chips: show a few entries; "+N more" opens a dialog with the full list.
   const MODEL_CHIPS = 3;
+  let modelsDialogOpen = $state(false);
+  let modelsDialogConn = $state<ConnectionSummary | null>(null);
+
+  function showAllModels(conn: ConnectionSummary) {
+    modelsDialogConn = conn;
+    modelsDialogOpen = true;
+  }
   const isPattern = (id: string) => /[*?]/.test(id);
 
   let syncingId = $state<string | null>(null);
@@ -137,7 +144,9 @@
                   <span class="model-chip" class:pattern={isPattern(id)}>{id}</span>
                 {/each}
                 {#if conn.models.length > MODEL_CHIPS}
-                  <span class="hint">{m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}</span>
+                  <button type="button" class="models-more" onclick={() => showAllModels(conn)}>
+                    {m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}
+                  </button>
                 {/if}
               </div>
             {/if}
@@ -206,6 +215,12 @@
 />
 
 <AddConnectionDialog bind:open={dialogOpen} />
+<ConnectionModelsDialog
+  bind:open={modelsDialogOpen}
+  connectionId={modelsDialogConn?.id ?? ''}
+  models={modelsDialogConn?.models ?? []}
+/>
+
 
 <style>
   .loading {
@@ -317,6 +332,18 @@
     font-size: var(--text-xs);
     color: var(--text-3);
   }
+
+  .models-more {
+    font: inherit;
+    font-size: var(--text-xs);
+    color: var(--accent);
+    background: none;
+    border: 0;
+    padding: var(--space-0) var(--space-1);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .models-more:hover { text-decoration: underline; background: var(--bg-hover); }
 
   .model-chips {
     display: flex;

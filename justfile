@@ -65,7 +65,7 @@ build-mac-arm64:
 # ── Docker ────────────────────────────────────────────────────────────────
 # Build all Docker images
 docker-build:
-    docker build -f deploy/Dockerfile.gateway -t vkdg:latest .
+    docker build -f deploy/Dockerfile -t vkdg:latest .
     docker build -f deploy/Dockerfile.console -t vkdg-console:latest apps/console
 
 # Tag and push to registry (set REGISTRY env var)
@@ -91,7 +91,8 @@ image-dev REGISTRY="ghcr.io/vkdprojects":
     SHA=$(git rev-parse --short HEAD)
     DIRTY=$(test -n "$(git status --porcelain)" && echo "-dirty" || echo "")
     TAG="dev-${SHA}${DIRTY}"
-    docker build --platform linux/amd64 -f deploy/Dockerfile.dev \
+    docker build --platform linux/amd64 -f deploy/Dockerfile --target prebuilt \
+        --build-arg PROFILE=release --build-arg VCS_REF="${SHA}" \
         -t "{{REGISTRY}}/vkdg:${TAG}" -t "{{REGISTRY}}/vkdg:dev" .
     echo "Built {{REGISTRY}}/vkdg:${TAG}"
 
@@ -105,42 +106,17 @@ push-dev REGISTRY="ghcr.io/vkdprojects":
     docker push "{{REGISTRY}}/vkdg:dev-${SHA}${DIRTY}"
     docker push "{{REGISTRY}}/vkdg:dev"
 
-# Ship the current commit to a host: sync source, build the image ON THE HOST,
-# swap tags, restart, health-check. Nothing heavy runs locally, so this is safe
-# on any dev machine. Uncommitted changes are refused (the tag must name a
-# real commit, so a rollback always points at something reproducible).
+# Deploy HEAD to HOST. Builds locally when this machine can (cross-compile is
+# ~10x faster than the server), otherwise on the host; same swap + health check
+# either way. Refuses uncommitted changes so the tag names a real commit.
 #
 #   just ship-dev omni-vixpi
+#   VKDG_BUILD=remote just ship-dev omni-vixpi   # force (local|remote|auto)
+#   just ship-dev omni-vixpi --plan             # show the decision, don't deploy
 #
-# Build remotely and deploy the current commit to HOST
-ship-dev HOST:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "error: uncommitted changes; commit first so the deployed tag is reproducible" >&2
-        git status --short >&2
-        exit 1
-    fi
-    SHA=$(git rev-parse --short=7 HEAD)
-    VKDG_REMOTE_HOST={{HOST}} scripts/remote-deploy.sh "$SHA"
-    echo "Shipped dev-${SHA} to {{HOST}}. Roll back with: just rollback-dev {{HOST}}"
-
-# Fast path for machines that can cross-compile + docker build locally
-# (e.g. Apple Silicon with zigbuild): build here, stream the image over SSH.
-ship-dev-local HOST DIR="/opt/vkdg":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just image-dev local
-    SHA=$(git rev-parse --short HEAD)
-    DIRTY=$(test -n "$(git status --porcelain)" && echo "-dirty" || echo "")
-    TAG="dev-${SHA}${DIRTY}"
-    echo "Streaming local/vkdg:${TAG} to {{HOST}}…"
-    docker save "local/vkdg:${TAG}" | gzip -1 | ssh {{HOST}} 'gunzip | docker load'
-    ssh {{HOST}} "cd {{DIR}} && \
-        docker tag vkdg-gateway:latest vkdg-gateway:rollback 2>/dev/null || true; \
-        docker tag local/vkdg:${TAG} vkdg-gateway:latest && \
-        docker compose up -d --force-recreate gateway"
-    echo "Deployed ${TAG} to {{HOST}}. Roll back with: just rollback-dev {{HOST}} {{DIR}}"
+# Deploy HEAD to HOST (auto local/remote build)
+ship-dev HOST *FLAGS:
+    scripts/ship-dev.sh {{HOST}} {{FLAGS}}
 
 # Restore the image that was running before the last `ship-dev`.
 rollback-dev HOST DIR="/opt/vkdg":

@@ -73,6 +73,11 @@ enum Command {
         quiet: bool,
     },
     Doctor,
+    /// Exit 0 when the gateway answers 2xx on /health (Docker HEALTHCHECK).
+    Healthcheck {
+        #[arg(long, default_value = "http://127.0.0.1:8080/health")]
+        url: String,
+    },
     Config {
         #[command(subcommand)]
         sub: ConfigSub,
@@ -286,6 +291,7 @@ async fn main() -> Result<()> {
             quiet,
         } => serve(config, listen, token, quiet).await?,
         Command::Doctor => vkdg_cli::commands::doctor::run().await?,
+        Command::Healthcheck { url } => vkdg_cli::commands::healthcheck::run(&url).await?,
         Command::Config {
             sub: ConfigSub::Check { path },
         } => {

@@ -2,7 +2,7 @@ services:
   gateway:
     build:
       context: ..
-      dockerfile: deploy/Dockerfile.gateway
+      dockerfile: deploy/Dockerfile
     ports:
       - "8080:8080"
       - "9090:9090"

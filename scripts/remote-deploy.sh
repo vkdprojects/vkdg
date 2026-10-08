@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Usage: scripts/remote-deploy.sh <sha7>
-# Sync, build deploy/Dockerfile.gateway on the server as vkdg-gateway:dev-<sha7>,
+# Sync, build deploy/Dockerfile on the server as vkdg-gateway:dev-<sha7>,
 # keep the previous latest as rollback + rollback-<oldsha>, swap, restart, and
 # measure downtime via http://127.0.0.1:8080/health on the server.
+#
+# VKDG_PROFILE: cargo profile (default ship = no LTO, fast compile; release for prod).
+# VKDG_PREBUILT=1: skip sync + build; vkdg-gateway:dev-<sha7> must already be
+# loaded on the host (scripts/ship-dev.sh does this after a local build).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/remote-lib.sh"
 
@@ -10,13 +14,20 @@ SHA="${1:-}"
 [[ "$SHA" =~ ^[0-9a-f]{7}$ ]] || die "usage: $0 <sha7>  (7 hex chars)"
 TAG="dev-$SHA"
 
-remote_sync
-
-echo "building vkdg-gateway:$TAG on $REMOTE_HOST (nice 19)" >&2
-rssh -T "set -e; mkdir -p '$REMOTE_BUILD_DIR'; exec 9>'$REMOTE_LOCK'; flock 9
-  cd '$REMOTE_SRC'
-  DOCKER_BUILDKIT=1 nice -n 19 docker build -f deploy/Dockerfile.gateway -t vkdg-gateway:$TAG ." \
-  || die "docker build failed; nothing was swapped"
+if [[ "${VKDG_PREBUILT:-}" == 1 ]]; then
+  rssh "docker image inspect vkdg-gateway:$TAG >/dev/null" \
+    || die "VKDG_PREBUILT=1 but vkdg-gateway:$TAG is not loaded on $REMOTE_HOST"
+else
+  remote_sync
+  echo "building vkdg-gateway:$TAG on $REMOTE_HOST (nice 19)" >&2
+  rssh -T "set -e; mkdir -p '$REMOTE_BUILD_DIR'; exec 9>'$REMOTE_LOCK'; flock 9
+    cd '$REMOTE_SRC'
+    DOCKER_BUILDKIT=1 nice -n 19 docker build -f deploy/Dockerfile \
+      --build-arg PROFILE='${VKDG_PROFILE:-ship}' --build-arg VCS_REF='$SHA' \
+      --build-arg BUILD_DATE=\$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+      -t vkdg-gateway:$TAG ." \
+    || die "docker build failed; nothing was swapped"
+fi
 
 echo "swapping tags and restarting gateway" >&2
 rssh -T bash -s -- "$TAG" <<'REMOTE'
@@ -56,6 +67,17 @@ echo "health http=$code; elapsed until healthy (upper bound on downtime): $(awk 
 sleep 3
 docker inspect vkdg --format 'restartCount={{.RestartCount}} OOMKilled={{.State.OOMKilled}} status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}n/a{{end}} image={{.Config.Image}}'
 echo "health after settle: http=$(curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:8080/health || true)"
+
+# Housekeeping, so the disk never fills: the host only runs VKDG.
+# Keep latest, rollback, and the 3 newest rollback-<sha> / dev-<sha> tags.
+for prefix in rollback- dev-; do
+  docker images vkdg-gateway --format '{{.CreatedAt}}\t{{.Tag}}' \
+    | awk -v p="$prefix" -F'\t' 'index($2, p) == 1' | sort -r | tail -n +4 | cut -f2 \
+    | while read -r t; do [ "$t" = "$TAG" ] || docker rmi "vkdg-gateway:$t" >/dev/null 2>&1 || true; done
+done
+docker image prune -f >/dev/null
+docker builder prune -f --keep-storage 3GB >/dev/null 2>&1 || true
+echo "disk after deploy: $(df -h / | awk 'NR==2 {print $3 " used, " $4 " free"}')"
 REMOTE
 
 echo >&2

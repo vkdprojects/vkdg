@@ -61,11 +61,7 @@ pub async fn run() -> Result<()> {
 }
 
 async fn check_url(url: &str) -> bool {
-    tokio::time::timeout(std::time::Duration::from_secs(2), reqwest::get(url))
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .is_some_and(|r| r.status().is_success())
+    super::healthcheck::run(url).await.is_ok()
 }
 
 fn print_check(name: &str, detail: &str, ok: bool) {

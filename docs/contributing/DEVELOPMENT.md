@@ -46,70 +46,60 @@ cargo test -p conformance smoke -- --nocapture
 
 These tests start a fake upstream in memory, make no real network calls, and require no environment variables.
 
-## Shipping a dev image from any machine
-
-`deploy/Dockerfile.gateway` compiles Rust inside the build. That is right for a
-release, but it costs about 15 minutes on a modest x86 host, and far longer if
-Docker has to emulate x86 on an ARM machine.
-
-For a dev loop, compile on your own machine and let the image just package the
-binary. `rustc` runs natively — including on Apple Silicon — and emits x86, so
-nothing is emulated:
+## Shipping a dev image
 
 ```bash
-# Once
-brew install zig                       # or your platform's zig package
-cargo install cargo-zigbuild
-rustup target add x86_64-unknown-linux-musl
-
-# Build, stream over SSH, and restart the remote container
-just ship-dev <ssh-host>
-just ship-dev <ssh-host> /srv/vkdg     # if compose lives elsewhere
-
-# Undo it
-just rollback-dev <ssh-host>
+just ship-dev <ssh-host>            # deploy HEAD
+just ship-dev <ssh-host> --plan     # show where it would build, and why
+just rollback-dev <ssh-host>        # restore the previous image
 ```
 
-Measured on an M4 Pro against a 4-core Broadwell server:
+`ship-dev` decides where to compile:
 
-| Step | Compiling inside the image | `just ship-dev` |
+| Your machine | Build runs | Typical time |
 |---|---|---|
-| Local machine to running container | 14m28s | **35s** |
+| Has `cargo-zigbuild`, `zig`, Docker; ≥ 8 CPUs; ≥ 16 GiB RAM | Locally: cross-compile to x86 musl, package with `--target prebuilt`, stream over SSH | ~1–2 min |
+| Anything else | On the host: source synced, `deploy/Dockerfile` built there under `nice -n 19` | several minutes, cached afterwards |
 
-`ship-dev` streams the image over the SSH connection, so it works against a host
-that cannot reach a private registry, and it retags the previous image as
-`vkdg-gateway:rollback` before switching.
+If the local build fails it falls back to the host. Force a mode with
+`VKDG_BUILD=local|remote`. Either way the host performs the same tag swap,
+restart, health check, and cleanup (old images and build cache are pruned so the
+disk stays bounded). Uncommitted changes are refused: the image tag
+`dev-<sha>` always names a real commit.
 
-Images are tagged `dev-<short-sha>`, with `-dirty` appended when the tree has
-uncommitted changes — so an image that came from unpushed work says so.
+Dev deploys compile with the `ship` profile (no LTO, 16 codegen units), which is
+several times faster than `release`. Set `VKDG_PROFILE=release` for production
+parity.
+
+To enable the fast path once:
+
+```bash
+brew install zig                    # or your platform's zig package
+cargo install cargo-zigbuild
+rustup target add x86_64-unknown-linux-musl
+```
+
+### The image
+
+`deploy/Dockerfile` is the only Dockerfile. Stages, cheapest to change last:
+console (bun, runs on the builder's native arch) → `cargo-chef` recipe →
+dependencies (cached until a `Cargo.toml`/`Cargo.lock` changes) → workspace →
+`scratch` runtime with the CA bundle and the binary. The runtime has no shell, so
+its `HEALTHCHECK` runs `vkdg healthcheck`. Images carry OCI labels with the
+commit (`docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`).
 
 ### Publishing to a registry instead
 
 ```bash
 docker login ghcr.io
-just push-dev                          # ghcr.io/vkdprojects/vkdg:dev-<sha> and :dev
+just push-dev                       # ghcr.io/vkdprojects/vkdg:dev-<sha> and :dev
 just push-dev my-registry.example.com/team
 ```
 
-### If you cannot install zig
-
-Register a remote x86 machine as a buildx node and build there natively. Slower
-than a local cross-compile when your own machine is faster, but it needs nothing
-installed locally:
-
-```bash
-docker buildx create --name vkdg-x86 --driver docker-container \
-    --platform linux/amd64 ssh://<ssh-host>
-docker buildx build --builder vkdg-x86 -f deploy/Dockerfile.gateway \
-    -t <registry>/vkdg:dev --push .
-```
-
-Avoid QEMU emulation (`docker build --platform linux/amd64` on an ARM host with
-no remote builder) for anything but a one-off: it translates every `rustc`
-instruction, which turns a 2-minute compile into an hour. Docker Desktop's
-Rosetta option is faster than QEMU but still translates the compiler; note that
-Rosetta itself is for running x86 **macOS** binaries and does not help
-cross-compilation.
+Avoid QEMU emulation (`docker build --platform linux/amd64` of the full build on
+an ARM host): it translates every `rustc` instruction and turns a 2-minute
+compile into an hour. Cross-compiling with zig, as `ship-dev` does, emulates
+nothing.
 
 ## How to add a provider (end to end)
 

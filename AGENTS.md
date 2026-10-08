@@ -29,11 +29,11 @@ Some dev machines freeze on `cargo build`, `cargo test`, `cargo check`, `cargo c
 ```bash
 scripts/remote-cargo.sh check -p vkdg-core   # any cargo command
 scripts/remote-gates.sh                      # fmt, clippy, test, typos, machete
-just ship-dev omni-vixpi                     # deploy HEAD: build on the host, swap, restart, health-check
+just ship-dev omni-vixpi                     # deploy HEAD: builds locally if this machine can, else on the host; swap, restart, health-check
 just rollback-dev omni-vixpi                 # restore the previous image
 ```
 
-`just ship-dev-local HOST` builds the image on your machine instead (only if it can).
+`ship-dev` picks the build location itself (local when `cargo-zigbuild`+`zig`+Docker are present and the machine has ≥8 CPUs and ≥16 GiB; a failed local build falls back to the host). Force with `VKDG_BUILD=local|remote`.
 
 `cargo fmt` is fine locally. The Commands below are the cargo invocations to pass to `scripts/remote-cargo.sh`.
 

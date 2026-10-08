@@ -75,7 +75,7 @@ remote_sync() {
 }
 
 # Build vkdg-builder:latest on the server once (same base/toolchain as the
-# builder stage of deploy/Dockerfile.gateway: rust:1-alpine + musl-dev
+# builder stage of deploy/Dockerfile: rust:<pinned>-alpine + musl-dev
 # pkgconfig openssl-dev). VKDG_BUILDER_REBUILD=1 forces a rebuild.
 remote_ensure_builder() {
   if [[ "${VKDG_BUILDER_REBUILD:-0}" != 1 ]] && rssh "docker image inspect $BUILDER_IMAGE >/dev/null 2>&1"; then

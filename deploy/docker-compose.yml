@@ -7,7 +7,7 @@ services:
     # Or build locally:
     # build:
     #   context: ..
-    #   dockerfile: deploy/Dockerfile.gateway
+    #   dockerfile: deploy/Dockerfile
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-8080}:8080"

@@ -22,6 +22,20 @@ Product: AI gateway in Rust. Receives calls via Anthropic Messages, OpenAI Chat 
 
 ---
 
+## Builds run on the server, never locally
+
+Never run `cargo build`, `cargo test`, `cargo check`, `cargo clippy`, or `docker build` on the local machine (it freezes). Use the server-side wrappers; they sync the working tree to `vkdg-prod`, run under `nice -n 19`, and serialize on a lock:
+
+```bash
+scripts/remote-cargo.sh check -p vkdg-core   # any cargo command
+scripts/remote-gates.sh                      # fmt, clippy, test, typos, machete
+scripts/remote-deploy.sh <sha7>              # build image, swap tag, restart, print rollback command
+```
+
+`cargo fmt` is fine locally. The Commands below are the cargo invocations to pass to `scripts/remote-cargo.sh`.
+
+---
+
 ## Commands
 
 ```bash

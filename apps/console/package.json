@@ -12,7 +12,7 @@
     "test": "vitest run",
     "e2e": "playwright test",
     "lint:tokens": "bun scripts/lint-tokens.ts",
-    "lint:dup": "npx -y jscpd@4.0.5 --config .jscpd.json",
+    "lint:dup": "scripts/lint-dup.sh",
     "lint": "bun run lint:tokens && bun run lint:dup && bun run check"
   },
   "devDependencies": {

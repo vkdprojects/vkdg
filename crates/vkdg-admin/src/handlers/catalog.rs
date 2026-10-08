@@ -1,6 +1,6 @@
 use crate::{
     error::{AdminError, AdminErrorResponse},
-    handlers::response as resp,
+    handlers::{response as resp, session::get_session},
     router::AdminState,
 };
 use axum::{
@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use http::StatusCode;
+use http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 use vkdg_config::CatalogModel;
 
@@ -76,8 +76,12 @@ impl RemoteCatalog {
 /// GET /admin/v1/catalog/{provider}
 pub async fn get_catalog(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
 ) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return resp::unauthorized();
+    }
     let Some(store) = state.gateway_store.as_ref() else {
         return AdminErrorResponse(
             StatusCode::NOT_FOUND,
@@ -102,9 +106,13 @@ pub async fn get_catalog(
 /// PUT /admin/v1/catalog/{provider}
 pub async fn put_catalog(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Json(body): Json<PutCatalogBody>,
 ) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return resp::unauthorized();
+    }
     let Some(store) = state.gateway_store.as_ref() else {
         return AdminErrorResponse(
             StatusCode::NOT_FOUND,
@@ -128,9 +136,13 @@ pub async fn put_catalog(
 /// POST /admin/v1/catalog/{provider}/import-url
 pub async fn import_catalog_url(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(provider): Path<String>,
     Json(body): Json<ImportUrlBody>,
 ) -> Response {
+    if get_session(&state, &headers).is_none() {
+        return resp::unauthorized();
+    }
     let Some(store) = state.gateway_store.as_ref() else {
         return AdminErrorResponse(
             StatusCode::NOT_FOUND,

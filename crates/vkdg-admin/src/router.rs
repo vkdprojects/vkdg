@@ -202,3 +202,90 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .with_state(state)
 }
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use axum::body::Body;
+    use http::{Method, Request, StatusCode};
+    use tower::ServiceExt;
+    use vkdg_config::ConfigSnapshot;
+
+    fn state() -> AdminState {
+        let (_tx, rx) = tokio::sync::watch::channel(Arc::new(ConfigSnapshot::default_empty()));
+        let dir = std::env::temp_dir().join(format!("vkdg-authz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        AdminState {
+            sessions: SessionStore::new("t".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: RequestLog::new(),
+            combos: None,
+            catalog: None,
+            logins: None,
+            reload_plugins: None,
+            connection_tester: None,
+            // A real store, so a missing auth check would reach it and succeed.
+            gateway_store: Some(Arc::new(GatewayStore::open(&dir.join("gw.db")).unwrap())),
+            config_tx: None,
+        }
+    }
+
+    // Refutes: a handler that forgets `get_session` (each handler checks it
+    // itself; there is no router-wide layer). Every route not in PUBLIC must
+    // answer 401 with no cookie, including ones that would otherwise succeed.
+    #[tokio::test]
+    async fn every_non_public_route_requires_a_session() {
+        const PUBLIC: &[(&str, &str)] = &[
+            ("GET", "/admin/v1/system"),
+            ("POST", "/admin/v1/session"),
+            ("DELETE", "/admin/v1/session"),
+            ("GET", "/admin/v1/setup"),
+            ("GET", "/metrics"),
+        ];
+        let routes: &[(&str, &str, &str)] = &[
+            ("GET", "/admin/v1/session/me", ""),
+            (
+                "POST",
+                "/admin/v1/setup",
+                r#"{"password":"xxxxxxxxxxxxxxxx"}"#,
+            ),
+            ("GET", "/admin/v1/connections", ""),
+            ("GET", "/admin/v1/keys", ""),
+            ("GET", "/admin/v1/routes", ""),
+            ("GET", "/admin/v1/requests", ""),
+            ("GET", "/admin/v1/plugins", ""),
+            ("DELETE", "/admin/v1/plugins/x", ""),
+            ("GET", "/admin/v1/stats", ""),
+            ("GET", "/admin/v1/config/export", ""),
+            ("GET", "/admin/v1/catalog/codex", ""),
+            ("PUT", "/admin/v1/catalog/codex", r#"{"models":[]}"#),
+            (
+                "POST",
+                "/admin/v1/catalog/codex/import-url",
+                r#"{"url":"http://127.0.0.1:1/"}"#,
+            ),
+        ];
+        let app = build_admin_router(state());
+        let mut open = Vec::new();
+        for (m, path, body) in routes {
+            assert!(!PUBLIC.contains(&(*m, *path)));
+            let req = Request::builder()
+                .method(Method::from_bytes(m.as_bytes()).unwrap())
+                .uri(*path)
+                .header("content-type", "application/json")
+                .body(Body::from(*body))
+                .unwrap();
+            let status = app.clone().oneshot(req).await.unwrap().status();
+            if status != StatusCode::UNAUTHORIZED {
+                open.push(format!("{m} {path} -> {status}"));
+            }
+        }
+        assert!(
+            open.is_empty(),
+            "reachable without a session:\n{}",
+            open.join("\n")
+        );
+    }
+}

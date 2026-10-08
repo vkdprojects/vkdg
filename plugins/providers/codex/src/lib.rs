@@ -11,11 +11,11 @@ use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 use vkdg_provider_sdk::{
-    ConversationStreamDecoder, Credential, DynamicModelCatalog, ModelCatalog, OAuthConfig,
-    OAuthFlow, OAuthProvider, PreparedRequest, ProviderAdapter, ProviderError, ResponsesSseDecoder,
-    TokenPair,
+    ConversationStreamDecoder, Credential, ModelCatalog, OAuthConfig, OAuthFlow, OAuthProvider,
+    PreparedRequest, ProviderAdapter, ProviderError, ResponsesSseDecoder, TokenPair,
 };
 
+mod catalog;
 mod usage;
 
 /// Public OAuth `client_id` for the Codex CLI (`openai/codex`, `codex-rs`).
@@ -24,20 +24,21 @@ mod usage;
 const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 pub struct CodexAdapter {
-    catalog: Option<Arc<DynamicModelCatalog>>,
+    catalog: catalog::CodexModelCatalog,
 }
 
 impl CodexAdapter {
+    /// No gateway store: OAuth accounts still discover models live.
     pub fn new() -> Self {
-        Self { catalog: None }
+        Self {
+            catalog: catalog::CodexModelCatalog::new(None),
+        }
     }
 
+    /// API-key connections fall back to the admin-managed `provider_catalog`.
     pub fn with_store(store: Arc<vkdg_config::GatewayStore>) -> Self {
         Self {
-            catalog: Some(Arc::new(DynamicModelCatalog {
-                store,
-                provider_id: "codex",
-            })),
+            catalog: catalog::CodexModelCatalog::new(Some(store)),
         }
     }
 }
@@ -109,7 +110,7 @@ impl ProviderAdapter for CodexAdapter {
     }
 
     fn model_catalog(&self) -> Option<&dyn ModelCatalog> {
-        self.catalog.as_deref().map(|c| c as &dyn ModelCatalog)
+        Some(&self.catalog)
     }
 }
 

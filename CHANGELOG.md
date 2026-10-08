@@ -27,8 +27,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
   Code and Kiro.
 - **Dynamic model catalog:** `provider_catalog` table in `gateway.db` stores models per provider
   without requiring a rebuild. Admin API: `GET/PUT /admin/v1/catalog/{provider}` and
-  `POST /admin/v1/catalog/{provider}/import-url` (imports from any JSON URL). Codex uses this
-  catalog; any future provider can too.
+  `POST /admin/v1/catalog/{provider}/import-url` (imports from any JSON URL). API-key Codex
+  connections use this catalog; any future provider can too.
 - **Session persistence across restarts:** admin console sessions are now stored in `gateway.db`
   (`admin_sessions` table) and reloaded on startup. A deploy or restart no longer forces a new
   login.
@@ -45,6 +45,14 @@ Versioning: [Semantic Versioning](https://semver.org/).
   window with remaining percent and reset time.
 
 ### Fixed
+- **Codex model sync failed with "no models in catalog for provider 'codex'":** syncing a Codex
+  account read only the admin-managed `provider_catalog` table, which is empty unless someone
+  filled it by hand. OAuth (ChatGPT) accounts now ask
+  `chatgpt.com/backend-api/codex/models` with the account's token, the same list the Codex CLI
+  picker shows, and keep the slugs with `visibility: "list"` that the Responses API accepts.
+  The endpoint requires `client_version` and hides models newer than it; the gateway sends
+  `0.162.0`, overridable with `CODEX_CLIENT_VERSION`. API-key and custom-endpoint Codex
+  connections still read `provider_catalog`.
 - **Account "Test" failed for Claude Code and Codex with "no eligible connection":** account
   connections list only patterns (`claude-*`, `gpt-*`), so the test request named a model no route
   served and died in routing before reaching the account. The test now pins the request to the

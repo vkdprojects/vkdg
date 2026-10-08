@@ -8,6 +8,7 @@
   import { Home, Combine, Route, List, Gamepad2, Key, Settings, Puzzle, LayoutGrid, Cable, Users, Gauge, PanelLeft, Menu } from 'lucide-svelte';
   import { Logo, StatusDot, UserMenu } from '$lib/components/index.js';
   import { api } from '$lib/api.js';
+  import { poll } from '$lib/live.svelte.js';
   import type { SessionUser, SystemInfo } from '$lib/api.js';
 
   interface Props { children: Snippet; }
@@ -109,21 +110,9 @@
       .catch(() => { if (page.url.pathname === path) goto('/login'); });
   });
 
-  $effect(() => {
+  poll(async () => {
     if (isPublic || !user) return;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const refresh = async () => {
-      if (document.visibilityState !== 'visible') return;
-      try { system = await api.system(); } catch { /* retain last known state */ }
-    };
-    const sync = () => {
-      clearInterval(timer);
-      timer = undefined;
-      if (document.visibilityState === 'visible') timer = setInterval(refresh, 5000);
-    };
-    sync();
-    document.addEventListener('visibilitychange', sync);
-    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', sync); };
+    try { system = await api.system(); } catch { /* retain last known state */ }
   });
 </script>
 

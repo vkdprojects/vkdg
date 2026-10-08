@@ -1,9 +1,10 @@
 <script lang="ts">
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api.js';
-  import type { Account, ConnectionPatch, ConnectionStatus, ConnectionSummary, ConnectionTestResult } from '$lib/api.js';
+  import type { Account, ConnectionPatch, ConnectionSummary, ConnectionTestResult } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatDateTime } from '$lib/format.js';
+  import { connectionStatusLabel } from '$lib/status.js';
   import { Badge, Button, Input, Spinner, StatusDot } from '$lib/components/index.js';
 
   interface Props {
@@ -28,14 +29,6 @@
   let testing = $state<string | null>(null);
   let testResults = $state<Record<string, ConnectionTestResult>>({});
   let enabling = $state(false);
-
-  const statusLabels: Record<ConnectionStatus, () => string> = {
-    healthy: m.connection_status_healthy,
-    degraded: m.connection_status_degraded,
-    circuit_open: m.connection_status_circuit_open,
-    cooldown: m.connection_status_cooldown,
-    unknown: m.connection_status_unknown,
-  };
 
   function parseModels(text: string): string[] {
     return text.split(',').map((s) => s.trim()).filter(Boolean);
@@ -141,7 +134,7 @@
         <div class="conn-head">
           <div class="conn-status">
             <StatusDot status={c.status} />
-            <Badge status={c.status} label={(statusLabels[c.status] ?? m.connection_status_unknown)()} />
+            <Badge status={c.status} label={connectionStatusLabel(c.status)} />
             {#if connections.length > 1}<span class="conn-id mono">{c.id}</span>{/if}
           </div>
           {#if c.cooldown_until || c.failure_count != null}

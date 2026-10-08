@@ -1,179 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
-  import type { ConnectionStatus, ConnectionSummary } from '$lib/api.js';
-  import { Badge, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
+  import type { ConnectionSummary } from '$lib/api.js';
+  import { AddConnectionDialog, Badge, Button, ConfirmDeleteDialog, EmptyState, Meter, RefreshButton, Spinner, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { formatTime, formatRelativeTime } from '$lib/format.js';
-  import { Dialog, AlertDialog } from 'bits-ui';
-  import { PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
+  import { formatTime, formatRelativeFrom } from '$lib/format.js';
+  import { deleteConnection, syncConnectionModels } from '$lib/connection-actions.js';
+  import { connectionStatusLabel, isCooling } from '$lib/status.js';
+  import { poll } from '$lib/live.svelte.js';
+  import { PlusIcon, RefreshCwIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
   let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
   let refreshing = $state(false);
   let updatedAt = $state<Date | null>(null);
-
-  const statusLabels: Record<ConnectionStatus, () => string> = {
-    healthy: m.connection_status_healthy,
-    degraded: m.connection_status_degraded,
-    circuit_open: m.connection_status_circuit_open,
-    cooldown: m.connection_status_cooldown,
-    unknown: m.connection_status_unknown,
-  };
+  let dialogOpen = $state(false);
 
   const totalActive = $derived(connections.reduce((sum, conn) => sum + conn.active_requests, 0));
   const totalCapacity = $derived(connections.reduce((sum, conn) => sum + conn.max_concurrent, 0));
-
-  function humanizeCooldown(value: string) {
-    const timestamp = new Date(value).getTime();
-    if (!Number.isFinite(timestamp)) return m.common_none();
-
-    const seconds = Math.round((timestamp - Date.now()) / 1000);
-    if (Math.abs(seconds) < 60) return formatRelativeTime(seconds, 'second');
-    const minutes = Math.round(seconds / 60);
-    if (Math.abs(minutes) < 60) return formatRelativeTime(minutes, 'minute');
-    const hours = Math.round(minutes / 60);
-    if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
-    return formatRelativeTime(Math.round(hours / 24), 'day');
-  }
-
-  let pendingDelete = $state<ConnectionSummary | null>(null);
-  let deleting = $state(false);
-
-  async function confirmDelete() {
-    if (!pendingDelete) return;
-    deleting = true;
-    try {
-      await api.deleteConnection(pendingDelete.id);
-      toast.success(m.connection_deleted());
-      pendingDelete = null;
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      deleting = false;
-    }
-  }
-
-  // Models chips: show a few entries, the rest go into the tooltip.
-  const MODEL_CHIPS = 3;
-  const isPattern = (id: string) => /[*?]/.test(id);
-
-  let syncingId = $state<string | null>(null);
-
-  async function syncModels(conn: ConnectionSummary) {
-    syncingId = conn.id;
-    try {
-      const result = await api.syncConnectionModels(conn.id);
-      toast.success(m.connection_models_synced({ count: result.count }));
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      syncingId = null;
-    }
-  }
-  let resettingId = $state<string | null>(null);
-
-  async function resetCooldown(conn: ConnectionSummary) {
-    resettingId = conn.id;
-    try {
-      await api.resetConnectionCooldown(conn.id);
-      toast.success(m.connection_cooldown_reset({ id: conn.id }));
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      resettingId = null;
-    }
-  }
-
-
-  let dialogOpen = $state(false);
-  let provider = $state('openai-compat');
-  let connId = $state('');
-  let baseUrl = $state('');
-  let envVar = $state('');
-  let models = $state('');
-  let step = $state<'form' | 'yaml'>('form');
-
-  const providerOptions = [
-    { value: 'openai-compat', label: 'OpenAI-compatible (Ollama, vLLM, etc.)' },
-    { value: 'anthropic-compat', label: 'Anthropic-compatible' },
-    { value: 'anthropic',  label: 'Anthropic (Claude)' },
-    { value: 'openai',     label: 'OpenAI (GPT / o-series)' },
-    { value: 'groq',       label: 'Groq' },
-    { value: 'gemini',     label: 'Google Gemini' },
-    { value: 'deepseek',   label: 'DeepSeek' },
-    { value: 'mistral',    label: 'Mistral' },
-    { value: 'together',   label: 'Together AI' },
-    { value: 'fireworks',  label: 'Fireworks AI' },
-    { value: 'sambanova',  label: 'SambaNova (free tier)' },
-    { value: 'cerebras',   label: 'Cerebras (free tier)' },
-    { value: 'nvidia-nim', label: 'NVIDIA NIM' },
-    { value: 'kiro',       label: 'Kiro (Amazon Q)' },
-  ];
-
-  const showBaseUrl = $derived(provider === 'openai-compat' || provider === 'anthropic-compat');
-
-  // Default env var per provider
-  const defaultEnvVar: Record<string, string> = {
-    'anthropic':     'ANTHROPIC_API_KEY',
-    'openai':        'OPENAI_API_KEY',
-    'groq':          'GROQ_API_KEY',
-    'gemini':        'GEMINI_API_KEY',
-    'deepseek':      'DEEPSEEK_API_KEY',
-    'mistral':       'MISTRAL_API_KEY',
-    'together':      'TOGETHER_API_KEY',
-    'fireworks':     'FIREWORKS_API_KEY',
-    'sambanova':     'SAMBANOVA_API_KEY',
-    'cerebras':      'CEREBRAS_API_KEY',
-    'nvidia-nim':    'NVIDIA_API_KEY',
-    'kiro':          'KIRO_API_KEY',
-    'openai-compat': 'API_KEY',
-  };
-
-  const defaultModels: Record<string, string> = {
-    'anthropic':  'claude-*',
-    'openai':     'gpt-*, o1-*, o3-*',
-    'groq':       'llama-*, mixtral-*',
-    'gemini':     'gemini-*',
-    'deepseek':   'deepseek-*',
-    'mistral':    'mistral-*',
-    'together':   'meta-llama/*',
-    'fireworks':  'accounts/*',
-    'sambanova':  'Meta-Llama-*',
-    'cerebras':   'llama3.1-*',
-    'nvidia-nim': 'meta/llama-*',
-    'kiro':       'claude-*, gpt-5.6-*, minimax-*, deepseek-*, glm-*, qwen3-*, auto',
-  };
-
-  $effect(() => {
-    if (provider in defaultEnvVar) envVar = defaultEnvVar[provider];
-    if (provider in defaultModels) models = defaultModels[provider];
-    if (!connId) connId = `${provider}-default`;
-  });
-
-  // Generate the YAML snippet the user needs to paste into vkdg.yaml. One entry
-  // per line with explicit indentation: `auth:` once rendered at 8 spaces and
-  // the gateway refused the pasted file.
-  const yamlSnippet = $derived(() => {
-    const modelList = (models || '*').split(',').map((m) => `"${m.trim()}"`).join(', ');
-    const lines = [
-      'connections:',
-      `  - id: ${connId || provider + '-default'}`,
-      `    provider: ${provider}`,
-      ...(showBaseUrl && baseUrl ? [`    base_url: ${baseUrl}`] : []),
-      '    auth:',
-      '      type: api_key',
-      `      env_var: ${envVar || 'API_KEY'}`,
-      `    models: [${modelList}]`,
-      '    max_concurrent: 50',
-      '    weight: 1',
-    ];
-    return lines.join('\n');
-  });
 
   async function load() {
     refreshing = true;
@@ -188,39 +32,48 @@
     }
   }
 
-  // Poll every 5s only while the tab is visible; refresh at once when it comes back.
-  onMount(() => {
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const sync = () => {
-      clearInterval(timer);
-      timer = undefined;
-      if (document.visibilityState !== 'visible') return;
-      load();
-      timer = setInterval(load, 5000);
-    };
-    sync();
-    document.addEventListener('visibilitychange', sync);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', sync);
-    };
-  });
+  // Every 5s while the tab is visible; refresh at once when it comes back.
+  poll(load);
 
-  function openDialog() {
-    step = 'form';
-    connId = '';
-    baseUrl = '';
-    dialogOpen = true;
+  let pendingDelete = $state<ConnectionSummary | null>(null);
+  let deleting = $state(false);
+
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    deleting = true;
+    const ok = await deleteConnection(pendingDelete.id);
+    deleting = false;
+    if (!ok) return;
+    pendingDelete = null;
+    await load();
   }
 
-  function handleFormSubmit(e: Event) {
-    e.preventDefault();
-    step = 'yaml';
+  // Models chips: show a few entries, the rest go into the tooltip.
+  const MODEL_CHIPS = 3;
+  const isPattern = (id: string) => /[*?]/.test(id);
+
+  let syncingId = $state<string | null>(null);
+
+  async function syncModels(conn: ConnectionSummary) {
+    syncingId = conn.id;
+    const ok = await syncConnectionModels(conn.id);
+    syncingId = null;
+    if (ok) await load();
   }
 
-  function closeDialog() {
-    dialogOpen = false;
-    step = 'form';
+  let resettingId = $state<string | null>(null);
+
+  async function resetCooldown(conn: ConnectionSummary) {
+    resettingId = conn.id;
+    try {
+      await api.resetConnectionCooldown(conn.id);
+      toast.success(m.connection_cooldown_reset({ id: conn.id }));
+      await load();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      resettingId = null;
+    }
   }
 </script>
 
@@ -234,11 +87,8 @@
       </p>
     </div>
     <div class="page-actions">
-      <Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}>
-        <RefreshCwIcon size={14} aria-hidden="true" />
-        {m.common_refresh()}
-      </Button>
-      <Button variant="primary" size="sm" onclick={openDialog}>
+      <RefreshButton busy={refreshing} onRefresh={load} />
+      <Button variant="primary" size="sm" onclick={() => (dialogOpen = true)}>
         <PlusIcon size={14} />
         {m.connection_add()}
       </Button>
@@ -265,7 +115,7 @@
               <span class="mono conn-id" title={conn.id}>{conn.id}</span>
               <span class="conn-provider">{conn.provider}</span>
             </div>
-            <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
+            <Badge status={conn.status} label={connectionStatusLabel(conn.status)} />
           </header>
 
           <div class="conn-section">
@@ -297,7 +147,7 @@
             <span class="conn-label">{m.connection_cooldown()}</span>
             <div class="cooldown-info">
               {#if conn.cooldown_until}
-                <div class="cooldown-until">{m.connection_cooldown_until({ time: humanizeCooldown(conn.cooldown_until) })}</div>
+                <div class="cooldown-until">{m.connection_cooldown_until({ time: formatRelativeFrom(conn.cooldown_until, m.common_none()) })}</div>
               {/if}
               {#if conn.failure_count != null}
                 <div class="hint">{m.connection_failures({ n: conn.failure_count })}</div>
@@ -320,7 +170,7 @@
               <RefreshCwIcon size={14} aria-hidden="true" />
               {m.connection_sync_models()}
             </Button>
-            {#if conn.status === 'cooldown' || conn.status === 'circuit_open' || conn.cooldown_until}
+            {#if isCooling(conn)}
               <Button
                 variant="outline"
                 size="sm"
@@ -345,105 +195,17 @@
   {/if}
 </div>
 
+<ConfirmDeleteDialog
+  open={pendingDelete !== null}
+  onClose={() => (pendingDelete = null)}
+  title={m.connection_delete_title()}
+  description={m.connection_delete_confirm({ id: pendingDelete?.id ?? '' })}
+  confirmLabel={m.connection_delete()}
+  busy={deleting}
+  onConfirm={confirmDelete}
+/>
 
-<AlertDialog.Root open={pendingDelete !== null} onOpenChange={(v) => { if (!v) pendingDelete = null; }}>
-  <AlertDialog.Portal>
-    <AlertDialog.Overlay class="dialog-overlay" />
-    <AlertDialog.Content class="dialog-content">
-      <div class="confirm">
-        <AlertDialog.Title class="dialog-title">{m.connection_delete_title()}</AlertDialog.Title>
-        <AlertDialog.Description class="confirm-desc">
-          {m.connection_delete_confirm({ id: pendingDelete?.id ?? '' })}
-        </AlertDialog.Description>
-        <div class="confirm-footer">
-          <AlertDialog.Cancel class="confirm-btn outline">{m.common_cancel()}</AlertDialog.Cancel>
-          <button type="button" class="confirm-btn danger" disabled={deleting} onclick={confirmDelete}>
-            {m.connection_delete()}
-          </button>
-        </div>
-      </div>
-    </AlertDialog.Content>
-  </AlertDialog.Portal>
-</AlertDialog.Root>
-
-<Dialog.Root bind:open={dialogOpen} onOpenChange={(v) => { if (!v) step = 'form'; }}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="dialog-content" aria-describedby={undefined}>
-      <div class="dialog-header">
-        <Dialog.Title class="dialog-title">
-          {step === 'form' ? m.connection_add() : 'Add to your config'}
-        </Dialog.Title>
-        <button class="dialog-close" aria-label={m.common_cancel()} onclick={closeDialog}>
-          <XIcon size={16} />
-        </button>
-      </div>
-
-      {#if step === 'form'}
-        <!-- Step 1: pick provider, enter details -->
-        <form onsubmit={handleFormSubmit}>
-          <div class="dialog-body fields">
-            <Select
-              label={m.connection_provider()}
-              options={providerOptions}
-              bind:value={provider}
-            />
-
-            <div class="field">
-              <label for="conn-id">Connection ID</label>
-              <input id="conn-id" type="text" bind:value={connId} placeholder="{provider}-default" required />
-            </div>
-
-            {#if showBaseUrl}
-              <div class="field">
-                <label for="conn-base-url">Base URL</label>
-                <input id="conn-base-url" type="text" bind:value={baseUrl} placeholder="http://localhost:11434" />
-              </div>
-            {/if}
-
-            <div class="field">
-              <label for="conn-env">API key env var</label>
-              <input id="conn-env" type="text" bind:value={envVar} placeholder="MY_API_KEY" />
-              <span class="field-hint">Variable name — the key stays in your environment, not in the config</span>
-            </div>
-
-            <div class="field">
-              <label for="conn-models">Models (comma-separated globs)</label>
-              <input id="conn-models" type="text" bind:value={models} placeholder="claude-*, gpt-4*" />
-            </div>
-          </div>
-
-          <div class="dialog-footer">
-            <Button variant="outline" type="button" onclick={closeDialog}>{m.common_cancel()}</Button>
-            <Button variant="primary" type="submit">Generate config snippet →</Button>
-          </div>
-        </form>
-
-      {:else}
-        <!-- Step 2: show the YAML snippet to paste into vkdg.yaml -->
-        <div class="yaml-step">
-          <p class="yaml-note">
-            Copy this into your <code>vkdg.yaml</code>. Hot-reload picks it up automatically — no restart needed.
-          </p>
-          <div class="yaml-block">
-            <pre class="yaml-code">{yamlSnippet()}</pre>
-            <CopyButton text={yamlSnippet()} />
-          </div>
-          <p class="yaml-env-note">
-            Set the environment variable before starting the gateway:
-            <br />
-            <code>export {envVar || 'API_KEY'}=your-key-here</code>
-          </p>
-        </div>
-
-        <div class="dialog-footer">
-          <Button variant="outline" onclick={() => (step = 'form')}>← Back</Button>
-          <Button variant="primary" onclick={closeDialog}>Done</Button>
-        </div>
-      {/if}
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+<AddConnectionDialog bind:open={dialogOpen} />
 
 <style>
   .loading {
@@ -591,63 +353,4 @@
   .conn-actions :global(button) { min-height: var(--control-h-sm); }
   .conn-actions :global(button:last-child) { margin-left: auto; }
 
-  .yaml-step { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5); }
-  .yaml-note, .yaml-env-note { margin: 0; font-size: var(--text-sm); color: var(--text-2); }
-  .yaml-block {
-    position: relative;
-    background: var(--bg-inset);
-    border: var(--border-w) solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: var(--space-3);
-  }
-  .yaml-code {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    line-height: var(--leading);
-    margin: 0;
-    white-space: pre;
-    overflow-x: auto;
-    color: var(--text-1);
-  }
-
-  .confirm {
-    padding: var(--space-5);
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-  :global(.confirm-desc) {
-    font-size: var(--text-sm);
-    color: var(--text-2);
-    margin: 0;
-  }
-  .confirm-footer {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: var(--space-2);
-  }
-  :global(.confirm-btn) {
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--text-sm);
-    font-weight: var(--weight-medium);
-    min-height: var(--control-h-sm);
-    padding: var(--space-2) var(--space-4);
-    border: var(--border-w) solid transparent;
-  }
-  :global(.confirm-btn.outline) {
-    background: transparent;
-    color: var(--text-2);
-    border-color: var(--border-strong);
-  }
-  :global(.confirm-btn.outline:hover) { background: var(--bg-hover); color: var(--text-1); }
-  :global(.confirm-btn.danger) {
-    background: var(--danger);
-    color: var(--on-accent);
-  }
-  :global(.confirm-btn:disabled) {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
 </style>

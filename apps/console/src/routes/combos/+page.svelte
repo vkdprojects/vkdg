@@ -3,7 +3,7 @@
   import { api } from '$lib/api.js';
   import type { ComboInput, ComboStrategy, ComboSummary, ConnectionSummary } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, EmptyState, Button, Select } from '$lib/components/index.js';
+  import { Badge, EmptyState, Button, PageCount, Select, SkeletonRows } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
 
   let combos = $state<ComboSummary[]>([]);
@@ -130,7 +130,7 @@
 <div class="page">
   <div class="page-header">
     <div>
-      <h1>{m.nav_combos()} <span class="count mono">{combos.length}</span></h1>
+      <h1>{m.nav_combos()} <PageCount value={combos.length} /></h1>
     </div>
     <div class="page-actions">
       <Button onclick={openCreate}>{m.combo_create()}</Button>
@@ -139,11 +139,7 @@
 
   {#if loading}
     <section class="panel" aria-busy="true">
-      <div class="panel-body loading">
-        <div class="skeleton row"></div>
-        <div class="skeleton row"></div>
-        <div class="skeleton row"></div>
-      </div>
+      <SkeletonRows />
     </section>
   {:else if combos.length === 0}
     <EmptyState title={m.combo_empty()} description={m.combo_empty_desc()} />
@@ -270,23 +266,6 @@
 </dialog>
 
 <style>
-  .count {
-    color: var(--text-3);
-    font-weight: var(--weight-regular);
-    font-size: var(--text-md);
-    margin-left: var(--space-1);
-  }
-
-  .loading {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .skeleton.row {
-    height: var(--control-h);
-  }
-
   .id {
     color: var(--text-1);
     font-weight: var(--weight-medium);

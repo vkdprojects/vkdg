@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Badge } from '$lib/components/index.js';
+  import { Badge, SurfaceCard } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   // No data load needed — static content. Selection is local, for browsing the reference.
 
@@ -42,7 +42,7 @@
 
     <div class="strategy-grid" role="radiogroup" aria-labelledby="strategies-heading">
       {#each strategies as s (s.id)}
-        <label class="strategy-card" class:active={selected === s.id}>
+        <SurfaceCard as="label" class="strategy-card{selected === s.id ? ' active' : ''}">
           <input type="radio" name="strategy" value={s.id} bind:group={selected} class="sr-only" />
           <span class="strategy-top">
             <span class="strategy-name mono">{s.id}</span>
@@ -51,7 +51,7 @@
             </span>
           </span>
           <span class="strategy-desc">{s.desc}</span>
-        </label>
+        </SurfaceCard>
       {/each}
     </div>
   </section>
@@ -121,16 +121,8 @@
     gap: var(--space-4);
   }
 
-  .strategy-card {
+  .strategy-grid :global(.strategy-card) {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-5);
-    background: var(--bg-surface);
-    border: var(--border-w) solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-1);
     cursor: pointer;
     font-weight: var(--weight-regular);
     transition:
@@ -140,23 +132,23 @@
       transform var(--dur-2) var(--ease-out);
   }
 
-  .strategy-card:hover {
+  .strategy-grid :global(.strategy-card:hover) {
     border-color: var(--border-strong);
     transform: var(--lift);
     box-shadow: var(--shadow-2);
   }
 
-  .strategy-card:active {
+  .strategy-grid :global(.strategy-card:active) {
     transform: var(--press);
   }
 
-  .strategy-card.active {
+  .strategy-grid :global(.strategy-card.active) {
     border-color: var(--accent);
     background: color-mix(in oklch, var(--accent) 6%, var(--bg-surface));
     box-shadow: 0 0 0 var(--focus-w) var(--accent), var(--glow);
   }
 
-  .strategy-card:has(input:focus-visible) {
+  .strategy-grid :global(.strategy-card:has(input:focus-visible)) {
     outline: var(--focus-w) solid var(--accent);
     outline-offset: 3px;
   }
@@ -175,7 +167,7 @@
     overflow-wrap: anywhere;
   }
 
-  .strategy-card.active .strategy-name {
+  .strategy-grid :global(.strategy-card.active .strategy-name) {
     color: var(--accent);
   }
 
@@ -195,7 +187,7 @@
       transform var(--dur-2) var(--ease-spring);
   }
 
-  .strategy-card.active .check {
+  .strategy-grid :global(.strategy-card.active .check) {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
@@ -217,6 +209,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .strategy-card:hover { transform: none; }
+    .strategy-grid :global(.strategy-card:hover) { transform: none; }
   }
 </style>

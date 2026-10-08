@@ -7,13 +7,13 @@
   let { text, label = 'Copy' }: Props = $props();
 
   let copied = $state(false);
-  let timer: ReturnType<typeof setTimeout>;
+  let timer = 0;
 
   function copy() {
     navigator.clipboard.writeText(text).then(() => {
       copied = true;
-      clearTimeout(timer);
-      timer = setTimeout(() => (copied = false), 2000);
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => (copied = false), 2000);
     });
   }
 </script>

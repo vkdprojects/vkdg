@@ -4,6 +4,7 @@
   import type { SystemInfo, ConnectionSummary, RequestSummary, Account } from '$lib/api.js';
   import { Badge, StatusDot, Button, EmptyState, Spinner, AccountCredits, Stat } from '$lib/components/index.js';
   import { formatTime } from '$lib/format.js';
+  import { connectionStatusLabel, formatCountdown, formatDuration, requestStatusLabel, secondsUntil } from '$lib/status.js';
   import { m } from '$lib/paraglide/messages.js';
   import { PlusIcon, ArrowRight, Network, Gauge, GitCommitHorizontal } from 'lucide-svelte';
 
@@ -17,14 +18,6 @@
   const active = $derived(connections.reduce((n, c) => n + c.active_requests, 0));
   const capacity = $derived(connections.reduce((n, c) => n + c.max_concurrent, 0));
   const accountsById = $derived(new Map(accounts.map((a) => [a.id, a])));
-  const statusLabels: Record<string, () => string> = { healthy: m.connection_status_healthy, degraded: m.connection_status_degraded, circuit_open: m.connection_status_circuit_open, cooldown: m.connection_status_cooldown, unknown: m.connection_status_unknown };
-  const requestLabels: Record<string, () => string> = { completed: m.request_status_completed, failed: m.request_status_failed, partial: m.request_status_partial, cancelled: m.request_status_cancelled, pending: m.request_status_pending };
-
-  function cooldownRemaining(iso: string): string {
-    const seconds = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 1000));
-    return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
-  }
-  function duration(ms: number | null): string { return ms == null ? m.common_pending() : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`; }
 
   onMount(async () => {
     try {
@@ -37,13 +30,25 @@
 
 <div class="page dashboard">
   <div class="page-header">
-    <div><h1>{m.nav_overview()}</h1><p>{m.overview_subtitle()}</p></div>
-    {#if !loading && connections.length === 0}<div class="page-actions"><Button size="sm" onclick={() => (window.location.href = '/connections')}><PlusIcon size={14} />{m.connection_add()}</Button></div>{/if}
+    <div>
+      <h1>{m.nav_overview()}</h1>
+      <p>{m.overview_subtitle()}</p>
+    </div>
+    {#if !loading && connections.length === 0}
+      <div class="page-actions">
+        <Button size="sm" onclick={() => (window.location.href = '/connections')}>
+          <PlusIcon size={14} />{m.connection_add()}
+        </Button>
+      </div>
+    {/if}
   </div>
   {#if loading}
-    <div class="hero" aria-hidden="true">{#each [0,1,2,3] as i (i)}<div class="tile skeleton"></div>{/each}</div>
+    <div class="hero" aria-hidden="true">
+      {#each [0, 1, 2, 3] as i (i)}<div class="tile skeleton"></div>{/each}
+    </div>
     <div class="loading"><Spinner size="sm" />{m.common_loading()}</div>
-  {:else if error}<p class="error-msg" role="alert">{error}</p>
+  {:else if error}
+    <p class="error-msg" role="alert">{error}</p>
   {:else if system}
     <section class="hero" aria-label={m.overview_vitals()}>
       <div class="tile lead">
@@ -70,16 +75,84 @@
 
     <div class="panels">
       <section class="panel connections" aria-labelledby="health-heading">
-        <div class="panel-head"><h2 id="health-heading">{m.overview_connection_health()}</h2><a href="/connections">{m.overview_manage()} <ArrowRight size={13} /></a></div>
-        {#if connections.length === 0}<EmptyState title={m.connection_empty()} description={m.connection_empty_desc()} />
-        {:else}<div class="table-wrap"><table><thead><tr><th>{m.connection_provider()}</th><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.acct_credits_column()}</th><th>{m.overview_condition()}</th></tr></thead><tbody>
-          {#each connections as conn (conn.id)}{@const acct = conn.account_id ? accountsById.get(conn.account_id) : undefined}<tr><td class="provider">{conn.provider}</td><td class="mono">{conn.id}</td><td><div class="status"><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{#if acct}<AccountCredits account={acct} variant="compact" />{:else}<span class="no-account">{m.acct_credits_no_account()}</span>{/if}</td><td>{#if conn.cooldown_until}<span class="warning">{cooldownRemaining(conn.cooldown_until)}</span>{:else if conn.failure_count}<span class="warning">{m.connection_failures({n:conn.failure_count})}</span>{:else}—{/if}</td></tr>{/each}
-        </tbody></table></div>{/if}
+        <div class="panel-head">
+          <h2 id="health-heading">{m.overview_connection_health()}</h2>
+          <a href="/connections">{m.overview_manage()} <ArrowRight size={13} /></a>
+        </div>
+        {#if connections.length === 0}
+          <EmptyState title={m.connection_empty()} description={m.connection_empty_desc()} />
+        {:else}
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{m.connection_provider()}</th>
+                  <th>{m.connection_id()}</th>
+                  <th>{m.connection_status()}</th>
+                  <th>{m.connection_models()}</th>
+                  <th>{m.gateway_concurrency()}</th>
+                  <th>{m.acct_credits_column()}</th>
+                  <th>{m.overview_condition()}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each connections as conn (conn.id)}
+                  {@const acct = conn.account_id ? accountsById.get(conn.account_id) : undefined}
+                  <tr>
+                    <td class="provider">{conn.provider}</td>
+                    <td class="mono">{conn.id}</td>
+                    <td>
+                      <div class="status"><Badge status={conn.status} label={connectionStatusLabel(conn.status)} /></div>
+                    </td>
+                    <td class="mono">{conn.model_count}</td>
+                    <td class="mono">{conn.active_requests} / {conn.max_concurrent}</td>
+                    <td>
+                      {#if acct}
+                        <AccountCredits account={acct} variant="compact" />
+                      {:else}
+                        <span class="no-account">{m.acct_credits_no_account()}</span>
+                      {/if}
+                    </td>
+                    <td>
+                      {#if conn.cooldown_until}
+                        <span class="warning">{formatCountdown(secondsUntil(conn.cooldown_until))}</span>
+                      {:else if conn.failure_count}
+                        <span class="warning">{m.connection_failures({ n: conn.failure_count })}</span>
+                      {:else}
+                        —
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
       </section>
 
       <section class="panel activity" aria-labelledby="activity-heading">
-        <div class="panel-head"><h2 id="activity-heading">{m.request_recent()}</h2><a href="/requests">{m.overview_view_all()} <ArrowRight size={13}/></a></div>
-        {#if requests.length === 0}<p class="empty">{m.request_empty()}</p>{:else}<ol>{#each requests as request (request.request_id)}<li><div><a href="/requests" class="model">{request.model}</a><span class="mono">{formatTime(request.started_at_ms)}</span></div><div><Badge status={request.status} label={(requestLabels[request.status] ?? (() => request.status))()}/><span class="mono">{duration(request.duration_ms)}</span></div></li>{/each}</ol>{/if}
+        <div class="panel-head">
+          <h2 id="activity-heading">{m.request_recent()}</h2>
+          <a href="/requests">{m.overview_view_all()} <ArrowRight size={13} /></a>
+        </div>
+        {#if requests.length === 0}
+          <p class="empty">{m.request_empty()}</p>
+        {:else}
+          <ol>
+            {#each requests as request (request.request_id)}
+              <li>
+                <div>
+                  <a href="/requests" class="model">{request.model}</a>
+                  <span class="mono">{formatTime(request.started_at_ms)}</span>
+                </div>
+                <div>
+                  <Badge status={request.status} label={requestStatusLabel(request.status)} />
+                  <span class="mono">{formatDuration(request.duration_ms)}</span>
+                </div>
+              </li>
+            {/each}
+          </ol>
+        {/if}
       </section>
     </div>
   {/if}

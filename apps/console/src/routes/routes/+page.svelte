@@ -3,7 +3,7 @@
   import { api } from '$lib/api.js';
   import type { RouteSummary, RoutePreview } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Badge, Button, EmptyState } from '$lib/components/index.js';
+  import { Badge, Button, EmptyState, PageCount, SkeletonRows } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
 
   let routes = $state<RouteSummary[]>([]);
@@ -43,7 +43,7 @@
 <div class="page">
   <div class="page-header">
     <div>
-      <h1>{m.nav_routes()} <span class="count mono">{routes.length}</span></h1>
+      <h1>{m.nav_routes()} <PageCount value={routes.length} /></h1>
     </div>
   </div>
 
@@ -95,11 +95,7 @@
       <h2 id="routes-heading">{m.nav_routes()}</h2>
     </div>
     {#if loading}
-      <div class="panel-body loading" aria-busy="true">
-        <div class="skeleton row"></div>
-        <div class="skeleton row"></div>
-        <div class="skeleton row"></div>
-      </div>
+      <SkeletonRows busy />
     {:else if routes.length === 0}
       <div class="panel-body">
         <EmptyState title={m.route_empty()} />
@@ -132,23 +128,6 @@
 </div>
 
 <style>
-  .count {
-    color: var(--text-3);
-    font-weight: var(--weight-regular);
-    font-size: var(--text-md);
-    margin-left: var(--space-1);
-  }
-
-  .loading {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .skeleton.row {
-    height: var(--control-h);
-  }
-
   .preview-form {
     display: flex;
     gap: var(--space-3);

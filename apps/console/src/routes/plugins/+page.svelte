@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api.js';
   import type { PluginSummary } from '$lib/api.js';
-  import { Badge, EmptyState, Button } from '$lib/components/index.js';
+  import { Badge, EmptyState, Button, PageCount, SurfaceCard } from '$lib/components/index.js';
   import { toast } from 'svelte-sonner';
   import { m } from '$lib/paraglide/messages.js';
 
@@ -102,7 +102,7 @@
 <div class="page">
   <div class="page-header">
     <div>
-      <h1>{m.nav_plugins()} <span class="count mono">{plugins.length}</span></h1>
+      <h1>{m.nav_plugins()} <PageCount value={plugins.length} /></h1>
       {#if directory}
         <p class="dir mono">{m.plugin_installed_to({ directory })}</p>
       {/if}
@@ -126,7 +126,7 @@
   {:else}
     <div class="plugin-grid">
       {#each plugins as p (p.name)}
-        <article class="plugin-card">
+        <SurfaceCard>
           <header class="plugin-head">
             <h3 class="plugin-name mono">{p.name}</h3>
             <span class="plugin-version mono">{p.version}</span>
@@ -156,7 +156,7 @@
               <Button variant="ghost" size="sm" onclick={() => remove(p.name)} ariaLabel={`${m.common_delete()} ${p.name}`}>{m.common_delete()}</Button>
             </footer>
           {/if}
-        </article>
+        </SurfaceCard>
       {/each}
     </div>
   {/if}
@@ -198,13 +198,6 @@
 </dialog>
 
 <style>
-  .count {
-    color: var(--text-3);
-    font-weight: var(--weight-regular);
-    font-size: var(--text-md);
-    margin-left: var(--space-1);
-  }
-
   .dir {
     color: var(--text-3);
     overflow-wrap: anywhere;
@@ -219,18 +212,6 @@
   .plugin-skel {
     height: var(--col-sm);
     border-radius: var(--radius-lg);
-  }
-
-  .plugin-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--space-5);
-    background: var(--bg-surface);
-    border: var(--border-w) solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-1);
-    min-width: 0;
   }
 
   .plugin-head {

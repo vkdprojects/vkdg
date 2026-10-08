@@ -70,7 +70,9 @@ BUILD_ARGS=(--build-arg PROFILE="$PROFILE" --build-arg VCS_REF="$SHA"
 
 RSYNC=""
 for r in /opt/homebrew/bin/rsync /usr/local/bin/rsync rsync; do
-  command -v "$r" >/dev/null && "$r" --version 2>/dev/null | head -1 | grep -q 'version 3' && { RSYNC="$r"; break; }
+  # Capture, don't pipe: under pipefail `--version | head` dies of SIGPIPE.
+  v="$("$r" --version 2>/dev/null || true)"
+  [[ "$v" == *"version 3."* ]] && { RSYNC="$r"; break; }
 done
 [ -n "$RSYNC" ] && ! rssh 'command -v rsync >/dev/null' && RSYNC=""
 

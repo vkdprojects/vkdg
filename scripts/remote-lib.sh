@@ -45,8 +45,16 @@ remote_sync() {
   # Re-admit .env.example-style files that the exclude pattern caught.
   git ls-files -z -co --exclude-standard --deduplicate \
     | { grep -zE "$keep" || true; } >>"$list"
-  # tar exit 1 = files vanished/deleted-but-indexed; tolerated.
-  { tar --null -T "$list" --ignore-failed-read -czf - || [[ $? -le 1 ]]; } \
+  # Drop paths still in the index but deleted on disk, so any tar works
+  # (GNU or macOS bsdtar; no --ignore-failed-read needed).
+  local present
+  present="$(mktemp)"
+  trap 'rm -f "$list" "$present"' RETURN
+  while IFS= read -r -d '' f; do [[ -e "$f" ]] && printf '%s\0' "$f"; done <"$list" >"$present"
+  # macOS bsdtar: no ._* AppleDouble files, no xattr headers GNU tar warns about.
+  local tar_flags=()
+  tar --version 2>/dev/null | grep -q bsdtar && tar_flags=(--no-xattrs --no-mac-metadata)
+  COPYFILE_DISABLE=1 tar ${tar_flags[@]+"${tar_flags[@]}"} --null -T "$present" -czf - \
     | rssh "set -e
       mkdir -p '$REMOTE_BUILD_DIR'
       rm -rf '$REMOTE_SRC.new'

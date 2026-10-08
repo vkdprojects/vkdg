@@ -105,16 +105,29 @@ push-dev REGISTRY="ghcr.io/vkdprojects":
     docker push "{{REGISTRY}}/vkdg:dev-${SHA}${DIRTY}"
     docker push "{{REGISTRY}}/vkdg:dev"
 
-# Ship a dev image straight to a host over SSH, no registry involved.
-#
-# The image is streamed over the SSH connection, so this works against a box that
-# cannot pull from a private registry. HOST is an ssh target or alias.
+# Ship the current commit to a host: sync source, build the image ON THE HOST,
+# swap tags, restart, health-check. Nothing heavy runs locally, so this is safe
+# on any dev machine. Uncommitted changes are refused (the tag must name a
+# real commit, so a rollback always points at something reproducible).
 #
 #   just ship-dev omni-vixpi
-#   just ship-dev omni-vixpi /srv/vkdg     # compose lives elsewhere
 #
-# Build, stream and deploy a dev image to HOST over SSH
-ship-dev HOST DIR="/opt/vkdg":
+# Build remotely and deploy the current commit to HOST
+ship-dev HOST:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "error: uncommitted changes; commit first so the deployed tag is reproducible" >&2
+        git status --short >&2
+        exit 1
+    fi
+    SHA=$(git rev-parse --short=7 HEAD)
+    VKDG_REMOTE_HOST={{HOST}} scripts/remote-deploy.sh "$SHA"
+    echo "Shipped dev-${SHA} to {{HOST}}. Roll back with: just rollback-dev {{HOST}}"
+
+# Fast path for machines that can cross-compile + docker build locally
+# (e.g. Apple Silicon with zigbuild): build here, stream the image over SSH.
+ship-dev-local HOST DIR="/opt/vkdg":
     #!/usr/bin/env bash
     set -euo pipefail
     just image-dev local
@@ -123,7 +136,6 @@ ship-dev HOST DIR="/opt/vkdg":
     TAG="dev-${SHA}${DIRTY}"
     echo "Streaming local/vkdg:${TAG} to {{HOST}}…"
     docker save "local/vkdg:${TAG}" | gzip -1 | ssh {{HOST}} 'gunzip | docker load'
-    # Keep the previous image tagged so a rollback is one retag away.
     ssh {{HOST}} "cd {{DIR}} && \
         docker tag vkdg-gateway:latest vkdg-gateway:rollback 2>/dev/null || true; \
         docker tag local/vkdg:${TAG} vkdg-gateway:latest && \

@@ -6,12 +6,112 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Anthropic prompt caching:** `cache_control` from Anthropic clients (system blocks, text,
+  image, `tool_use`, `tool_result` blocks and custom tools) now reaches Anthropic-format
+  upstreams with its `ttl` intact. When a request carries no marker at all, the gateway marks
+  the last custom tool, the last system block and the last block of the last message; this applies
+  only to Anthropic-format providers and is never done on top of client markers. At most 4
+  breakpoints are sent (the last 4 are kept). Markers do not change the response-cache key or
+  the session-affinity digest. `ConversationRequest::cache_key` carries that digest for providers
+  with their own cache key. `cache_read_tokens` / `cache_write_tokens` appear in request logs and
+  the console.
+- **Codex and Kiro cache affinity:** requests with a `cache_key` now send it to Codex as the
+  body field `prompt_cache_key` and the headers `session_id` / `session-id` (OAuth and API-key
+  accounts; omitted when there is no key), and Kiro derives a deterministic UUID `conversationId`
+  from it (an explicit client `session_id` still wins; otherwise a random UUID as before). Field
+  and header names follow the openai/codex source; upstream cache hits are verified only by
+  `cache_read` tokens in the request log, and Kiro reuse by `conversationId` is unverified.
+- **OpenAI Codex provider:** full OAuth PKCE login flow via `auth.openai.com`, token refresh,
+  and connection test. The provider appears in the console under "OpenAI Codex" alongside Claude
+  Code and Kiro.
+- **Dynamic model catalog:** `provider_catalog` table in `gateway.db` stores models per provider
+  without requiring a rebuild. Admin API: `GET/PUT /admin/v1/catalog/{provider}` and
+  `POST /admin/v1/catalog/{provider}/import-url` (imports from any JSON URL). Codex uses this
+  catalog; any future provider can too.
+- **Session persistence across restarts:** admin console sessions are now stored in `gateway.db`
+  (`admin_sessions` table) and reloaded on startup. A deploy or restart no longer forces a new
+  login.
+- **Rate-limit windows for Claude Code and Codex accounts:** `GET /admin/v1/accounts` now returns
+  `usage_windows` (`kind` = `five_hour|weekly|weekly_sonnet|weekly_opus`, `used_percent`,
+  `resets_at` as Unix seconds). Only windows the upstream reports are listed, so plans without a
+  general weekly limit show none. `credits_source`, `credits_checked_at` and `credits_plan` are the
+  generic usage-source metadata for both credit and window providers; `credits_used` stays absent
+  for percent-only providers. A failed read is `credits_source: "unavailable"`, never 0%. Usage
+  reads use the refreshed OAuth token, and a revoked account makes no upstream call. Sources are
+  undocumented endpoints (`api.anthropic.com/api/oauth/usage`, `chatgpt.com/backend-api/wham/usage`).
+- **Usage overview in the console:** the Accounts page shows every metered account side by side
+  (one bar per window, most-consumed first) above the per-account cards, which now render a bar per
+  window with remaining percent and reset time.
+
+### Fixed
+- **Account "Test" failed for Claude Code and Codex with "no eligible connection":** account
+  connections list only patterns (`claude-*`, `gpt-*`), so the test request named a model no route
+  served and died in routing before reaching the account. The test now pins the request to the
+  connection under test (`PipelineCtx::pinned_connection`), skipping routing and sibling failover.
+- **`power_of_two_choices` routed by latency, starving the slower target:** it compared the p50
+  latency of its two samples, so with two targets it behaved like `lowest_latency`. Latency is only
+  measured on targets that get traffic, so the faster Claude Code account took every request while
+  the other sat idle for hours (observed in prod: 0 requests for 2 h, the other account at 68% of
+  its 5 h window). It now picks the target with fewer requests in flight (`RoutingHints.in_flight`,
+  from `ConnectionCatalog::in_flight`); ties go to a random sample. Use `lowest_latency` to
+  prefer the fastest target.
+- Codex multi-turn history uses `output_text` for assistant content and `input_text`
+  for user/developer content. Mixed text, function calls and results retain their
+  order and call IDs instead of discarding text beside tool blocks.
+- Codex Responses streams decode into client-native Chat Completions or Messages
+  events, including reasoning, parallel tools, usage and terminal errors.
+  `response.output_text.done` does not complete the response. Regression coverage
+  includes an 87/89-message HTTP tool round trip and arbitrarily fragmented SSE.
+- **Kiro tool history cap:** long conversations no longer split an assistant's tool calls
+  from their results at the 100-turn boundary. The cap removes complete historical
+  exchanges, preserves the system-bearing first user turn and current message, and
+  reserves a turn for assistant-ended continuations. Regression tests cover 50–52 tool
+  round trips and anonymized 111-, 113-, 103- and 161-message incident shapes through
+  real HTTP ingress and a strict loopback upstream.
+- **Kiro context overflow loop:** conversations were growing unboundedly (observed: 2 428 messages
+  in one session). The provider now caps history at 100 turns before the aging pipeline runs.
+  Beyond that, Kiro was returning `out=0` responses, causing the omp agent to retry silently and
+  burn through the account's rate limit.
+- **401/403 treated as retryable:** upstream auth failures (`bearer token invalid`, expired OAuth
+  token) were marked `retryable: true`, causing the client to retry indefinitely. They are now
+  non-retryable and put the connection into cooldown immediately.
+- **Admin router path syntax:** catalog routes used `:provider` (Axum v4 syntax) instead of
+  `{provider}` (Axum v0.8+), causing a startup panic and HTTP 502 on the console.
+- **`import-url` without timeout:** `reqwest::Client` in the catalog import handler had no
+  timeout; a slow server could block a Tokio worker indefinitely. Fixed to 30 s.
+
+### Changed
+- **PKCE helpers moved to `vkdg-provider-sdk`:** `random_b64url`, `validated_loopback_redirect`,
+  `parse_pkce_callback`, and `build_pkce_authorization` are now shared utilities in the SDK.
+  Duplicated copies in `claude-code` and `codex` have been removed.
+- **Admin response helpers:** `require_store`, `ok`, and `err` extracted to
+  `vkdg-admin/handlers/response.rs`; repeated boilerplate removed from all handlers.
+- **`create_connection` / `update_connection`:** shared logic extracted to `persist_connection`;
+  the two handlers now call a single upsert path.
+- **Routing by conversation, not by request:** the first request of a conversation takes the
+  route's strategy (P2C in production); later turns stay on that connection for up to one hour so
+  the provider's per-account prompt cache keeps hitting. The conversation key is the client
+  session id, or a SHA-256 of tenant, client, system prompt and first user message (never stored
+  as content). The pin is also set after streaming responses and is ignored when the connection is
+  in cooldown, at capacity, unhealthy, does not serve the model, or already returned a 429. Expired
+  pins are purged every 5 minutes.
+
+
 ### Security
 - Console login: after a password is set, the bootstrap token is refused (not just after the first
   sign-in). Failed sign-ins are throttled per source IP (resolved through `VKDG_TRUSTED_PROXIES`)
   and globally, with 429 and `retry-after`.
 
 ### Added
+- **Account routing in the console.** The account card (Accounts and the provider page) now shows how
+  that account is routed and lets you edit it: models, weight, max concurrent, plus Test. An account with
+  no connection (connected before they were automatic) gets an "Enable routing" button. The connection
+  stays a separate object in the gateway (an account can have several, e.g. both Kiro endpoints) but the
+  console no longer asks you to think about it. API: `connections[]` list items carry `models` and
+  `weight`; `PATCH /admin/v1/connections/{id}` changes only `models`/`max_concurrent`/`weight` (auth,
+  endpoint, base URL and tags are untouched, 422 on empty models or zero values);
+  `POST /admin/v1/accounts/{id}/connection` creates the connection (201) or returns the existing one (200).
 - **Request history:** streaming rows now record `input_tokens`, `output_tokens` and `cost_microdollars`
   (from the response body, once the stream ends). Status changes from `pending` to `completed`
   (body ran to the end) or `cancelled` (client disconnected mid-stream). Before, every streaming row
@@ -49,6 +149,125 @@ Versioning: [Semantic Versioning](https://semver.org/).
   carried through the operation type to provider plugins.
 
 ### Fixed
+- Kiro history tool results no longer panic when the 2,000-byte cutoff lands inside a UTF-8
+  character. A Kiro `CONTENT_LENGTH_EXCEEDS_THRESHOLD` 400 now reaches OpenAI Chat clients
+  with `error.code: context_length_exceeded`, including pre-commit stream failures, so clients
+  can compact their own context. The gateway does not silently shorten the current request.
+- **A rate-limited connection rejoined routing after at most five minutes, whatever the upstream said.**
+  A 429/5xx carrying `retry-after` now keeps that connection out of routing for at least that long
+  (capped at 6 hours); the exponential backoff (1 s to 300 s) stays the floor. A Claude subscription
+  limit that resets in hours is no longer re-probed every five minutes, and the sibling connection
+  serving the same model takes over meanwhile. The cooldown is also recorded when the connection's lock
+  is briefly contended, instead of being skipped.
+- **Model ids differing only by `.`/`-` between version digits no longer split connections.** Kiro's
+  `claude-sonnet-4.6` and Anthropic's `claude-sonnet-4-6` are the same model for connection eligibility,
+  so a client using either spelling reaches both connections of a route.
+- **A Kiro account that was throttled or out of credits kept receiving traffic.** Kiro answers HTTP 200 and
+  reports `ThrottlingException`, `ServiceQuotaExceededException`, `RATE_LIMIT_EXCEEDED` (429) or
+  `MONTHLY_REQUEST_COUNT` (out of credits, 402) as the first frame of the stream, after the response was
+  committed: no failover and no cooldown, every request failed. The gateway now reads the stream up to its
+  first substantive event before committing. A throttling or quota first frame cools that connection (a
+  402 holds it for 6 hours: credits do not return in minutes) and the request is retried once on a sibling
+  connection, before any byte reaches the client; if no sibling can serve it the client gets the upstream's
+  error with a `retry-after`. A normal first event streams exactly as before; a failure after the first
+  event, or one that is not an account failure (400), is still passed to the client as the dialect's error
+  event. A 402, 429 or 529 anywhere in the HTTP response path now fails over the same way.
+- **An OpenAI client over an Anthropic provider (and the reverse) got the other dialect's body.** A client
+  calling `/v1/chat/completions` that was routed to Claude Code received `{"type":"message","content":[...]}`
+  instead of a `chat.completion` (and an Anthropic client over an OpenAI-compatible provider received
+  `chat.completion` chunks), in streaming and not. Providers now declare the dialect they speak
+  (`ProviderAdapter::wire_format`: Anthropic, OpenAI Chat) and the gateway translates the response to the
+  client's dialect through canonical events: text, reasoning (`reasoning_content`), tool calls, usage,
+  stop reasons and errors. Same-dialect traffic passes through untouched and unparsed. Cached tokens are
+  converted both ways (`prompt_tokens` includes them, Anthropic's `input_tokens` does not) and cache
+  creation never inflates `prompt_tokens`. An empty, truncated, malformed, oversize (event 1 MiB, tool
+  arguments 8 MiB, body 32 MiB) or foreign-dialect upstream answer is a `502` with a fixed message, never the
+  upstream payload and never a clean empty completion. See `docs/sdk/dialect-translation.md` and ADR-004.
+- **Errors now match the client's dialect.** Pipeline errors were always Anthropic-shaped, even for OpenAI
+  clients (SDKs showed an opaque parse failure). They use one renderer shared with the stream encoders
+  (`{"error":{"message","type","param","code"}}` for OpenAI Chat, `{"type":"error",...}` for Anthropic,
+  same statuses and `retry-after`), and a stream cut mid-way ends with the dialect's own error frame.
+- **Stream and cache fixes found on the way:** a stream whose decoder flush produced events skipped the
+  encoder's closing frame and the Kiro context-usage event; the OpenAI stream encoder reported `stop`
+  after tool calls when no stop event arrived; the response cache stored the raw upstream body and
+  ignored the client dialect, so a hit could serve a body in the wrong dialect (the key now includes it).
+  The usage meter counted OpenAI cached tokens twice.
+- **Request fidelity between OpenAI and Anthropic clients and upstreams.** Requests were decoded
+  lossily and re-encoded the same way, so tool-using clients broke across dialects:
+  - OpenAI ingress now reads `tool_choice`, `parallel_tool_calls`, `stop`, `top_p` and
+    `max_completion_tokens` (preferred over `max_tokens`), keeps the assistant text that accompanies
+    `tool_calls`, joins every `system`/`developer` message instead of keeping the first, and decodes
+    `image_url` parts as images instead of flattening the URL into the prompt text. Invalid values answer
+    `400` naming the field (`tool_choice`, `stop`, `top_p`, `messages[i].role`, `messages[i].content`);
+    more than 16 stop strings, one over 256 bytes, or a forced tool the request never declared are refused.
+  - Anthropic ingress now reads `tool_choice` (with `disable_parallel_tool_use`), `stop_sequences` and
+    `top_p`. A `tool_result` whose content is an array reaches the model as its text, not as escaped JSON.
+  - Anthropic upstreams (`anthropic`, `claude-code`) get Anthropic's own block shapes (images were sent in
+    gateway-internal form), one user turn of `tool_result` blocks in call order for parallel results,
+    an error result for a tool call that has none, and no orphaned `tool_result`. `max_tokens`
+    defaults to 8192 when the client sent none (Anthropic requires it). Extended-thinking limits are
+    applied instead of forwarded into a 400: `temperature` other than 1 and `top_p` below 0.95 are dropped,
+    `thinking` is not sent with a forced tool or when continuing a tool turn whose assistant message has no
+    signed thinking block, and `max_tokens` grows by the budget when it would not exceed it.
+  - OpenAI upstreams (`openai`, `github-copilot`, `kimi-coding`, every OpenAI-compatible provider) share one
+    body builder: `tool_choice`, `parallel_tool_calls: false`, `stop`, `top_p`, assistant text beside tool
+    calls, one `tool` message per result placed behind its call, and images. api.openai.com gets
+    `max_completion_tokens`; compatible endpoints keep `max_tokens`; never both.
+  - Not forwarded on purpose: Codex (Responses API) and Kiro ignore `tool_choice`, `stop`, `top_p` and the
+    parallel-call limit.
+- **Images and provider-run tools were dropped.** A tool result's images (a screenshot returned by a
+  `computer`-style tool) never reached the model: the operation type carried tool results as text only.
+  `ToolResult` now carries its images. Anthropic upstreams get them inside the `tool_result`; OpenAI upstreams
+  get the text in the `tool` message and the images in a labelled `user` message right behind it (Chat
+  Completions tool messages are text only); OpenAI ingress reads `image_url` parts of a `tool` message. Anthropic
+  clients can now declare provider-run tools such as `web_search_20250305` (the gateway answered 400 "missing
+  field `input_schema`"): the declaration is forwarded untouched to Anthropic upstreams and never to OpenAI ones.
+  Checked live on Claude Code: a screenshot-style tool result read back correctly from an OpenAI client and from an
+  Anthropic client, user images, web search (stream and not), signed-thinking replay and an OpenAI client's
+  tool loop with `reasoning_effort`. Kiro and Codex still do not forward any image (pending).
+- **Claude Code requests always failed upstream.** Anthropic answers a subscription OAuth token with
+  `429 rate_limit_error` unless the first system block is the Claude Code identity; the gateway then put
+  the connection in cooldown and the client only saw "no eligible connection". The plugin now sends that
+  block first and the client's own system prompt after it. Checked live: `claude-sonnet-4-5`,
+  `claude-haiku-4-5`, `claude-opus-4-5`, streaming and non-streaming through `/v1/messages` all return 200.
+- **Claude Code ignored `thinking`.** The plugin never sent the client's extended-thinking request, so
+  replies had no thinking block. It now sends `thinking: { type: enabled, budget_tokens }` (1024, the
+  minimum, when the client gave only an effort). Checked live, streaming and not.
+- **A rate-limited sole connection was reported as "no eligible connection" (502).** After a 429 with no
+  sibling to fall back to, the retry failed and replaced the real error. The client now gets the
+  upstream 429 with its `retry-after`, and while every connection serving the model is cooling down,
+  requests get `429` + `retry-after` (seconds until the first one frees up) instead of 502, without
+  touching the upstream.
+- **Connecting an account never created the connection that serves it.** The account was saved and the
+  card showed "active", but nothing routed to it until a connection was written by hand (YAML snippet).
+  Now every console login (device code, PKCE, token or API-key import) creates one: id = account id,
+  `auth: { type: account }`, models from the new `ProviderAdapter::default_models()` (set for Claude
+  Code, Codex, Kiro, Kimi, Copilot; Antigravity declares none because its `prepare` is not implemented).
+  An account that already has a connection (reconnect, YAML, hand-made) keeps it as is. Reconnect an
+  account that predates this to give it one. Deleting an account removes its connections and their route
+  targets. The login response carries `connection_id` or `connection_error`. `vkdg login` still only prints
+  the snippet.
+- **Console connections did not reach the running gateway, and a config file fought them.** With no
+  config file and no `ANTHROPIC_API_KEY` there was no pipeline at all, so connections made in the
+  console only took effect after a restart; with `ANTHROPIC_API_KEY` the pipeline never received console
+  edits. Saving the YAML replaced the live connections with the file's, dropping the console's. And a
+  store that was written to but never seeded counted as empty, so a later `--config` boot overwrote it.
+  Now the pipeline always applies config changes live (an unconfigured gateway answers 502, not 501),
+  `ANTHROPIC_API_KEY` is seeded into the store on the first boot like a config file, a store with rows is
+  never re-seeded, and saving the config file merges with the store: the file's connections and routes
+  are added or replaced by id and persisted, ones it used to define and dropped are removed, and what
+  the console made is kept. A reload that does not validate changes nothing.
+- **Claude Code sign-in failed on claude.ai with "Invalid request format" after Authorize.** The OAuth
+  `state` was 16 bytes; claude.ai requires the 32 bytes the official CLI sends. The authorize URL also
+  no longer carries `prompt=login`, which bounced an already signed-in browser to the login page.
+  When the console runs on `localhost`/`127.0.0.1` it now asks for `http://<origin>/callback` as the
+  redirect, so the code is captured automatically; elsewhere the user pastes the code shown by
+  claude.ai. `start` accepts a `redirect_uri` param, restricted to loopback `/callback`, and the token
+  exchange repeats it verbatim.
+- **Connect-account dialog reset itself when the OAuth popup opened,** cancelling the login (the popup
+  handle was reactive state read by the open/reset effect). The popup-closed watcher is gone as well:
+  claude.ai's Cross-Origin-Opener-Policy makes `popup.closed` read true while the popup is open. The
+  code now arrives over `BroadcastChannel` only, with an "Enter the code manually" button.
 - **`endpoint:` per connection, so one account can use both Kiro planes.** Kiro answers on
   `runtime.{region}.kiro.dev` and on `codewhisperer.us-east-1.amazonaws.com`, and the two keep
   SEPARATE rate-limit buckets: driving `runtime` to 75% HTTP 429 (271 of 360 at 120 concurrent) left

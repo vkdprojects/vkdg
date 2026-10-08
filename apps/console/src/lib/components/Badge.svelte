@@ -32,19 +32,15 @@
 
 <style>
   .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0.125rem 0.5rem;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    display: inline-flex; align-items: center; gap: var(--space-1);
+    padding: var(--space-0) var(--space-2) var(--space-0) var(--space-1);
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs); font-weight: var(--weight-medium);
     background: color-mix(in oklch, var(--badge-color) 14%, transparent);
     color: var(--badge-color);
-    border: 1px solid color-mix(in oklch, var(--badge-color) 34%, transparent);
+    border: 1px solid color-mix(in oklch, var(--badge-color) 28%, transparent);
     white-space: nowrap;
   }
+  .badge::first-letter { text-transform: uppercase; }
+  .badge::before { content: ''; width: var(--dot-size); height: var(--dot-size); border-radius: var(--radius-full); background: currentColor; }
 </style>

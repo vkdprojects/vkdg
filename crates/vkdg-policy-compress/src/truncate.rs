@@ -2,7 +2,7 @@ use crate::metrics::CompressionMetrics;
 use crate::CompressionError;
 use vkdg_operations::{ContentBlock, ConversationRequest, Message, MessageContent, Role};
 
-/// Truncation policy: remove oldest messages until estimated token count <= max_tokens.
+/// Truncation policy: remove oldest messages until estimated token count <= `max_tokens`.
 /// System messages are preserved. Oldest non-system messages are dropped first.
 pub struct TruncatePolicy {
     pub max_tokens: u32,
@@ -19,7 +19,7 @@ pub struct TruncateCompressor {
 }
 
 impl crate::Compressor for TruncateCompressor {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "truncate"
     }
 
@@ -108,12 +108,18 @@ fn estimated_tokens(messages: &[Message]) -> u32 {
     messages
         .iter()
         .map(|m| match &m.content {
-            MessageContent::Text(s) => (s.len() as u32).saturating_div(4),
+            MessageContent::Text(s) => u32::try_from(s.len()).unwrap_or(u32::MAX).saturating_div(4),
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .map(|b| match b {
-                    ContentBlock::Text { text } => (text.len() as u32).saturating_div(4),
-                    _ => 50,
+                    ContentBlock::Text { text, .. } => u32::try_from(text.len())
+                        .unwrap_or(u32::MAX)
+                        .saturating_div(4),
+                    ContentBlock::Image { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+                    | ContentBlock::Thinking { .. }
+                    | ContentBlock::RedactedThinking { .. } => 50,
                 })
                 .sum(),
         })
@@ -137,6 +143,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         }
     }
 

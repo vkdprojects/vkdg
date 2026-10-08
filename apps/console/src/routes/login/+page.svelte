@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { api } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { Logo, Card, Button } from '$lib/components/index.js';
+  import { Button, Spinner } from '$lib/components/index.js';
 
   // `token`: first run, sign in with the bootstrap token.
   // `password`: a console password exists; the token no longer works.
@@ -60,13 +60,14 @@
   }
 </script>
 
-<div class="login-shell">
-  <Card padding="2.25rem 2rem">
-    <div class="login-card">
-      <div class="brand">
-        <Logo size={28} />
-        <span class="brand-name">{m.login_heading()}</span>
-      </div>
+<div class="login-shell" data-theme="dark">
+  <div class="scene" aria-hidden="true">
+    <img src="/brand/hero.jpg" alt="" class="hero" fetchpriority="high" />
+    <span class="dots"></span>
+  </div>
+
+  <main class="login-card">
+    <div class="card-body">
       <h1>{mode === 'set' ? m.login_set_heading() : m.login_submit()}</h1>
       {#if mode === 'set'}
         <p class="hint">{m.login_set_hint()}</p>
@@ -106,122 +107,144 @@
           </Button>
         </form>
       {:else}
-        <div class="loading-row"><span class="spinner" aria-hidden="true"></span> {m.common_loading()}</div>
+        <div class="loading-row"><Spinner size="sm" /> {m.common_loading()}</div>
       {/if}
     </div>
-  </Card>
+  </main>
 </div>
 
 <style>
-  .hint {
-    color: var(--text-2);
-    font-size: var(--text-sm);
-    margin: 0 0 4px;
-  }
-
+  /* The scene is always dark: data-theme="dark" on .login-shell makes
+     tokens.css recompute the whole palette for this subtree. */
   .login-shell {
+    position: relative;
+    isolation: isolate;
     min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: var(--space-5) var(--space-4);
     background: var(--bg-base);
-    padding: 24px;
+    color: var(--text-1);
+    overflow: hidden;
   }
 
+  /* Scene: glass fox render (palette = logo ink/teal/mint) + dot field.
+     The card floats over the fox's shadow side; one slow breath of motion. */
+  .scene { position: absolute; inset: 0; z-index: var(--z-behind); pointer-events: none; background: var(--bg-surface); }
+  .hero {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: 50% 45%;
+    animation: breathe var(--dur-ambient) ease-in-out infinite alternate;
+  }
+  .dots {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 55%, transparent 30%, color-mix(in oklch, var(--bg-base) 85%, transparent) 95%),
+      var(--dot-field);
+  }
+  @keyframes breathe { to { transform: scale(1.04); } }
+  @media (prefers-reduced-motion: reduce) { .hero { animation: none; } }
+  @media (max-width: 640px) { .hero { object-position: 50% 30%; } }
+  @media (min-width: 1000px) {
+    .login-shell { justify-items: end; padding-right: clamp(var(--space-6), 9vw, calc(var(--space-8) * 2.5)); }
+    .hero {
+      inset: 0 auto 0 -12%; width: 82%; object-position: 50% 50%;
+      /* fade the render's own right edge so there is no seam */
+      mask-image: linear-gradient(90deg, var(--bg-base) 60%, transparent 98%);
+      -webkit-mask-image: linear-gradient(90deg, var(--bg-base) 60%, transparent 98%);
+    }
+  }
+
+  /* ── card ────────────────────────────────────────────────────────────── */
   .login-card {
     width: 100%;
-    max-width: 340px;
+    max-width: calc(var(--space-8) * 6.5);
     display: flex;
     flex-direction: column;
-    gap: 22px;
+    gap: var(--space-5);
+    animation: card-in var(--dur-3) var(--ease-out) both;
   }
 
-  .brand {
+  @keyframes card-in {
+    from { opacity: 0; transform: translateY(var(--space-3)) scale(0.985); }
+  }
+
+  .card-body {
     display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .brand-name {
-    font-size: var(--text-md);
-    font-weight: 700;
-    color: var(--text-1);
-    letter-spacing: -0.01em;
-    font-family: var(--font-mono);
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-6) var(--space-5);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: var(--border-w) solid var(--glass-border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--glass-shadow);
   }
 
   h1 {
     font-size: var(--text-xl);
-    font-weight: 600;
-    color: var(--text-1);
     margin: 0;
+    text-align: center;
+  }
+
+  .hint {
+    color: var(--text-2);
+    font-size: var(--text-sm);
+    text-align: center;
+    margin: calc(var(--space-2) * -1) 0 0;
   }
 
   form {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-  }
-
-  label {
-    font-size: var(--text-sm);
-    font-weight: 500;
-    color: var(--text-2);
+    gap: var(--space-3);
   }
 
   input {
-    width: 100%;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: var(--text-base);
-    padding: 0.5625rem 0.75rem;
-    transition: border-color 0.15s;
-    box-sizing: border-box;
-  }
-
-  input:focus-visible {
-    border-color: var(--accent);
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
-  }
-
-  input:disabled {
-    opacity: 0.5;
+    min-height: var(--control-h-lg);
   }
 
   .error-msg {
-    color: var(--danger);
-    font-size: var(--text-sm);
     margin: 0;
+    padding: var(--space-2) var(--space-3);
+    background: var(--danger-subtle);
+    border: var(--border-w) solid color-mix(in oklch, var(--danger) 30%, transparent);
+    border-radius: var(--radius);
   }
 
   .loading-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    gap: var(--space-2);
     color: var(--text-2);
     font-size: var(--text-sm);
-  }
-
-  .spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    border: 2px solid var(--border-strong);
-    border-top-color: var(--accent);
-    animation: spin 0.6s linear infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+    padding: var(--space-3) 0;
   }
 
   :global(form button[type='submit']) {
-    margin-top: 4px;
+    margin-top: var(--space-1);
     width: 100%;
+  }
+
+  @media (max-width: 999px) {
+    /* Fox owns the top; card docks to the bottom like a sheet. */
+    .login-shell { align-items: end; padding-bottom: max(var(--space-5), env(safe-area-inset-bottom)); }
+    .hero {
+      height: 62%; object-position: 50% 40%;
+      /* melt the render's bottom edge into the background: no horizontal seam */
+      mask-image: linear-gradient(180deg, var(--bg-base) 55%, transparent 100%);
+      -webkit-mask-image: linear-gradient(180deg, var(--bg-base) 55%, transparent 100%);
+    }
+    .dots {
+      background:
+        linear-gradient(180deg, transparent 35%, var(--bg-base) 62%),
+        var(--dot-field);
+    }
+  }
+  @media (max-width: 400px) {
+    .card-body { padding: var(--space-5) var(--space-4); }
   }
 </style>

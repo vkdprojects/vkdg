@@ -18,52 +18,26 @@
     <span class="stat-label">{label}</span>
     {#if icon}<span class="stat-icon">{@render icon()}</span>{/if}
   </div>
-  <div class="stat-value mono" data-tone={tone}>
-    {value}
-    {#if unit}<span class="stat-unit">{unit}</span>{/if}
+  <div class="stat-value" data-tone={tone}>
+    <span class="stat-num">{value}</span>{#if unit}<span class="stat-unit">{unit}</span>{/if}
   </div>
 </div>
 
 <style>
-  .stat {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .stat-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .stat-label {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    color: var(--text-3);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
+  .stat { display: flex; flex-direction: column; gap: var(--space-2); }
+  .stat-top { display: flex; align-items: center; justify-content: space-between; }
+  .stat-label { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-2); }
   .stat-icon {
-    color: var(--text-3);
-    display: inline-flex;
+    display: grid; place-items: center; width: var(--control-h-sm); height: var(--control-h-sm);
+    border-radius: var(--radius-sm); background: var(--accent-subtle); color: var(--accent);
   }
-
   .stat-value {
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: var(--text-1);
-    line-height: 1.1;
+    display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap;
+    font-family: var(--font-dot); font-size: var(--text-hero); font-weight: var(--weight-dot);
+    letter-spacing: var(--tracking-dot); color: var(--text-1); line-height: var(--leading-tight);
   }
   .stat-value[data-tone='success'] { color: var(--success); }
   .stat-value[data-tone='warning'] { color: var(--warning); }
   .stat-value[data-tone='danger'] { color: var(--danger); }
-
-  .stat-unit {
-    font-size: var(--text-sm);
-    font-weight: 400;
-    color: var(--text-3);
-    margin-left: 0.25rem;
-  }
+  .stat-unit { font-family: var(--font-mono); font-size: var(--text-lg); font-weight: var(--weight-medium); color: var(--text-3); letter-spacing: 0; }
 </style>

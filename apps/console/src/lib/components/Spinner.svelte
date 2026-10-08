@@ -15,14 +15,20 @@
 
   .spinner {
     display: inline-block;
-    border-radius: 50%;
-    border: 2px solid var(--border-strong);
+    border-radius: var(--radius-full);
+    border: var(--focus-w) solid var(--accent-subtle);
     border-top-color: var(--accent);
-    animation: spin 0.6s linear infinite;
+    border-right-color: var(--accent-strong);
+    animation: spin var(--dur-spin) linear infinite;
     flex-shrink: 0;
   }
 
-  .sm { width: 14px; height: 14px; }
-  .md { width: 20px; height: 20px; }
-  .lg { width: 28px; height: 28px; }
+  .sm { width: var(--icon-sm); height: var(--icon-sm); }
+  .md { width: var(--icon-lg); height: var(--icon-lg); }
+  .lg { width: var(--icon-xl); height: var(--icon-xl); border-width: calc(var(--focus-w) * 1.5); }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* Global rule freezes animation; keep a visible, non-rotating cue. */
+    .spinner { border-color: var(--accent); opacity: 0.7; }
+  }
 </style>

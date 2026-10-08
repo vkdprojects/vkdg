@@ -65,7 +65,7 @@ build-mac-arm64:
 # ── Docker ────────────────────────────────────────────────────────────────
 # Build all Docker images
 docker-build:
-    docker build -f deploy/Dockerfile.gateway -t vkdg:latest .
+    docker build -f deploy/Dockerfile -t vkdg:latest .
     docker build -f deploy/Dockerfile.console -t vkdg-console:latest apps/console
 
 # Tag and push to registry (set REGISTRY env var)
@@ -91,7 +91,8 @@ image-dev REGISTRY="ghcr.io/vkdprojects":
     SHA=$(git rev-parse --short HEAD)
     DIRTY=$(test -n "$(git status --porcelain)" && echo "-dirty" || echo "")
     TAG="dev-${SHA}${DIRTY}"
-    docker build --platform linux/amd64 -f deploy/Dockerfile.dev \
+    docker build --platform linux/amd64 -f deploy/Dockerfile --target prebuilt \
+        --build-arg PROFILE=release --build-arg VCS_REF="${SHA}" \
         -t "{{REGISTRY}}/vkdg:${TAG}" -t "{{REGISTRY}}/vkdg:dev" .
     echo "Built {{REGISTRY}}/vkdg:${TAG}"
 
@@ -105,30 +106,17 @@ push-dev REGISTRY="ghcr.io/vkdprojects":
     docker push "{{REGISTRY}}/vkdg:dev-${SHA}${DIRTY}"
     docker push "{{REGISTRY}}/vkdg:dev"
 
-# Ship a dev image straight to a host over SSH, no registry involved.
-#
-# The image is streamed over the SSH connection, so this works against a box that
-# cannot pull from a private registry. HOST is an ssh target or alias.
+# Deploy HEAD to HOST. Builds locally when this machine can (cross-compile is
+# ~10x faster than the server), otherwise on the host; same swap + health check
+# either way. Refuses uncommitted changes so the tag names a real commit.
 #
 #   just ship-dev omni-vixpi
-#   just ship-dev omni-vixpi /srv/vkdg     # compose lives elsewhere
+#   VKDG_BUILD=remote just ship-dev omni-vixpi   # force (local|remote|auto)
+#   just ship-dev omni-vixpi --plan             # show the decision, don't deploy
 #
-# Build, stream and deploy a dev image to HOST over SSH
-ship-dev HOST DIR="/opt/vkdg":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just image-dev local
-    SHA=$(git rev-parse --short HEAD)
-    DIRTY=$(test -n "$(git status --porcelain)" && echo "-dirty" || echo "")
-    TAG="dev-${SHA}${DIRTY}"
-    echo "Streaming local/vkdg:${TAG} to {{HOST}}…"
-    docker save "local/vkdg:${TAG}" | gzip -1 | ssh {{HOST}} 'gunzip | docker load'
-    # Keep the previous image tagged so a rollback is one retag away.
-    ssh {{HOST}} "cd {{DIR}} && \
-        docker tag vkdg-gateway:latest vkdg-gateway:rollback 2>/dev/null || true; \
-        docker tag local/vkdg:${TAG} vkdg-gateway:latest && \
-        docker compose up -d --force-recreate gateway"
-    echo "Deployed ${TAG} to {{HOST}}. Roll back with: just rollback-dev {{HOST}} {{DIR}}"
+# Deploy HEAD to HOST (auto local/remote build)
+ship-dev HOST *FLAGS:
+    scripts/ship-dev.sh {{HOST}} {{FLAGS}}
 
 # Restore the image that was running before the last `ship-dev`.
 rollback-dev HOST DIR="/opt/vkdg":
@@ -177,6 +165,30 @@ clean:
     rm -rf apps/console/build dist
     @echo "Cleaned."
 
+# Remove old incremental artefacts (safe — recent builds are untouched).
+# Requires: cargo install cargo-sweep
+clean-old:
+    cargo sweep -t 14
+    cargo sweep -s
+    @echo "Removed artefacts older than 14 days and from old toolchain versions."
+
+# Remove only the Linux/musl cross-compile target (frees 10-20 GB).
+# The next `just image-dev` or `just build-linux-amd64` rebuilds it (~3 min).
+clean-linux:
+    rm -rf target/x86_64-unknown-linux-musl target/aarch64-unknown-linux-musl
+    @echo "Linux cross-compile targets removed."
+
 # Browser end-to-end tests against the real binary with the console embedded.
 e2e:
     cd apps/console && bun run build && bun run e2e
+
+# Quality + latency stress test against a live gateway.
+# Requires: uv (https://docs.astral.sh/uv/)
+#
+# Examples:
+#   just stress                                          # uses VKDG_API_KEY env var
+#   just stress --key vkdg_xxx
+#   just stress --url https://vkdg.vixpi.host --key vkdg_xxx --turns 60
+#   just stress --provider openai --url https://api.openai.com --key sk-xxx --model gpt-4o
+stress *args:
+    uv run tests/stress/quality.py {{args}}

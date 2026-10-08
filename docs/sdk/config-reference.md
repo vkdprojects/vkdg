@@ -169,10 +169,18 @@ Routes are evaluated in declaration order; the first matching route wins.
 | `weighted` | Selects targets proportionally to their `weight` field |
 | `fallback_chain` | Tries targets in declaration order; moves to next on failure |
 | `lowest_latency` | Selects the target with the lowest observed p50 latency |
-| `power_of_two_choices` | Picks two candidates at random, routes to the less-loaded one |
+| `power_of_two_choices` | Samples two eligible targets at random, routes to the one with fewer requests in flight (latency is ignored) |
 | `last_known_good` | Prefers the last target that returned a successful response |
 
 A target is skipped if it is over its `max_concurrent` limit, its circuit is open, or it does not support the required capability set.
+
+### Conversation affinity
+
+The strategy picks a connection for the first request of a conversation only. Later requests of the same conversation stay on that connection, so the provider's per-account prompt cache keeps hitting. This applies to every strategy and needs no configuration.
+
+- A conversation is identified by the client's session id (`x-claude-code-session-id` or `x-session-id`) when present. Otherwise by a SHA-256 hash of the tenant, the client, the system prompt and the first user message. Requests with neither are routed per request.
+- The pin lasts 3600 s after the last turn (fixed) and is set after streaming and non-streaming responses alike.
+- A pin is ignored, and the strategy picks again, when its connection is in cooldown, at capacity, unhealthy, does not serve the model, or already returned a 429 for this request.
 
 ---
 
@@ -189,7 +197,7 @@ limits:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `max_concurrent_requests` | integer | unlimited | Total concurrent requests gateway-wide; excess requests receive `429` |
-| `max_body_bytes` | integer | unlimited | Maximum request body size in bytes; larger bodies receive `413` |
+| `max_body_bytes` | integer | `33554432` (32 MiB) | Maximum request body size in bytes; larger bodies receive `413`. Read at startup; a reload does not change it |
 
 Per-request timeouts are not configurable here: this gateway forwards SSE
 streams that can legitimately run for minutes, so no blanket request

@@ -1,20 +1,18 @@
-//! Build [`PreparedRequest`] for the OpenAI Chat Completions and Images APIs.
+//! Build [`PreparedRequest`] for the `OpenAI` Chat Completions and Images APIs.
 
 use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, ProviderKind};
 use vkdg_core::pricing::ModelPrice;
-use vkdg_operations::{
-    ContentBlock, ConversationRequest, ImageGenerateRequest, MessageContent, Operation, Role,
-    VideoGenerateRequest,
-};
+use vkdg_operations::{ConversationRequest, ImageGenerateRequest, Operation, VideoGenerateRequest};
+use vkdg_provider_sdk::openai_compat::{chat_completions_body_with, TokenLimitField};
 use vkdg_provider_sdk::{Credential, PreparedRequest, ProviderAdapter, ProviderError};
 
-/// OpenAI provider adapter; converts internal operations to Chat Completions requests.
+/// `OpenAI` provider adapter; converts internal operations to Chat Completions requests.
 pub struct OpenAIAdapter;
 
-/// OpenAI list prices (USD per million tokens, as microdollars), specific
+/// `OpenAI` list prices (USD per million tokens, as microdollars), specific
 /// patterns first; `.` in names is read as `-` (`gpt-4.1` is `gpt-4-1`).
 /// Cached input is not reported separately by the meter, so cost for
 /// prompt-cached traffic is an upper bound.
@@ -37,12 +35,16 @@ const PRICES: &[ModelPrice] = &[
 ];
 
 impl ProviderAdapter for OpenAIAdapter {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "openai"
     }
 
-    fn display_name(&self) -> &str {
+    fn display_name(&self) -> &'static str {
         "OpenAI"
+    }
+
+    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
+        Some(vkdg_operations::WireFormat::OpenAiChat)
     }
 
     fn meta(&self) -> vkdg_provider_sdk::ProviderMeta {
@@ -115,7 +117,7 @@ fn base_url(config: &ConnectionConfig) -> String {
     }
 }
 
-/// Build common Authorization + Content-Type headers for OpenAI API requests.
+/// Build common Authorization + Content-Type headers for `OpenAI` API requests.
 fn build_auth_headers(token: &str) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -131,7 +133,7 @@ fn build_auth_headers(token: &str) -> HeaderMap {
     headers
 }
 
-/// Serialise an [`ImageGenerateRequest`] to an OpenAI Images generations JSON body.
+/// Serialise an [`ImageGenerateRequest`] to an `OpenAI` Images generations JSON body.
 /// Only non-`None` optional fields are included.
 pub(crate) fn build_image_generate_body(
     req: &ImageGenerateRequest,
@@ -193,7 +195,11 @@ pub(crate) fn build_video_generate_body(req: &VideoGenerateRequest) -> Bytes {
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
 }
 
-/// Serialise a [`ConversationRequest`] to an OpenAI Chat Completions JSON body.
+/// Serialise a [`ConversationRequest`] to an `OpenAI` Chat Completions JSON body.
+///
+/// api.openai.com takes the output limit as `max_completion_tokens` (the only
+/// spelling its reasoning models accept); a custom base URL is an
+/// OpenAI-compatible server and keeps `max_tokens`.
 fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     // The model the client asked for. `config.models` holds route patterns, so a
     // connection matching `gpt-*` would otherwise send that glob upstream.
@@ -206,143 +212,11 @@ fn build_body(req: &ConversationRequest, config: &ConnectionConfig) -> Bytes {
     } else {
         req.model.clone()
     };
-
-    // Prepend system prompt as a role:system message when present.
-    let mut messages: Vec<Value> = Vec::new();
-    if let Some(sys) = &req.system {
-        messages.push(json!({ "role": "system", "content": sys }));
-    }
-
-    for m in &req.messages {
-        let msg = match m.role {
-            Role::System => {
-                let content = message_content_to_value(&m.content);
-                json!({ "role": "system", "content": content })
-            }
-
-            Role::User => {
-                let content = message_content_to_value(&m.content);
-                json!({ "role": "user", "content": content })
-            }
-
-            Role::Assistant => {
-                // If the message contains ToolUse blocks, emit tool_calls format.
-                if let MessageContent::Blocks(blocks) = &m.content {
-                    let tool_calls: Vec<Value> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
-                                let arguments =
-                                    serde_json::to_string(input).unwrap_or_else(|_| "{}".into());
-                                Some(json!({
-                                    "id": id,
-                                    "type": "function",
-                                    "function": { "name": name, "arguments": arguments }
-                                }))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-
-                    if !tool_calls.is_empty() {
-                        json!({ "role": "assistant", "content": Value::Null, "tool_calls": tool_calls })
-                    } else {
-                        let content = message_content_to_value(&m.content);
-                        json!({ "role": "assistant", "content": content })
-                    }
-                } else {
-                    let content = message_content_to_value(&m.content);
-                    json!({ "role": "assistant", "content": content })
-                }
-            }
-
-            Role::Tool => {
-                // Extract tool_call_id and content string from ToolResult block.
-                let (tool_call_id, content_str) = extract_tool_result(&m.content);
-                json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content_str })
-            }
-        };
-        messages.push(msg);
-    }
-
-    let mut body = Map::new();
-    body.insert("model".into(), Value::String(model));
-    body.insert("messages".into(), Value::Array(messages));
-
-    if let Some(max) = req.max_tokens {
-        body.insert("max_tokens".into(), json!(max));
-    }
-    if let Some(temp) = req.temperature {
-        body.insert("temperature".into(), json!(temp));
-    }
-    if req.stream {
-        body.insert("stream".into(), Value::Bool(true));
-        // Request usage in the final chunk so the pipeline can report it.
-        body.insert("stream_options".into(), json!({ "include_usage": true }));
-    }
-
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut func = Map::new();
-                func.insert("name".into(), Value::String(t.name.clone()));
-                if let Some(desc) = &t.description {
-                    func.insert("description".into(), Value::String(desc.clone()));
-                }
-                func.insert("parameters".into(), t.input_schema.clone());
-                json!({ "type": "function", "function": func })
-            })
-            .collect();
-        body.insert("tools".into(), Value::Array(tools));
-    }
-
-    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
-}
-
-/// Convert [`MessageContent`] to a JSON value suitable for OpenAI's `content` field.
-fn message_content_to_value(content: &MessageContent) -> Value {
-    match content {
-        MessageContent::Text(t) => Value::String(t.clone()),
-        MessageContent::Blocks(blocks) => {
-            // Convert text blocks to OpenAI content part objects; skip non-text.
-            let parts: Vec<Value> = blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                    _ => None,
-                })
-                .collect();
-            if parts.is_empty() {
-                Value::Null
-            } else {
-                Value::Array(parts)
-            }
-        }
-    }
-}
-
-/// Extract `(tool_call_id, content_string)` from a Tool role message content.
-/// Looks for the first [`ContentBlock::ToolResult`]; falls back to empty strings.
-fn extract_tool_result(content: &MessageContent) -> (String, String) {
-    if let MessageContent::Blocks(blocks) = content {
-        for b in blocks {
-            if let ContentBlock::ToolResult {
-                tool_use_id,
-                content: result_content,
-            } = b
-            {
-                return (tool_use_id.clone(), result_content.clone());
-            }
-        }
-    }
-    // Plain text in a Tool message — use empty id, propagate text as-is.
-    let text = match content {
-        MessageContent::Text(t) => t.clone(),
-        _ => String::new(),
+    let limit = match config.provider {
+        ProviderKind::Custom { .. } => TokenLimitField::MaxTokens,
+        _ => TokenLimitField::MaxCompletionTokens,
     };
-    (String::new(), text)
+    chat_completions_body_with(req, &model, limit)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -422,6 +296,7 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
+            ..Default::default()
         }
     }
 
@@ -462,7 +337,7 @@ mod tests {
         assert_eq!(v["messages"][1]["role"], "user");
     }
 
-    /// Non-empty tools array must produce an OpenAI tools array with type:function entries.
+    /// Non-empty tools array must produce an `OpenAI` tools array with type:function entries.
     #[test]
     fn prepare_tools() {
         let mut req = simple_request();
@@ -470,6 +345,7 @@ mod tests {
             name: "get_weather".into(),
             description: Some("Return weather".into()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         }];
         let body = build_body(&req, &openai_config());
         let v: Value = serde_json::from_slice(&body).unwrap();
@@ -479,7 +355,7 @@ mod tests {
         assert_eq!(tool["function"]["description"], "Return weather");
     }
 
-    /// stream:true must include both stream:true and stream_options:{include_usage:true}.
+    /// stream:true must include both stream:true and `stream_options:{include_usage:true`}.
     #[test]
     fn prepare_stream_options() {
         let mut req = simple_request();
@@ -490,7 +366,7 @@ mod tests {
         assert_eq!(v["stream_options"]["include_usage"], true);
     }
 
-    /// An assistant message with ToolUse blocks must produce role:assistant with tool_calls.
+    /// An assistant message with `ToolUse` blocks must produce role:assistant with `tool_calls`.
     #[test]
     fn prepare_tool_use_in_assistant() {
         let mut req = simple_request();
@@ -500,6 +376,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "location": "NYC" }),
+                cache_control: None,
             }]),
         });
         let body = build_body(&req, &openai_config());
@@ -517,23 +394,79 @@ mod tests {
         assert_eq!(args["location"], "NYC");
     }
 
-    /// A Tool role message must produce role:tool with tool_call_id and content string.
+    // A tool result must come back as role:tool with its `tool_call_id`, directly
+    // behind the assistant message whose call it answers (a lone tool message is
+    // an orphan `OpenAI` rejects, so the old single-message form is not a contract).
     #[test]
     fn prepare_tool_result_message() {
         let mut req = simple_request();
+        req.messages.push(Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: "get_weather".into(),
+                input: json!({}),
+                cache_control: None,
+            }]),
+        });
         req.messages.push(Message {
             role: Role::Tool,
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "call_1".into(),
                 content: "sunny, 22°C".into(),
+                images: vec![],
+                is_error: false,
+                cache_control: None,
             }]),
         });
         let body = build_body(&req, &openai_config());
         let v: Value = serde_json::from_slice(&body).unwrap();
-        let tool_msg = &v["messages"][1];
-        assert_eq!(tool_msg["role"], "tool");
-        assert_eq!(tool_msg["tool_call_id"], "call_1");
-        assert_eq!(tool_msg["content"], "sunny, 22°C");
+        assert_eq!(v["messages"][1]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            v["messages"][2],
+            json!({ "role": "tool", "tool_call_id": "call_1", "content": "sunny, 22°C" })
+        );
+    }
+
+    // Defeat: sending `max_tokens` to api.openai.com (reasoning models answer
+    // 400 "use max_completion_tokens") or `max_completion_tokens` to a custom
+    // OpenAI-compatible base URL that only knows `max_tokens`; or both at once.
+    #[test]
+    fn token_limit_field_follows_the_endpoint() {
+        let mut req = simple_request();
+        req.max_tokens = Some(300);
+        let first_party: Value =
+            serde_json::from_slice(&build_body(&req, &openai_config())).unwrap();
+        assert_eq!(first_party["max_completion_tokens"], 300);
+        assert!(first_party.get("max_tokens").is_none());
+        let custom: Value =
+            serde_json::from_slice(&build_body(&req, &custom_config("http://localhost:8080")))
+                .unwrap();
+        assert_eq!(custom["max_tokens"], 300);
+        assert!(custom.get("max_completion_tokens").is_none());
+    }
+
+    // Defeat: the OpenAI adapter keeping a private copy of the body mapping that
+    // ignores tool_choice / stop / top_p (each of the four copies once did).
+    #[test]
+    fn tool_choice_stop_and_top_p_reach_openai() {
+        let mut req = simple_request();
+        req.tools = vec![Tool {
+            name: "get_weather".into(),
+            description: None,
+            input_schema: json!({ "type": "object" }),
+            cache_control: None,
+        }];
+        req.tool_choice = Some(vkdg_operations::ToolChoice::Named("get_weather".into()));
+        req.stop_sequences = vec!["END".into()];
+        req.top_p = Some(0.5);
+        let v: Value = serde_json::from_slice(&build_body(&req, &openai_config())).unwrap();
+        assert_eq!(
+            v["tool_choice"],
+            json!({ "type": "function", "function": { "name": "get_weather" } })
+        );
+        assert_eq!(v["stop"], json!(["END"]));
+        assert_eq!(v["top_p"], json!(0.5));
     }
 
     /// Authorization header must be Bearer <token>.
@@ -553,14 +486,14 @@ mod tests {
         assert_eq!(auth, "Bearer sk-test123");
     }
 
-    /// ProviderKind::OpenAI must produce a URL pointing to api.openai.com.
+    /// `ProviderKind::OpenAI` must produce a URL pointing to api.openai.com.
     #[test]
     fn prepare_url_openai() {
         let url = base_url(&openai_config());
         assert!(url.contains("api.openai.com"), "url={url}");
     }
 
-    /// ProviderKind::Custom must use the supplied base_url verbatim.
+    /// `ProviderKind::Custom` must use the supplied `base_url` verbatim.
     #[test]
     fn prepare_url_custom() {
         let cfg = custom_config("http://localhost:8080");

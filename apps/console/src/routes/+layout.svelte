@@ -4,11 +4,11 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { m } from '$lib/paraglide/messages.js';
-  import { getLocale, setLocale } from '$lib/paraglide/runtime.js';
-  import { Toaster } from 'svelte-sonner';
-  import { Home, Combine, Route, List, Gamepad2, Key, Settings, Puzzle, LayoutGrid, Cable, Users, Gauge, PanelLeft } from 'lucide-svelte';
-  import { Logo, StatusDot } from '$lib/components/index.js';
+    import { Toaster } from 'svelte-sonner';
+  import { Home, Combine, Route, List, Gamepad2, Key, Settings, Puzzle, LayoutGrid, Cable, Users, Gauge, PanelLeft, Menu } from 'lucide-svelte';
+  import { Logo, StatusDot, UserMenu } from '$lib/components/index.js';
   import { api } from '$lib/api.js';
+  import { poll } from '$lib/live.svelte.js';
   import type { SessionUser, SystemInfo } from '$lib/api.js';
 
   interface Props { children: Snippet; }
@@ -40,6 +40,19 @@
     // exactly match `collapsed` until the next real hover/focus.
     peeking = false;
   }
+
+  let theme = $state<'dark' | 'light'>(
+    typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
+  );
+  function setTheme(next: 'dark' | 'light') {
+    theme = next;
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('vkdg.theme', theme);
+  }
+
+  // Mobile: off-canvas drawer, closed on every navigation.
+  let drawerOpen = $state(false);
+  $effect(() => { page.url.pathname; drawerOpen = false; });
 
   const navGroups = [
     {
@@ -97,28 +110,17 @@
       .catch(() => { if (page.url.pathname === path) goto('/login'); });
   });
 
-  $effect(() => {
+  poll(async () => {
     if (isPublic || !user) return;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const refresh = async () => {
-      if (document.visibilityState !== 'visible') return;
-      try { system = await api.system(); } catch { /* retain last known state */ }
-    };
-    const sync = () => {
-      clearInterval(timer);
-      timer = undefined;
-      if (document.visibilityState === 'visible') timer = setInterval(refresh, 5000);
-    };
-    sync();
-    document.addEventListener('visibilitychange', sync);
-    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', sync); };
+    try { system = await api.system(); } catch { /* retain last known state */ }
   });
 </script>
 
 {#if isPublic || !user}
   <main class="main public">{#if isPublic}{@render children()}{/if}</main>
 {:else}
-  <div class="shell" class:collapsed>
+  <div class="shell" class:collapsed class:drawer-open={drawerOpen}>
+    <button type="button" class="scrim" aria-label={m.shell_collapse_nav()} onclick={() => (drawerOpen = false)}></button>
     <div class="sidebar-slot" class:peeking>
       <nav
         class="sidebar"
@@ -127,13 +129,11 @@
         onmouseleave={() => (peeking = false)}
         onfocusin={() => (peeking = true)}
         onfocusout={(e) => {
-          // Only collapse back when focus actually leaves the sidebar, not
-          // when it moves between two links inside it.
           if (!e.currentTarget.contains(e.relatedTarget as Node | null)) peeking = false;
         }}
       >
         <a href="/" class="brand" aria-label="VKDG home">
-          <Logo size={25} /><span class="brand-name">VKDG</span>
+          <span class="brand-mark"><Logo size={22} /></span><span class="brand-name">VKDG</span>
         </a>
 
         <button
@@ -143,7 +143,7 @@
           aria-label={collapsed ? m.shell_expand_nav() : m.shell_collapse_nav()}
           aria-pressed={collapsed}
         >
-          <PanelLeft size={15} strokeWidth={1.8} aria-hidden="true" />
+          <PanelLeft size={14} strokeWidth={1.8} aria-hidden="true" />
         </button>
 
         <div class="nav-groups">
@@ -152,8 +152,8 @@
               <span class="nav-group-label">{group.label()}</span>
               <div class="nav-items">
                 {#each group.items as item}
-                  <a href={item.href} class="nav-item" class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined}>
-                    <item.icon size={16} strokeWidth={1.8} aria-hidden="true" /><span class="nav-item-label">{item.label()}</span>
+                  <a href={item.href} class="nav-item" class:active={isActive(item.href)} aria-current={isActive(item.href) ? 'page' : undefined} title={item.label()}>
+                    <item.icon size={17} strokeWidth={1.75} aria-hidden="true" /><span class="nav-item-label">{item.label()}</span>
                   </a>
                 {/each}
               </div>
@@ -162,149 +162,175 @@
         </div>
 
         <div class="sidebar-foot">
-          <div class="locale-switcher" aria-label={m.shell_language()}>
-            <button class:active={getLocale() === 'en'} aria-pressed={getLocale() === 'en'} onclick={() => setLocale('en')}>EN</button>
-            <button class:active={getLocale() === 'pt-BR'} aria-pressed={getLocale() === 'pt-BR'} onclick={() => setLocale('pt-BR')}>PT</button>
-          </div>
-          <span class="role mono">{user.role}</span>
-          <button type="button" class="signout" onclick={signOut}>{m.nav_sign_out()}</button>
+          <UserMenu
+            role={user.role}
+            {theme}
+            onThemeChange={setTheme}
+            onSignOut={signOut}
+            compact={collapsed && !peeking && !drawerOpen}
+          />
         </div>
       </nav>
     </div>
 
     <div class="content">
-      {#if system}
-        <div class="status-bar" aria-label={m.shell_gateway_telemetry()}>
-          <div class="health"><StatusDot status={system.status} /><span>{system.status}</span></div>
-          <div><span>{m.system_version()}</span><strong class="mono">v{system.version}</strong></div>
-          <div><span>{m.system_uptime()}</span><strong class="mono">{formatUptime(system.uptime_secs)}</strong></div>
-          <div><span>{m.system_active_requests()}</span><strong class="mono">{system.active_requests}</strong></div>
-        </div>
-      {/if}
+      <header class="topbar">
+        <button type="button" class="icon-btn menu-btn" onclick={() => (drawerOpen = true)} aria-label={m.shell_expand_nav()}>
+          <Menu size={18} aria-hidden="true" />
+        </button>
+        {#if system}
+          <div class="vitals" aria-label={m.shell_gateway_telemetry()}>
+            <span class="health" data-status={system.status}><StatusDot status={system.status} /><span>{system.status}</span></span>
+            <span class="vital"><span class="k">{m.system_active_requests()}</span><strong class="mono">{system.active_requests}</strong></span>
+            <span class="vital"><span class="k">{m.system_uptime()}</span><strong class="mono">{formatUptime(system.uptime_secs)}</strong></span>
+            <span class="vital hide-sm"><span class="k">{m.system_version()}</span><strong class="mono">v{system.version}</strong></span>
+          </div>
+        {/if}
+      </header>
       <main class="main">{@render children()}</main>
     </div>
   </div>
 {/if}
 
-<Toaster richColors theme="dark" position="bottom-right" />
+<Toaster richColors {theme} position="bottom-right" />
 
 <style>
-  /*
-   * Sidebar shell. Two widths (expanded/collapsed) drive the grid column.
-   * `.sidebar-slot` is the actual grid item and is ALWAYS sized to the
-   * current `collapsed` state (never changes during peek) — it's what
-   * keeps the grid column, and therefore `.content`, from ever reflowing.
-   * `.sidebar` (the <nav>) lives inside the slot and is what visually
-   * grows: normally it just fills the slot, but while peeking it becomes
-   * `position: absolute` *inside* the still-fixed-width slot, so it draws
-   * over the content without the slot (the grid item) changing size.
-   */
   .shell {
-    --sidebar-w: 15.5rem;
-    --sidebar-w-collapsed: 3.5rem;
     min-height: 100vh;
     display: grid;
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+    transition: grid-template-columns var(--dur-2) var(--ease-out);
   }
   .shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 
-  .sidebar-slot {
-    position: relative;
-    z-index: 20;
-    width: var(--sidebar-w);
-  }
+  .sidebar-slot { position: sticky; top: 0; height: 100vh; z-index: var(--z-nav); width: var(--sidebar-w); }
   .shell.collapsed .sidebar-slot { width: var(--sidebar-w-collapsed); }
 
   .sidebar {
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-surface);
-    border-right: 1px solid var(--border);
-    width: 100%;
-    height: 100%;
+    position: relative;
+    display: flex; flex-direction: column;
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-right: var(--border-w) solid var(--glass-border);
+    box-shadow: var(--glass-highlight);
+    width: 100%; height: 100%;
   }
-  /* Peeking: the nav overlays at full width from within the still
-     collapsed-width slot, so the grid column never changes size and
-     `.content`/`.main` never move. */
   .sidebar-slot.peeking .sidebar {
-    position: absolute;
-    inset: 0 auto 0 0;
+    position: absolute; inset: 0 auto 0 0;
     width: var(--sidebar-w);
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+    box-shadow: var(--shadow-2);
   }
 
-
-  .brand { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 14px 16px; color: var(--text-1); text-decoration: none; font-size: var(--text-base); font-weight: 700; letter-spacing: .06em; border-bottom: 1px solid var(--border); }
-  .brand-name { overflow: hidden; white-space: nowrap; }
+  .brand {
+    display: flex; align-items: center; gap: var(--space-3); min-width: 0;
+    padding: var(--space-4) var(--space-4) var(--space-3);
+    color: var(--text-1);
+    font-size: var(--text-md); font-weight: var(--weight-bold); letter-spacing: var(--tracking-tight);
+  }
+  .brand-mark {
+    display: grid; place-items: center; flex-shrink: 0;
+    width: var(--control-h-sm); height: var(--control-h-sm); border-radius: var(--radius);
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: var(--glass-highlight);
+  }
+  .brand-name { overflow: hidden; white-space: nowrap; font-family: var(--font-dot); font-size: var(--text-lg); letter-spacing: var(--tracking-dot); }
   .shell.collapsed .sidebar-slot:not(.peeking) .brand-name { display: none; }
 
   .collapse-toggle {
-    position: absolute;
-    top: 12px;
-    right: -13px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
+    position: absolute; top: var(--space-5); right: calc(var(--space-3) * -1);
+    display: grid; place-items: center;
+    width: var(--space-5); height: var(--space-5);
     background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 50%;
+    border: var(--border-w) solid var(--border-strong);
+    border-radius: var(--radius-full);
     color: var(--text-2);
-    cursor: pointer;
-    z-index: 1;
+    cursor: pointer; z-index: var(--z-raised);
+    opacity: 0;
   }
-  .collapse-toggle:hover { color: var(--text-1); border-color: var(--border-strong); }
+  .sidebar:hover .collapse-toggle, .collapse-toggle:focus-visible { opacity: 1; }
+  .collapse-toggle:hover { color: var(--text-1); border-color: var(--accent); }
   .shell.collapsed .collapse-toggle { transform: rotate(180deg); }
 
-  .nav-groups { flex: 1; overflow-y: auto; padding: 10px 0; }
-  .nav-group { padding: 6px 12px; }
-  .nav-group-label { display: block; color: var(--text-3); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px; white-space: nowrap; }
-  .shell.collapsed .sidebar-slot:not(.peeking) .nav-group-label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); }
-  .nav-items { display: flex; flex-direction: column; gap: 1px; }
-  .nav-item { display: flex; align-items: center; gap: 10px; color: var(--text-2); text-decoration: none; font-size: var(--text-sm); padding: 7px 10px; border-radius: var(--radius-sm); white-space: nowrap; overflow: hidden; }
-  .nav-item :global(svg) { flex-shrink: 0; }
+  .nav-groups { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--space-1) var(--space-3); }
+  .nav-group + .nav-group { margin-top: var(--space-3); }
+  .nav-group-label { display: block; color: var(--text-3); font-size: var(--text-2xs); font-weight: var(--weight-medium); padding: var(--space-1) var(--space-3) var(--space-2); white-space: nowrap; }
+  .shell.collapsed .sidebar-slot:not(.peeking) .nav-group-label { visibility: hidden; height: var(--space-2); padding: 0; }
+  .nav-items { display: flex; flex-direction: column; gap: var(--space-0); }
+  .nav-item {
+    position: relative;
+    display: flex; align-items: center; gap: var(--space-3);
+    color: var(--text-2);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    white-space: nowrap; overflow: hidden;
+  }
+  .nav-item :global(svg) { flex-shrink: 0; transition: transform var(--dur-2) var(--ease-spring); }
   .nav-item:hover { color: var(--text-1); background: var(--bg-hover); }
-  .nav-item.active { color: var(--text-1); background: var(--accent-subtle); box-shadow: inset 2px 0 var(--accent); }
+  .nav-item:hover :global(svg) { transform: scale(1.08); }
+  .nav-item.active { color: var(--text-1); background: var(--glass-bg-strong); box-shadow: var(--glass-highlight); }
+  .nav-item.active :global(svg) { color: var(--accent); }
+  .nav-item.active::before {
+    content: ''; position: absolute; left: 0; top: 22%; bottom: 22%; width: var(--indicator-w);
+    border-radius: 0 var(--radius-xs) var(--radius-xs) 0; background: var(--accent);
+  }
+  .shell.collapsed .sidebar-slot:not(.peeking) .nav-item { justify-content: center; }
   .shell.collapsed .sidebar-slot:not(.peeking) .nav-item-label { display: none; }
 
-  .sidebar-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px; border-top: 1px solid var(--border); }
-  .shell.collapsed .sidebar-slot:not(.peeking) .sidebar-foot { flex-direction: column; }
-  .locale-switcher { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); }
-  .locale-switcher button, .signout { border: 0; background: none; color: var(--text-3); cursor: pointer; font-size: var(--text-2xs); padding: 4px 6px; }
-  .locale-switcher button.active { background: var(--accent-subtle); color: var(--accent); }
-  .role { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; }
-  .shell.collapsed .sidebar-slot:not(.peeking) .role { display: none; }
-  .signout:hover { color: var(--danger); }
+  .sidebar-foot { padding: var(--space-2); border-top: var(--border-w) solid var(--border); }
 
-  .content { min-width: 0; display: flex; flex-direction: column; background: var(--bg-base); container-type: inline-size; container-name: content; }
+  .content { min-width: 0; display: flex; flex-direction: column; container-type: inline-size; container-name: content; }
 
-  /* Gateway vital signs, previously in the topbar: a thin strip above the
-     page content keeps them visible at all times, including when the
-     sidebar is collapsed to icons (where there's no room to show them). */
-  .status-bar { display: flex; align-items: stretch; background: var(--bg-inset); border-bottom: 1px solid var(--border); overflow-x: auto; }
-  .status-bar > div { display: flex; align-items: center; gap: 7px; padding: 6px 16px; border-right: 1px solid var(--border); white-space: nowrap; }
-  .status-bar span { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .05em; }
-  .status-bar strong { color: var(--text-1); font-size: var(--text-xs); font-weight: 500; }
-  .status-bar .health span { color: var(--text-1); }
+  .topbar {
+    position: sticky; top: 0; z-index: var(--z-topbar);
+    display: flex; align-items: center; gap: var(--space-3);
+    min-height: var(--topbar-h); padding: 0 var(--page-gutter);
+    background: color-mix(in oklch, var(--bg-base) 55%, transparent);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-bottom: var(--border-w) solid var(--border);
+  }
+  .menu-btn { display: none; }
+  .vitals { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; overflow-x: auto; scrollbar-width: none; }
+  .vitals > span {
+    display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap;
+    padding: var(--space-1) var(--space-3); border-radius: var(--radius-full);
+    background: var(--glass-bg); border: var(--border-w) solid var(--glass-border); box-shadow: var(--glass-highlight);
+    font-size: var(--text-xs);
+  }
+  .vitals .k { color: var(--text-3); }
+  .vitals strong { color: var(--text-1); font-weight: var(--weight-medium); }
+  .health { color: var(--text-1); text-transform: capitalize; }
+  .health[data-status='healthy'] { border-color: color-mix(in oklch, var(--success) 35%, transparent); background: var(--success-subtle); }
+  .health[data-status='degraded'] { border-color: color-mix(in oklch, var(--warning) 35%, transparent); background: var(--warning-subtle); }
 
   .main { min-width: 0; flex: 1; }
+  .scrim { display: none; }
 
   @media (max-width: 800px) {
-    /* Icon rail by default on narrow screens; hover/focus peek still works,
-       and the explicit toggle still expands it in place if preferred. */
-    .shell:not(.collapsed) { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
-    .shell:not(.collapsed) .sidebar-slot { width: var(--sidebar-w-collapsed); }
-    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .brand-name,
-    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .nav-group-label,
-    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .nav-item-label,
-    .shell:not(.collapsed) .sidebar-slot:not(.peeking) .role { display: none; }
-    .shell:not(.collapsed) .sidebar-slot.peeking .sidebar {
-      position: absolute;
-      inset: 0 auto 0 0;
-      width: var(--sidebar-w);
-      box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+    .shell, .shell.collapsed { grid-template-columns: minmax(0, 1fr); }
+    .sidebar-slot, .shell.collapsed .sidebar-slot {
+      position: fixed; inset: 0 auto 0 0; width: min(var(--sidebar-w), 86vw);
+      transform: translateX(-100%);
+      transition: transform var(--dur-2) var(--ease-out);
     }
-    .status-bar > div span { display: none; }
+    .shell.drawer-open .sidebar-slot { transform: none; box-shadow: var(--shadow-2); }
+    .sidebar-slot.peeking .sidebar { position: relative; width: 100%; box-shadow: none; }
+    /* Drawer always shows full labels regardless of the desktop collapse pref. */
+    .shell.collapsed .sidebar-slot .brand-name,
+    .shell.collapsed .sidebar-slot .nav-item-label { display: revert; }
+    .shell.collapsed .sidebar-slot .nav-item { justify-content: flex-start; }
+    .shell.collapsed .sidebar-slot .nav-group-label { visibility: visible; height: auto; padding: var(--space-1) var(--space-3) var(--space-2); }
+    .collapse-toggle { display: none; }
+    .scrim {
+      display: block; position: fixed; inset: 0; z-index: var(--z-scrim); border: 0;
+      background: var(--bg-scrim);
+      opacity: 0; pointer-events: none; transition: opacity var(--dur-2);
+    }
+    .shell.drawer-open .scrim { opacity: 1; pointer-events: auto; }
+    .menu-btn { display: grid; }
+    .hide-sm, .vitals .k { display: none; }
   }
 </style>

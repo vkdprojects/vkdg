@@ -113,7 +113,7 @@ impl PluginStore {
                         .map_err(|e| format!("read {}: {e}", path.display()))
                         .and_then(|b| crate::WasmPluginInstance::from_bytes(&b, &manifest))
                         .map(|i| crate::WasmAuth::new(std::sync::Arc::new(i), &manifest));
-                    Some((p.manifest.name.clone(), loaded))
+                    Some((p.manifest.name, loaded))
                 }
             })
             .collect()
@@ -223,8 +223,8 @@ impl PluginStore {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
-        for entry in fs::read_dir(&self.root).map_err(io)? {
-            let dir = entry.map_err(io)?.path();
+        for entry in fs::read_dir(&self.root).map_err(|e| io(&e))? {
+            let dir = entry.map_err(|e| io(&e))?.path();
             let manifest_path = dir.join(MANIFEST_FILE);
             if !dir.is_dir() || !manifest_path.is_file() {
                 continue;
@@ -235,7 +235,7 @@ impl PluginStore {
             // A manifest that no longer validates is reported, not hidden: the
             // operator needs to know an installed plugin will not load.
             let parsed = fs::read_to_string(&manifest_path)
-                .map_err(io)
+                .map_err(|e| io(&e))
                 .and_then(|yaml| {
                     RegistryManifest::from_yaml(&yaml).map_err(|e| {
                         StoreError::Manifest(format!("{}: {e}", manifest_path.display()))
@@ -250,12 +250,14 @@ impl PluginStore {
 
     /// One installed plugin by name.
     pub fn get(&self, name: &str) -> Result<Option<InstalledPlugin>, StoreError> {
-        let dir = self.root.join(name);
+        let Some(dir) = self.dir_of(name) else {
+            return Ok(None);
+        };
         let manifest_path = dir.join(MANIFEST_FILE);
         if !manifest_path.is_file() {
             return Ok(None);
         }
-        let yaml = fs::read_to_string(&manifest_path).map_err(io)?;
+        let yaml = fs::read_to_string(&manifest_path).map_err(|e| io(&e))?;
         let manifest =
             RegistryManifest::from_yaml(&yaml).map_err(|e| StoreError::Manifest(e.to_string()))?;
         Ok(Some(InstalledPlugin { manifest, dir }))
@@ -320,15 +322,15 @@ impl PluginStore {
         };
 
         let dir = self.root.join(&manifest.name);
-        fs::create_dir_all(&dir).map_err(io)?;
+        fs::create_dir_all(&dir).map_err(|e| io(&e))?;
         if let Some(bytes) = bytes {
-            fs::write(dir.join(WASM_FILE), bytes).map_err(io)?;
+            fs::write(dir.join(WASM_FILE), bytes).map_err(|e| io(&e))?;
         }
         // Written last: a directory without a manifest is an incomplete install
         // and `list` skips it.
         let yaml =
             serde_yaml::to_string(manifest).map_err(|e| StoreError::Manifest(e.to_string()))?;
-        fs::write(dir.join(MANIFEST_FILE), yaml).map_err(io)?;
+        fs::write(dir.join(MANIFEST_FILE), yaml).map_err(|e| io(&e))?;
 
         Ok(InstalledPlugin {
             manifest: manifest.clone(),
@@ -338,26 +340,39 @@ impl PluginStore {
 
     /// Remove an installed plugin.
     pub fn remove(&self, name: &str) -> Result<(), StoreError> {
-        let dir = self.root.join(name);
-        if !dir.join(MANIFEST_FILE).is_file() {
+        let dir = self
+            .dir_of(name)
+            .filter(|d| d.join(MANIFEST_FILE).is_file());
+        let Some(dir) = dir else {
             return Err(StoreError::NotInstalled(name.to_owned()));
-        }
-        fs::remove_dir_all(&dir).map_err(io)
+        };
+        fs::remove_dir_all(&dir).map_err(|e| io(&e))
+    }
+
+    /// Directory for a plugin name, or `None` when the name could escape the
+    /// root. Names arrive from URLs (`DELETE /admin/v1/plugins/{name}`), so the
+    /// same rule install enforces is enforced here, not trusted.
+    fn dir_of(&self, name: &str) -> Option<PathBuf> {
+        crate::registry_manifest::is_kebab_case(name).then(|| self.root.join(name))
     }
 }
 
-fn io(e: std::io::Error) -> StoreError {
+fn io(e: &std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+        .fold(String::new(), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
+#[allow(clippy::needless_pass_by_value)] // OsString owner needed for .into() and pattern matching
 fn default_root(
     plugins_dir: Option<std::ffi::OsString>,
     accounts_db: Option<std::ffi::OsString>,
@@ -406,5 +421,74 @@ mod root_tests {
                 PathBuf::from("/var/lib/vkdg/plugins")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{PluginStore, StoreError, MANIFEST_FILE};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch() -> PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("vkdg-store-{}", std::process::id()))
+            .join(format!(
+                "{:?}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    // Refutes: trusting the URL `{name}` because install validates it. Remove and
+    // get join it onto the root, so `..` or an absolute path escapes and
+    // `remove_dir_all` deletes any directory holding a manifest.yaml.
+    #[test]
+    fn names_that_escape_the_root_are_refused_and_nothing_is_deleted() {
+        let base = scratch();
+        let root = base.join("plugins");
+        let victim = base.join("victim");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join(MANIFEST_FILE), "x").unwrap();
+        let store = PluginStore::new(&root);
+
+        for name in [
+            "../victim",
+            victim.to_str().unwrap(),
+            "a/../../victim",
+            "",
+            "Victim",
+        ] {
+            assert!(
+                matches!(store.remove(name), Err(StoreError::NotInstalled(_))),
+                "remove({name:?}) must be refused"
+            );
+            assert!(
+                store.get(name).unwrap().is_none(),
+                "get({name:?}) must not resolve"
+            );
+        }
+        assert!(
+            victim.join(MANIFEST_FILE).is_file(),
+            "victim directory was deleted"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    // Refutes: a fix so strict it breaks the normal uninstall.
+    #[test]
+    fn a_valid_installed_name_is_still_removed() {
+        let base = scratch();
+        let dir = base.join("my-plugin");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(MANIFEST_FILE), "x").unwrap();
+        PluginStore::new(&base).remove("my-plugin").unwrap();
+        assert!(!dir.exists());
+        let _ = fs::remove_dir_all(base);
     }
 }

@@ -15,7 +15,7 @@ use crate::FilterPack;
 pub struct DockerLogPack;
 
 impl FilterPack for DockerLogPack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:docker-log"
     }
 
@@ -23,7 +23,7 @@ impl FilterPack for DockerLogPack {
         ContentClass::DockerLog
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses docker compose logs; keeps first 5 lines per service"
     }
 
@@ -41,11 +41,11 @@ impl FilterPack for DockerLogPack {
                 let service = service.trim().to_string();
                 let count = service_counts.entry(service).or_insert(0);
                 if *count < 5 {
-                    kept.push(line.to_string());
+                    kept.push((*line).to_string());
                     *count += 1;
                 }
             } else {
-                kept.push(line.to_string());
+                kept.push((*line).to_string());
             }
         }
         kept.join("\n")

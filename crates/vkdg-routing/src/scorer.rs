@@ -88,21 +88,32 @@ pub struct CandidateSignals {
 }
 
 impl CandidateSignals {
+    // A ranking score in [0, 1] needs no single-rounding accuracy, and the release
+    // binaries are portable baseline builds (no `target-cpu`, so no FMA instruction):
+    // `mul_add` there is a libm call per term and slower than multiply plus add. The
+    // Rust std docs say the same: it is only faster with a dedicated `fma` instruction.
+    #[allow(clippy::suboptimal_flops)]
     pub fn score(&self, w: &ScoringWeights) -> f32 {
         let health = self.health.clamp(0.0, 1.0);
         let quota = self.quota_headroom.unwrap_or(0.5).clamp(0.0, 1.0);
         // cost: lower is better; invert and normalize
         let cost_inv = {
+            #[allow(clippy::cast_precision_loss)]
+            // u32→f32 for scoring ratio; precision loss acceptable
             let c = self.cost_per_ktoken.unwrap_or(500) as f32;
             // normalize against 100 µ$/ktoken reference so cheap vs expensive spans [0,1] usefully
             (1.0 / (1.0 + c / 100.0)).clamp(0.0, 1.0)
         };
         // latency: lower is better; sigmoid-style inversion over 5000ms range
         let lat_inv = {
+            #[allow(clippy::cast_precision_loss)]
+            // u32→f32 for latency ratio; precision loss acceptable
             let l = self.latency_p50_ms.unwrap_or(200) as f32;
             (5000.0 / (l + 5000.0)).clamp(0.0, 1.0)
         };
         // stability: decay instability events
+        #[allow(clippy::cast_precision_loss)]
+        // u32→f32 for stability decay; precision loss acceptable
         let stability = 1.0 / (1.0 + self.instability_events as f32);
 
         health * w.health

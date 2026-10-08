@@ -44,3 +44,16 @@ export function formatTime(input: string | number | Date): string {
 export function formatRelativeTime(seconds: number, unit: Intl.RelativeTimeFormatUnit): string {
   return new Intl.RelativeTimeFormat(getLocale(), { numeric: 'auto' }).format(seconds, unit);
 }
+
+/** "in 5 minutes" / "2 hours ago" for an ISO instant, picking the coarsest fitting unit; unparsable → `fallback`. */
+export function formatRelativeFrom(iso: string, fallback: string, now = Date.now()): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return fallback;
+  const seconds = Math.round((t - now) / 1000);
+  if (Math.abs(seconds) < 60) return formatRelativeTime(seconds, 'second');
+  const minutes = Math.round(seconds / 60);
+  if (Math.abs(minutes) < 60) return formatRelativeTime(minutes, 'minute');
+  const hours = Math.round(minutes / 60);
+  if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
+  return formatRelativeTime(Math.round(hours / 24), 'day');
+}

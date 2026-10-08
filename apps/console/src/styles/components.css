@@ -1,0 +1,210 @@
+/*
+ * Shared layout/components. Pages compose these instead of re-declaring.
+ * If you need a variant, add a modifier here; don't fork it in a page.
+ */
+
+/* ── Page ─────────────────────────────────────────────────────────────── */
+.page {
+  max-width: min(1440px, 100cqw);
+  margin: 0 auto;
+  padding: var(--space-6) var(--page-gutter) var(--space-7);
+  animation: page-in var(--dur-3) var(--ease-out);
+}
+@media (min-width: 1600px) { .page { max-width: min(1800px, 96cqw); } }
+@media (min-width: 2200px) { .page { max-width: min(2400px, 94cqw); } }
+@keyframes page-in { from { opacity: 0; transform: translateY(var(--space-2)); } }
+.page > p, .page > section > p:not([class]) { max-width: var(--measure); }
+
+.page-header {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+.page-header h1 { margin: 0; }
+.page-header p { margin: var(--space-1) 0 0; max-width: var(--measure); }
+/* Action rows: every control aligns on one baseline and one height. */
+.page-actions, .actions-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+
+/* ── Surfaces ─────────────────────────────────────────────────────────── */
+.glass, .panel {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: var(--border-w) solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+}
+.panel { overflow: hidden; }
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-w) solid var(--border);
+}
+.panel-head h2 { margin: 0; }
+.panel-body { padding: var(--space-5); }
+.inset {
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius);
+}
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* Responsive card grid: --grid-min sets the column floor per use. */
+.grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--grid-min, var(--col-lg))), 1fr));
+  gap: var(--space-4);
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+.icon-btn, .dialog-close, .drawer-close {
+  display: inline-grid; place-items: center; flex-shrink: 0;
+  width: var(--control-h); height: var(--control-h);
+  color: var(--text-3);
+  background: none;
+  border: var(--border-w) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.icon-btn:hover, .dialog-close:hover, .drawer-close:hover { color: var(--text-1); background: var(--bg-hover); }
+.icon-btn.sm { width: var(--control-h-sm); height: var(--control-h-sm); }
+
+.chip {
+  display: inline-flex; align-items: center; gap: var(--space-1);
+  padding: var(--space-0) var(--space-2);
+  font-family: var(--font-mono); font-size: var(--text-xs);
+  color: var(--text-2);
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+}
+.chip.accent { color: var(--accent); background: var(--accent-subtle); border-color: var(--accent-strong); }
+
+/* Segmented control: wrap buttons with aria-pressed. */
+.segmented {
+  display: inline-flex; gap: var(--space-0);
+  padding: var(--space-0);
+  background: var(--bg-inset);
+  border: var(--border-w) solid var(--border);
+  border-radius: var(--radius-full);
+  overflow-x: auto; scrollbar-width: none; max-width: 100%;
+}
+.segmented > button {
+  min-height: var(--control-h-sm);
+  padding: 0 var(--space-3);
+  font: inherit; font-size: var(--text-sm); font-weight: var(--weight-medium);
+  color: var(--text-2);
+  background: none; border: 0; border-radius: var(--radius-full);
+  white-space: nowrap; cursor: pointer;
+}
+.segmented > button:hover { color: var(--text-1); }
+.segmented > button[aria-pressed="true"] { color: var(--text-1); background: var(--glass-bg-strong); box-shadow: var(--shadow-1); }
+
+/* ── Forms ────────────────────────────────────────────────────────────── */
+.fields { display: grid; gap: var(--space-4); }
+.field { display: flex; flex-direction: column; gap: var(--space-2); }
+.field-row {
+  display: grid; gap: var(--space-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--col-md)), 1fr));
+}
+.field-label { font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-2); }
+.field-hint { font-size: var(--text-xs); color: var(--text-3); }
+
+/* ── Dialog (bits-ui Dialog or plain markup) ──────────────────────────── */
+.dialog-overlay, .drawer-overlay {
+  position: fixed; inset: 0; z-index: var(--z-dialog);
+  background: var(--bg-scrim);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  animation: fade-in var(--dur-2) var(--ease-out);
+}
+.dialog-content {
+  position: fixed; z-index: calc(var(--z-dialog) + 1);
+  top: 50%; left: 50%; translate: -50% -50%;
+  display: flex; flex-direction: column;
+  width: var(--dialog-w);
+  max-height: calc(100dvh - 2 * var(--space-4));
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: var(--border-w) solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-2);
+  animation: dialog-in var(--dur-2) var(--ease-out);
+}
+.dialog-content.lg { width: var(--dialog-w-lg); }
+.dialog-header {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-w) solid var(--border);
+}
+.dialog-title { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.dialog-body { padding: var(--space-5); overflow-y: auto; }
+.dialog-footer {
+  display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-top: var(--border-w) solid var(--border);
+}
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes dialog-in { from { opacity: 0; scale: 0.97; } }
+@media (max-width: 600px) {
+  /* full-screen sheet on phones */
+  .dialog-content, .dialog-content.lg {
+    inset: auto 0 0 0; translate: none;
+    width: 100%; max-height: 100dvh;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    animation-name: sheet-in;
+  }
+  .dialog-footer { position: sticky; bottom: 0; background: inherit; padding-bottom: max(var(--space-4), env(safe-area-inset-bottom)); }
+  .dialog-footer > * { flex: 1; }
+}
+@keyframes sheet-in { from { transform: translateY(100%); } }
+
+/* ── Drawer (right side sheet) ────────────────────────────────────────── */
+.drawer-content {
+  position: fixed; z-index: calc(var(--z-dialog) + 1);
+  inset: 0 0 0 auto;
+  display: flex; flex-direction: column;
+  width: var(--drawer-w);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border-left: var(--border-w) solid var(--glass-border);
+  box-shadow: var(--shadow-2);
+  animation: drawer-in var(--dur-3) var(--ease-out);
+}
+.drawer-header {
+  position: sticky; top: 0;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: var(--border-w) solid var(--border);
+}
+.drawer-title { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
+.drawer-body { flex: 1; padding: var(--space-5); overflow-y: auto; }
+@keyframes drawer-in { from { transform: translateX(100%); } }
+
+/* ── Feedback ─────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-elevated) 0%, var(--bg-hover) 50%, var(--bg-elevated) 100%);
+  background-size: 200% 100%;
+  border-radius: var(--radius-sm);
+  animation: shimmer 1.4s linear infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+.error-msg { margin-top: var(--space-2); font-size: var(--text-sm); color: var(--danger); }
+
+/* ── Type utilities ───────────────────────────────────────────────────── */
+.mono { font-family: var(--font-mono); font-size: 0.85em; font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-3); }
+/* Dot-matrix numerals: hero metrics only (one per screen). */
+.dot-num {
+  font-family: var(--font-dot); font-weight: var(--weight-dot);
+  letter-spacing: var(--tracking-dot); line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}

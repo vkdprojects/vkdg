@@ -218,7 +218,7 @@ impl RegistryManifest {
 ///
 /// The name becomes a provider id in config and a directory under the plugins
 /// dir, so path separators and case variation are refused rather than sanitised.
-fn is_kebab_case(name: &str) -> bool {
+pub(crate) fn is_kebab_case(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
         && !name.ends_with('-')

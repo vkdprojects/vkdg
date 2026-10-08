@@ -2,34 +2,36 @@
 // All functions run server-side only (src/lib/server/).
 // VKDG_ADMIN_URL env var — defaults to http://127.0.0.1:9090.
 
+import type * as Api from '$lib/api.js';
+
 const BASE = process.env.VKDG_ADMIN_URL ?? 'http://127.0.0.1:9090';
 
-export interface SystemInfo {
-  version: string;
-  status: 'ok' | 'degraded';
-  config_revision: number;
-  uptime_secs: number;
-  connection_count: number;
-  active_requests: number;
-}
-
-export interface SessionUser {
-  user_id: string;
-  role: 'viewer' | 'operator' | 'admin';
-}
-
-export interface ConnectionSummary {
-  id: string;
-  provider: string;
-  /** `unknown` when the data plane is not running. */
-  status: 'healthy' | 'degraded' | 'circuit_open' | 'cooldown' | 'unknown';
-  model_count: number;
-  active_requests: number;
-  max_concurrent: number;
-  /** RFC 3339; set while cooling down or while the circuit is open. */
-  cooldown_until?: string;
-  failure_count?: number;
-}
+// Wire types live in `$lib/api.ts`; the BFF only re-exposes the subset it
+// reads, so a contract change is made once. `Omit` drops fields the BFF's
+// callers never populate.
+export type SessionUser = Api.SessionUser;
+export type KeyScope = Api.KeyScope;
+export type KeyLimits = Omit<Api.KeyLimits, 'no_log'>;
+export type KeyPatch = Omit<Api.KeyPatch, 'no_log'>;
+export type RouteSummary = Api.RouteSummary;
+export type RoutePreview = Api.RoutePreview;
+export type RequestDecision = Api.RequestDecision;
+export type RequestSummary = Pick<
+  Api.RequestSummary,
+  'request_id' | 'model' | 'api_type' | 'status' | 'connection_id' | 'started_at_ms' | 'duration_ms' | 'decision'
+>;
+export type SystemInfo = Omit<Api.SystemInfo, 'status'> & { status: 'ok' | 'degraded' };
+export type ConnectionSummary = Omit<Api.ConnectionSummary, 'models' | 'weight' | 'account_id'>;
+export type ClientKey = Omit<Api.ClientKey, 'no_log' | 'last_used_at' | 'revoked_at' | 'expires_at'> & {
+  last_used_at: string | null;
+  revoked_at: string | null;
+  expires_at: string | null;
+};
+export type CreatedKey = ClientKey & { key: string };
+export type ComboSummary = Pick<
+  Api.ComboSummary,
+  'id' | 'match_patterns' | 'targets' | 'has_compression' | 'has_cache' | 'has_budget'
+> & { strategy: string };
 
 export interface AdminError {
   code: string;
@@ -101,68 +103,6 @@ export async function getConnection(
   if (!res.ok) throw new Error(`connection fetch failed: ${res.status}`);
   return res.json() as Promise<ConnectionSummary>;
 }
-
-export type KeyScope = 'data_inference' | 'data_image';
-export interface ClientKey {
-  id: string;
-  name: string;
-  tenant_id: string;
-  prefix: string;
-  scopes: KeyScope[];
-  created_at: string;
-  last_used_at: string | null;
-  revoked_at: string | null;
-  expires_at: string | null;
-  allowed_models: string[];
-  allowed_ips: string[];
-  monthly_token_limit?: number | null;
-  requests_per_minute?: number | null;
-  /** Tokens and requests this calendar month (UTC). */
-  usage_this_month?: { input_tokens: number; output_tokens: number; requests: number } | null;
-  status: 'active' | 'disabled' | 'expired' | 'revoked';
-}
-/** Optional create-time limits; absent = unrestricted. */
-export interface KeyLimits {
-  expires_at?: string;
-  allowed_models?: string[];
-  allowed_ips?: string[];
-  monthly_token_limit?: number;
-  requests_per_minute?: number;
-}
-/** PATCH body: absent = unchanged; `null` clears expiry or a limit. */
-export interface KeyPatch {
-  name?: string;
-  scopes?: KeyScope[];
-  expires_at?: string | null;
-  allowed_models?: string[];
-  allowed_ips?: string[];
-  monthly_token_limit?: number | null;
-  requests_per_minute?: number | null;
-}
-/** Only the create and regenerate responses carry the raw `key`. */
-export interface CreatedKey extends ClientKey { key: string }
-export interface RouteSummary { id: string; match_models: string[]; strategy: string; targets: string[] }
-export interface RoutePreview {
-  model: string;
-  eligible_connections: string[];
-  excluded_connections: { id: string; reason: string }[];
-}
-export interface RequestDecision {
-  route_id: string | null;
-  attempt_count: number;
-  candidates_excluded: { id: string; reason: string }[];
-}
-export interface RequestSummary {
-  request_id: string;
-  model: string;
-  api_type: string;
-  status: string;
-  connection_id: string | null;
-  started_at_ms: number;
-  duration_ms: number | null;
-  decision?: RequestDecision | null;
-}
-export interface RequestList { items: RequestSummary[]; has_more: boolean; cursor: string | null }
 
 // Keys
 export async function listKeys(cookie: string): Promise<ClientKey[]> {
@@ -253,7 +193,7 @@ export async function listRequests(
     headers: adminHeaders(cookie),
   });
   if (!res.ok) throw new Error(`requests fetch failed: ${res.status}`);
-  const d = (await res.json()) as RequestList;
+  const d = (await res.json()) as { items: RequestSummary[] };
   return d.items;
 }
 
@@ -263,16 +203,6 @@ export async function getRequest(cookie: string, id: string): Promise<RequestSum
   });
   if (!res.ok) throw new Error(`request not found: ${res.status}`);
   return res.json() as Promise<RequestSummary>;
-}
-
-export interface ComboSummary {
-  id: string;
-  match_patterns: string[];
-  strategy: string;
-  targets: string[];
-  has_compression: boolean;
-  has_cache: boolean;
-  has_budget: boolean;
 }
 
 // Combos

@@ -1,15 +1,19 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
-  import { ExternalLink, PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
-  import { Dialog } from 'bits-ui';
+  import { ExternalLink, PlusIcon, ArrowLeftIcon } from 'lucide-svelte';
   import { api } from '$lib/api.js';
-  import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
+  import type { Account, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { formatDateTime, formatTime } from '$lib/format.js';
-  import { AccountCredits, Badge, Button, CopyButton, EmptyState, Select, Spinner, StatusDot } from '$lib/components/index.js';
+  import { formatTime } from '$lib/format.js';
+  import { deleteConnection, syncConnectionModels } from '$lib/connection-actions.js';
+  import { AddConnectionDialog, Button, ConfirmDeleteDialog, EmptyState, RefreshButton, Spinner, Stat, ProviderLogo } from '$lib/components/index.js';
+  import { poll } from '$lib/live.svelte.js';
+  import { isCooling } from '$lib/status.js';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
+  import AccountCard from './AccountCard.svelte';
+  import ConnectionRow from './ConnectionRow.svelte';
+  import CoolingPanel from './CoolingPanel.svelte';
   import { toast } from 'svelte-sonner';
 
   const id = $derived(decodeURIComponent($page.params['id'] ?? ''));
@@ -22,99 +26,7 @@
   let connectOpen = $state(false);
   let connectAccountId = $state<string | null>(null);
   let deleting = $state<string | null>(null);
-
-  // ── Connection test ──────────────────────────────────────────────────────────
-  let testing = $state<string | null>(null);
-  let testResults = $state<Record<string, ConnectionTestResult>>({});
-
-  async function testConn(connId: string) {
-    testing = connId;
-    try {
-      testResults[connId] = await api.testConnection(connId);
-    } catch (e) {
-      testResults[connId] = { latency_ms: 0, ok: false, error: (e as Error).message };
-    } finally {
-      testing = null;
-    }
-  }
-
-  // ── Connection YAML wizard ───────────────────────────────────────────────────
   let dialogOpen = $state(false);
-  let connProvider = $state('');
-  let connId = $state('');
-  let baseUrl = $state('');
-  let envVar = $state('');
-  let models = $state('');
-  let step = $state<'form' | 'yaml'>('form');
-
-  const providerOptions = [
-    { value: 'openai-compat', label: 'OpenAI-compatible (Ollama, vLLM, etc.)' },
-    { value: 'anthropic-compat', label: 'Anthropic-compatible' },
-    { value: 'anthropic',  label: 'Anthropic (Claude)' },
-    { value: 'openai',     label: 'OpenAI (GPT / o-series)' },
-    { value: 'groq',       label: 'Groq' },
-    { value: 'gemini',     label: 'Google Gemini' },
-    { value: 'deepseek',   label: 'DeepSeek' },
-    { value: 'mistral',    label: 'Mistral AI' },
-    { value: 'together',   label: 'Together AI' },
-    { value: 'fireworks',  label: 'Fireworks AI' },
-    { value: 'sambanova',  label: 'SambaNova (free tier)' },
-    { value: 'cerebras',   label: 'Cerebras (free tier)' },
-    { value: 'nvidia-nim', label: 'NVIDIA NIM' },
-    { value: 'kiro',       label: 'Kiro (Amazon Q)' },
-  ];
-
-  const defaultEnvVar: Record<string, string> = {
-    anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', groq: 'GROQ_API_KEY',
-    gemini: 'GEMINI_API_KEY', deepseek: 'DEEPSEEK_API_KEY', mistral: 'MISTRAL_API_KEY',
-    together: 'TOGETHER_API_KEY', fireworks: 'FIREWORKS_API_KEY', sambanova: 'SAMBANOVA_API_KEY',
-    cerebras: 'CEREBRAS_API_KEY', 'nvidia-nim': 'NVIDIA_API_KEY', kiro: 'KIRO_API_KEY',
-    'openai-compat': 'API_KEY',
-  };
-  const defaultModels: Record<string, string> = {
-    anthropic: 'claude-*', openai: 'gpt-*, o1-*, o3-*', groq: 'llama-*, mixtral-*',
-    gemini: 'gemini-*', deepseek: 'deepseek-*', mistral: 'mistral-*',
-    together: 'meta-llama/*', fireworks: 'accounts/*', sambanova: 'Meta-Llama-*',
-    cerebras: 'llama3.1-*', 'nvidia-nim': 'meta/llama-*',
-    kiro: 'claude-*, gpt-5.6-*, minimax-*, deepseek-*, glm-*, qwen3-*, auto',
-  };
-  const showBaseUrl = $derived(connProvider === 'openai-compat' || connProvider === 'anthropic-compat');
-
-  $effect(() => {
-    if (connProvider in defaultEnvVar) envVar = defaultEnvVar[connProvider];
-    if (connProvider in defaultModels) models = defaultModels[connProvider];
-    if (!connId) connId = `${connProvider}-default`;
-  });
-
-  const yamlSnippet = $derived(() => {
-    const modelList = (models || '*').split(',').map((s) => `"${s.trim()}"`).join(', ');
-    const lines = [
-      'connections:',
-      `  - id: ${connId || connProvider + '-default'}`,
-      `    provider: ${connProvider}`,
-      ...(showBaseUrl && baseUrl ? [`    base_url: ${baseUrl}`] : []),
-      '    auth:', '      type: api_key',
-      `      env_var: ${envVar || 'API_KEY'}`,
-      `    models: [${modelList}]`,
-      '    max_concurrent: 50', '    weight: 1',
-    ];
-    return lines.join('\n');
-  });
-
-  function openConnDialog() {
-    connProvider = id;
-    step = 'form';
-    connId = '';
-    baseUrl = '';
-    dialogOpen = true;
-  }
-
-  // ── Status labels ────────────────────────────────────────────────────────────
-  const statusLabels: Record<ConnectionStatus, () => string> = {
-    healthy: m.connection_status_healthy, degraded: m.connection_status_degraded,
-    circuit_open: m.connection_status_circuit_open, cooldown: m.connection_status_cooldown,
-    unknown: m.connection_status_unknown,
-  };
 
   // ── Data loading ─────────────────────────────────────────────────────────────
   async function load() {
@@ -136,18 +48,7 @@
     }
   }
 
-  onMount(() => {
-    let timer: ReturnType<typeof setInterval>;
-    const sync = () => {
-      clearInterval(timer);
-      if (document.visibilityState !== 'visible') return;
-      load();
-      timer = setInterval(load, 5000);
-    };
-    sync();
-    document.addEventListener('visibilitychange', sync);
-    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', sync); };
-  });
+  poll(load);
 
   function connect(accountId?: string) { connectAccountId = accountId ?? null; connectOpen = true; }
   function onConnected(_a: Account) { connectOpen = false; load(); }
@@ -158,16 +59,89 @@
     try { await api.deleteAccount(a.id); await load(); } finally { deleting = null; }
   }
 
-  function cooldownRemaining(iso: string): string {
-    const seconds = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 1000));
-    return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+  const coolingConnections = $derived(connections.filter(isCooling));
+
+  // ── Hero stats ───────────────────────────────────────────────────────────────
+  const healthyCount = $derived(connections.filter((c) => c.status === 'healthy').length);
+  const activeTotal = $derived(connections.reduce((s, c) => s + c.active_requests, 0));
+  const capacityTotal = $derived(connections.reduce((s, c) => s + c.max_concurrent, 0));
+  const categoryLabels: Record<OAuthProvider['category'], () => string> = {
+    llm_api: m.pd_category_llm_api, oauth_ide: m.pd_category_oauth_ide, compatible: m.pd_category_compatible,
+  };
+
+  // ── Connection health filter ─────────────────────────────────────────────────
+  type Health = 'all' | 'healthy' | 'issues';
+  let health = $state<Health>('all');
+  const issueCount = $derived(connections.filter((c) => c.status !== 'healthy').length);
+  const visibleConnections = $derived(
+    health === 'all' ? connections : connections.filter((c) => (health === 'healthy') === (c.status === 'healthy')),
+  );
+
+  // ── Cooldown reset (optimistic, rolls back on error) ─────────────────────────
+  let resetting = $state<Record<string, boolean>>({});
+
+  async function resetCooldown(conn: ConnectionSummary) {
+    const original = $state.snapshot(conn) as ConnectionSummary;
+    const optimistic: ConnectionSummary = { ...original, status: 'healthy', cooldown_until: undefined, failure_count: undefined };
+    resetting[conn.id] = true;
+    connections = connections.map((c) => (c.id === conn.id ? optimistic : c));
+    try {
+      await api.resetConnectionCooldown(conn.id);
+      toast.success(m.connection_cooldown_reset({ id: conn.id }));
+      await load();
+    } catch (e) {
+      // Roll back only this row so a poll that landed meanwhile is not clobbered.
+      connections = connections.map((c) => (c.id === conn.id ? original : c));
+      toast.error((e as Error).message);
+    } finally {
+      delete resetting[conn.id];
+    }
   }
 
-  function connectionsForAccount(account: Account): ConnectionSummary[] {
-    return connections.filter((c) => c.account_id === account.id);
+  // ── Test: spinner → inline latency result for 4s ─────────────────────────────
+  let testing = $state<Record<string, boolean>>({});
+  let testResults = $state<Record<string, ConnectionTestResult>>({});
+  const testTimers = new Map<string, number>();
+
+  async function testConn(conn: ConnectionSummary) {
+    testing[conn.id] = true;
+    let result: ConnectionTestResult;
+    try {
+      result = await api.testConnection(conn.id);
+    } catch (e) {
+      result = { latency_ms: 0, ok: false, error: (e as Error).message };
+    }
+    delete testing[conn.id];
+    testResults[conn.id] = result;
+    window.clearTimeout(testTimers.get(conn.id));
+    testTimers.set(conn.id, window.setTimeout(() => { delete testResults[conn.id]; testTimers.delete(conn.id); }, 4000));
   }
 
-  const unassignedConnections = $derived(connections.filter((c) => !c.account_id));
+  $effect(() => () => { for (const t of testTimers.values()) window.clearTimeout(t); });
+
+  // ── Sync models ──────────────────────────────────────────────────────────────
+  let syncing = $state<Record<string, boolean>>({});
+
+  async function syncModels(conn: ConnectionSummary) {
+    syncing[conn.id] = true;
+    const ok = await syncConnectionModels(conn.id);
+    delete syncing[conn.id];
+    if (ok) await load();
+  }
+
+  // ── Delete connection ────────────────────────────────────────────────────────
+  let pendingDelete = $state<ConnectionSummary | null>(null);
+  let deletingConn = $state(false);
+
+  async function confirmDeleteConn() {
+    if (!pendingDelete) return;
+    deletingConn = true;
+    const ok = await deleteConnection(pendingDelete.id);
+    deletingConn = false;
+    if (!ok) return;
+    pendingDelete = null;
+    await load();
+  }
 
   /** Same upstream user resolved under more than one local account: a real, flaggable conflict. */
   const duplicateUserRefs = $derived.by(() => {
@@ -180,60 +154,125 @@
     }
     return new Set([...seen.values()].filter((ids) => ids.length > 1).flat());
   });
-
-
 </script>
 
 <div class="page">
   {#if loading}
     <div class="loading"><Spinner size="sm" /> {m.common_loading()}</div>
   {:else if provider}
-    <!-- Header -->
-    <div class="header">
-      <a class="back" href="/providers">← {m.providers_title()}</a>
-      <div class="provider-head">
-        <span class="icon" style:background={provider.icon_color}>{provider.icon_char}</span>
-        <div>
+    <a class="back" href="/providers"><ArrowLeftIcon size={14} aria-hidden="true" /> {m.pd_back()}</a>
+
+    <!-- Hero: the page's one bold moment -->
+    <header class="hero glass">
+      <div class="hero-id">
+        <ProviderLogo id={provider.id} name={provider.display_name} fallbackChar={provider.icon_char} fallbackColor={provider.icon_color} size="lg" />
+        <div class="hero-text">
           <div class="name-row">
             <h1 class="page-title">{provider.display_name}</h1>
             {#if provider.site_url}
-              <a class="site-link" href={provider.site_url} target="_blank" rel="noopener noreferrer">
+              <a class="site-link" href={provider.site_url} target="_blank" rel="noopener noreferrer" aria-label={m.providers_open_site({ name: provider.display_name })}>
                 <ExternalLink size={14} aria-hidden="true" />
               </a>
             {/if}
           </div>
+          <span class="chip">{(categoryLabels[provider.category] ?? m.pd_category_compatible)()}</span>
           {#if provider.description}<p class="desc">{provider.description}</p>{/if}
         </div>
       </div>
+      <div class="hero-stats">
+        <Stat
+          label={m.pd_stat_connections()}
+          value={healthyCount}
+          unit={`/ ${connections.length}`}
+          tone={connections.length === 0 ? 'default' : healthyCount === connections.length ? 'success' : 'warning'}
+        />
+        <Stat label={m.pd_stat_in_flight()} value={activeTotal} unit={`/ ${capacityTotal}`} />
+        <Stat label={m.pd_stat_accounts()} value={accounts.length} />
+      </div>
+    </header>
+
+    <!-- Cooling panel: only while something is cooling down -->
+    {#if coolingConnections.length > 0}
+      <CoolingPanel connections={coolingConnections} {resetting} onReset={resetCooldown} />
+    {/if}
+
+    <!-- Accounts -->
+    <div class="section-header">
+      <div>
+        <h2 class="section-title">{m.provider_detail_accounts()}</h2>
+        {#if updatedAt}<p class="refresh-note" aria-live="polite">{m.connection_auto_refresh()} {m.common_updated_at({ time: formatTime(updatedAt) })}</p>{/if}
+      </div>
+      <div class="page-actions">
+        <RefreshButton busy={refreshing} onRefresh={load} />
+        {#if provider.category === 'oauth_ide'}<Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>{/if}
+        <Button size="sm" onclick={() => (dialogOpen = true)}><PlusIcon size={14} aria-hidden="true" /> {m.connection_add()}</Button>
+      </div>
     </div>
 
-    <div class="section-header">
-      <div><h2 class="section-title">{m.provider_detail_accounts()}</h2>{#if updatedAt}<p class="refresh-note">{m.connection_auto_refresh()} {m.common_updated_at({ time: formatTime(updatedAt) })}</p>{/if}</div>
-      <div class="header-actions"><Button variant="outline" size="sm" onclick={load} disabled={refreshing} ariaLabel={m.common_refresh()}><RefreshCwIcon size={14} /> {m.common_refresh()}</Button>{#if provider.category === 'oauth_ide'}<Button size="sm" onclick={() => connect()}>{m.provider_detail_connect()}</Button>{/if}<Button size="sm" onclick={openConnDialog}><PlusIcon size={14} /> {m.connection_add()}</Button></div>
-    </div>
     {#if accounts.length === 0 && provider.category === 'oauth_ide'}
       <EmptyState title={m.provider_detail_no_accounts()} description={m.providers_connect_first()} />
-    {:else}
+    {:else if accounts.length > 0}
       <div class="accounts-stack">
         {#each accounts as a (a.id)}
-          <article class="account-panel">
-            <header class="account-head"><div><span class="eyebrow">{m.provider_account()}</span><h3>{a.label}</h3><span class="mono account-id">{a.id}</span>{#if a.credits_user_ref && duplicateUserRefs.has(a.id)}<div class="dup-warning"><Badge status="degraded" label={m.account_duplicate_user()} /> <span>{m.account_duplicate_user_desc()}</span></div>{/if}</div><div class="account-actions"><Badge status={a.status === 'active' ? 'healthy' : 'degraded'} label={a.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()} /><Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm" onclick={() => connect(a.id)}>{m.acct_reauth()}</Button><Button variant="danger" size="sm" disabled={deleting === a.id} onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button></div></header>
-            <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDateTime(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
-            <AccountCredits account={a} />
-            <div class="connections-block"><h4>{m.account_connections()}</h4>
-              {#if connectionsForAccount(a).length === 0}<p class="muted-note">{m.account_connections_unassigned()}</p>{:else}
-                <div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th><th><span class="sr-only">{m.connection_test()}</span></th></tr></thead><tbody>{#each connectionsForAccount(a) as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td><td class="test-cell">{#if testResults[conn.id]}<span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}>{testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗'}</span>{/if}<Button size="sm" variant="outline" disabled={testing === conn.id} onclick={() => testConn(conn.id)}>{#if testing === conn.id}<Spinner size="sm" />{:else}{m.connection_test()}{/if}</Button></td></tr>{/each}</tbody></table></div>
-              {/if}
-            </div>
-          </article>
+          <AccountCard
+            account={a}
+            connections={connections.filter((c) => c.account_id === a.id)}
+            duplicateUser={duplicateUserRefs.has(a.id)}
+            deleting={deleting === a.id}
+            onConnect={connect}
+            onDelete={deleteAccount}
+            onChanged={load}
+          />
         {/each}
       </div>
     {/if}
-    {#if unassignedConnections.length > 0}
-      <section class="unassigned"><div class="section-header"><div><h2 class="section-title">{m.unassigned_connections()}</h2><p class="refresh-note">{m.unassigned_connections_desc()}</p></div></div><div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th></tr></thead><tbody>{#each unassignedConnections as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td></tr>{/each}</tbody></table></div></section>
-    {/if}
+
+    <!-- Connections -->
+    <section class="connections" aria-labelledby="pd-connections-title">
+      <div class="section-header">
+        <h2 class="section-title" id="pd-connections-title">{m.pd_connections_title()}</h2>
+        {#if connections.length > 0}
+          <div class="segmented" role="group" aria-label={m.pd_filter_label()}>
+            <button type="button" aria-pressed={health === 'all'} onclick={() => (health = 'all')}>{m.pd_filter_all()} <span class="count mono">{connections.length}</span></button>
+            <button type="button" aria-pressed={health === 'healthy'} onclick={() => (health = 'healthy')}>{m.pd_filter_healthy()} <span class="count mono">{healthyCount}</span></button>
+            <button type="button" aria-pressed={health === 'issues'} onclick={() => (health = 'issues')}>{m.pd_filter_issues()} <span class="count mono">{issueCount}</span></button>
+          </div>
+        {/if}
+      </div>
+
+      {#if connections.length === 0}
+        <EmptyState title={m.connection_empty()} description={m.connection_empty_desc()} />
+      {:else if visibleConnections.length === 0}
+        <EmptyState title={m.pd_filter_empty()} />
+      {:else}
+        <ul class="conn-list">
+          {#each visibleConnections as c (c.id)}
+            <ConnectionRow
+              connection={c}
+              account={accounts.find((a) => a.id === c.account_id)}
+              testing={!!testing[c.id]}
+              syncing={!!syncing[c.id]}
+              testResult={testResults[c.id]}
+              onTest={testConn}
+              onSync={syncModels}
+              onDelete={(conn) => (pendingDelete = conn)}
+            />
+          {/each}
+        </ul>
+      {/if}
+    </section>
   {/if}
 </div>
+
+<ConfirmDeleteDialog
+  open={pendingDelete !== null}
+  onClose={() => (pendingDelete = null)}
+  title={m.connection_delete_title()}
+  description={m.connection_delete_confirm({ id: pendingDelete?.id ?? '' })}
+  confirmLabel={m.connection_delete()}
+  busy={deletingConn}
+  onConfirm={confirmDeleteConn}
+/>
 
 <!-- Connect account modal -->
 {#if provider}
@@ -245,127 +284,52 @@
   />
 {/if}
 
-<!-- Add connection wizard -->
-<Dialog.Root bind:open={dialogOpen} onOpenChange={(v) => { if (!v) step = 'form'; }}>
-  <Dialog.Portal>
-    <Dialog.Overlay class="dialog-overlay" />
-    <Dialog.Content class="dialog-content" aria-describedby={undefined}>
-      <div class="dialog-header">
-        <Dialog.Title class="dialog-title">{step === 'form' ? m.connection_add() : 'Add to your config'}</Dialog.Title>
-        <button class="dialog-close" aria-label={m.common_cancel()} onclick={() => (dialogOpen = false)}>
-          <XIcon size={16} aria-hidden="true" />
-        </button>
-      </div>
-
-      {#if step === 'form'}
-        <form onsubmit={(e) => { e.preventDefault(); step = 'yaml'; }}>
-          <div class="form-fields">
-            <Select label={m.connection_provider()} options={providerOptions} bind:value={connProvider} />
-            <div class="field">
-              <label for="conn-id">Connection ID</label>
-              <input id="conn-id" type="text" bind:value={connId} placeholder="{connProvider}-default" required />
-            </div>
-            {#if showBaseUrl}
-              <div class="field">
-                <label for="conn-base-url">Base URL</label>
-                <input id="conn-base-url" type="text" bind:value={baseUrl} placeholder="http://localhost:11434" />
-              </div>
-            {/if}
-            <div class="field">
-              <label for="conn-env">API key env var</label>
-              <input id="conn-env" type="text" bind:value={envVar} placeholder="MY_API_KEY" />
-              <span class="field-hint">The key stays in your environment, not in the config.</span>
-            </div>
-            <div class="field">
-              <label for="conn-models">Models (comma-separated globs)</label>
-              <input id="conn-models" type="text" bind:value={models} placeholder="claude-*, gpt-4*" />
-            </div>
-          </div>
-          <div class="dialog-footer">
-            <Button variant="outline" type="button" onclick={() => (dialogOpen = false)}>{m.common_cancel()}</Button>
-            <Button variant="primary" type="submit">Generate config snippet →</Button>
-          </div>
-        </form>
-      {:else}
-        <div class="yaml-step">
-          <p class="yaml-note">Copy this into your <code>vkdg.yaml</code>. Hot-reload picks it up automatically.</p>
-          <div class="yaml-block">
-            <pre class="yaml-code">{yamlSnippet()}</pre>
-            <CopyButton text={yamlSnippet()} />
-          </div>
-          <p class="yaml-env-note">
-            Set the env var: <code>export {envVar || 'API_KEY'}=your-key-here</code>
-          </p>
-        </div>
-        <div class="dialog-footer">
-          <Button variant="outline" onclick={() => (step = 'form')}>← Back</Button>
-          <Button variant="primary" onclick={() => (dialogOpen = false)}>Done</Button>
-        </div>
-      {/if}
-    </Dialog.Content>
-  </Dialog.Portal>
-</Dialog.Root>
+<AddConnectionDialog bind:open={dialogOpen} initialProvider={id} />
 
 <style>
-  .loading { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 0.875rem; padding: 16px 0; }
-  .back { color: var(--text-3); font-size: 0.875rem; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; margin-bottom: 1rem; }
-  .back:hover { color: var(--accent); }
-  .header { margin-bottom: 2rem; }
-  .provider-head { display: flex; align-items: flex-start; gap: 16px; margin-top: 0.75rem; }
-  .icon { align-items: center; border-radius: 12px; color: #fff; display: flex; flex-shrink: 0; font-size: 1.5rem; font-weight: 700; height: 56px; justify-content: center; width: 56px; }
-  .name-row { display: flex; align-items: center; gap: 8px; }
-  .page-title { margin: 0; }
-  .site-link { color: var(--text-3); display: flex; }
-  .site-link:hover { color: var(--accent); }
-  .desc { color: var(--text-3); font-size: 0.875rem; margin: 4px 0 0; }
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
-  .header-actions { display: flex; gap: 8px; }
-  .section-title { font-size: 1rem; font-weight: 600; color: var(--text-1); margin: 0; }
-  .refresh-note { color: var(--text-3); font-size: 0.75rem; margin: 0 0 0.75rem; }
-  .muted-note { color: var(--text-3); font-size: 0.875rem; }
-  .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; }
-  .status-cell { display: flex; align-items: center; gap: 6px; }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .accounts-stack { display: grid; gap: 16px; }
-  .account-panel { border: 1px solid var(--border); background: var(--bg-surface); }
-  .account-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
-  .account-head h3 { margin: 2px 0; font-size: var(--text-md); }
-  .eyebrow { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .07em; }
-  .account-id { color: var(--text-3); font-size: var(--text-2xs); }
-  .account-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-  .account-facts { display: grid; grid-template-columns: repeat(3, 1fr); margin: 0; border-bottom: 1px solid var(--border); }
-  .account-facts div { padding: 11px 16px; border-right: 1px solid var(--border); }
-  .account-facts div:last-child { border: 0; }
-  .account-facts dt { color: var(--text-3); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .05em; }
-  .account-facts dd { margin: 4px 0 0; color: var(--text-1); font-size: var(--text-sm); }
+  .loading { display: flex; align-items: center; gap: var(--space-2); color: var(--text-3); font-size: var(--text-sm); padding: var(--space-5) 0; }
+  .back {
+    color: var(--text-3); font-size: var(--text-sm); text-decoration: none;
+    display: inline-flex; align-items: center; gap: var(--space-1); min-height: var(--control-h-sm);
+    margin-bottom: var(--space-3); transition: color var(--dur-1) var(--ease-out), gap var(--dur-2) var(--ease-out);
+  }
+  .back:hover { color: var(--accent); gap: var(--space-2); }
 
-  .dup-warning { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--text-xs); color: var(--warning); }
-  .connections-block h4 { margin: 0; padding: 10px 16px; color: var(--text-2); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .06em; }
-  .connections-block .muted-note { padding: 0 16px 14px; }
-  .table-wrap { overflow-x: auto; }
-  .unassigned { margin-top: 24px; border: 1px solid var(--border); background: var(--bg-surface); }
-  .unassigned .section-header { padding: 12px 15px 0; }
-  @media (max-width: 700px) { .account-head { flex-direction: column; } .account-actions { justify-content: flex-start; } .account-facts { grid-template-columns: 1fr; } .account-facts div { border-right: 0; border-bottom: 1px solid var(--border); } .header-actions { flex-wrap: wrap; justify-content: flex-end; } }
-  :global(.dialog-overlay) { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 50; }
-  :global(.dialog-content) { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 51; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius); width: min(480px,calc(100vw - 32px)); box-shadow: 0 8px 32px rgba(0,0,0,.25); }
-  :global(.dialog-title) { font-size: 1rem; font-weight: 600; color: var(--text-1); margin: 0; }
-  :global(.dialog-close) { display: flex; background: transparent; border: none; color: var(--text-3); cursor: pointer; padding: 4px; border-radius: var(--radius-sm); }
-  :global(.dialog-header) { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 0; }
-  :global(.dialog-footer) { display: flex; justify-content: flex-end; gap: 8px; padding: 0 20px 20px; }
-  .form-fields { display: flex; flex-direction: column; gap: 14px; padding: 16px 20px; }
-  .field { display: flex; flex-direction: column; gap: 5px; }
-  .field label { font-size: 0.8125rem; font-weight: 500; color: var(--text-2); }
-  .field input { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-1); font-size: 0.875rem; padding: 0.4375rem 0.625rem; }
-  .field input:focus { border-color: var(--accent); outline: none; }
-  .field-hint { font-size: 0.75rem; color: var(--text-3); }
-  .yaml-step { display: flex; flex-direction: column; gap: 12px; padding: 16px 20px; }
-  .yaml-note { font-size: 0.875rem; color: var(--text-2); margin: 0; }
-  .yaml-block { position: relative; background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
-  .yaml-code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; line-height: 1.5; margin: 0; white-space: pre; overflow-x: auto; }
-  .yaml-env-note { font-size: 0.8125rem; color: var(--text-3); margin: 0; }
-  .yaml-env-note code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
-  .test-cell { text-align: right; white-space: nowrap; display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
-  .test-badge { border-radius: 9999px; font-size: 0.75rem; font-weight: 500; padding: 2px 8px; }
-  .test-badge.ok { background: color-mix(in oklch, var(--success) 15%, transparent); color: var(--success); }
-  .test-badge.err { background: color-mix(in oklch, var(--danger) 15%, transparent); color: var(--danger); }
+  /* ── Hero: the page's one bold moment ── */
+  .hero {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: var(--space-5) var(--space-6);
+    padding: var(--space-5);
+    margin-bottom: var(--space-5);
+    min-width: 0;
+  }
+  .hero-id { display: flex; align-items: center; gap: var(--space-4); min-width: 0; flex: 1 1 var(--col-lg); }
+  .hero-text { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); min-width: 0; }
+  .name-row { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; min-width: 0; }
+  .page-title { margin: 0; overflow-wrap: anywhere; }
+  .site-link { color: var(--text-3); display: inline-flex; align-items: center; justify-content: center; min-width: var(--control-h-sm); min-height: var(--control-h-sm); border-radius: var(--radius-sm); }
+  .site-link:hover { color: var(--accent); background: var(--bg-hover); }
+  .desc { color: var(--text-2); font-size: var(--text-sm); margin: var(--space-1) 0 0; max-width: var(--measure); }
+  .hero-stats {
+    display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-6);
+    flex: 0 1 auto; min-width: 0;
+  }
+
+  .section-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
+  .section-title { font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--text-1); margin: 0; }
+  .refresh-note { color: var(--text-3); font-size: var(--text-xs); margin: var(--space-0) 0 0; }
+
+  .accounts-stack { display: grid; gap: var(--space-4); margin-bottom: var(--space-6); }
+
+  .connections { margin-bottom: var(--space-6); }
+  .segmented .count { margin-left: var(--space-1); color: var(--text-3); font-size: var(--text-2xs); }
+  .segmented > button[aria-pressed="true"] .count { color: var(--accent); }
+  .conn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); }
+
+  @media (max-width: 480px) {
+    .hero { padding: var(--space-4); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .back { transition: none; }
+  }
 </style>

@@ -16,34 +16,63 @@ pub async fn run_conversation_pipeline(
 ) -> Response {
     let outcome = run_pipeline_inner(&pipeline, &mut ctx, operation.clone(), &[]).await;
 
-    // Transparent 429 fallback: if the upstream rate-limits us and we have not
-    // yet committed any bytes to the client, retry with the failed connection
-    // excluded so the router picks a different candidate.
-    let (ctx, outcome, final_attempt) =
-        if let Err(VkdgError::UpstreamError { code: 429, .. }) = &outcome {
-            if ctx.can_retry() {
-                // Emit DecisionRecord for the failed first attempt before retrying.
-                let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
-                emit_decision_record(&pipeline, &ctx, &outcome, 1);
+    // Transparent fallback: if the upstream rate-limits us, reports the account
+    // out of credits or overloaded (`fails_over`), and we have not yet committed
+    // any bytes to the client, retry with the failed connection excluded so the
+    // router picks a different candidate. One retry, as before.
+    let (ctx, outcome, final_attempt) = match &outcome {
+        Err(VkdgError::UpstreamError { code, .. })
+            if super::helpers::fails_over(*code)
+                && ctx.can_retry()
+                && ctx.pinned_connection.is_none() =>
+        {
+            let excluded: Vec<ConnectionId> = ctx.connection_id.clone().into_iter().collect();
 
-                let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
-                let outcome2 =
-                    run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
-                (ctx2, outcome2, 2u32)
-            } else {
+            let mut ctx2 = PipelineCtx::new(ctx.envelope.clone());
+            let outcome2 =
+                run_pipeline_inner(&pipeline, &mut ctx2, operation.clone(), &excluded).await;
+            if matches!(
+                outcome2,
+                Err(VkdgError::NoEligibleConnection | VkdgError::NoRouteMatched)
+            ) {
+                // No sibling to fall back to (the 429 just cooled the only
+                // candidate): the client needs the upstream's 429 and its
+                // `retry-after`, not a gateway 502 that hides why.
                 (ctx, outcome, 1u32)
+            } else {
+                emit_decision_record(&pipeline, &ctx, &outcome, 1);
+                (ctx2, outcome2, 2u32)
             }
-        } else {
-            (ctx, outcome, 1u32)
-        };
+        }
+        _ => (ctx, outcome, 1u32),
+    };
+
+    // Every candidate is cooling down after upstream rate limits: that is a rate
+    // limit for the client, with a time to wait, not a gateway outage.
+    let outcome = match outcome {
+        Err(VkdgError::NoEligibleConnection) => match pipeline
+            .catalog
+            .secs_until_cooldown_ends(&ctx.envelope.model_requested)
+        {
+            Some(secs) => Err(VkdgError::UpstreamError {
+                code: 429,
+                message:
+                    "every connection for this model is cooling down after an upstream rate limit"
+                        .into(),
+                retry_after: Some(secs),
+            }),
+            None => Err(VkdgError::NoEligibleConnection),
+        },
+        other => other,
+    };
 
     // Emit DecisionRecord for the final attempt (1 on first-try success/failure, 2 after retry).
     emit_decision_record(&pipeline, &ctx, &outcome, final_attempt);
 
-    let pending = pending_log(&pipeline, &ctx, outcome.is_ok(), final_attempt);
+    let pending = pending_log(&pipeline, &ctx, &outcome, final_attempt, &operation);
     let mut response = match outcome {
         Ok(resp) => resp,
-        Err(e) => error_response(e),
+        Err(e) => error_response(&ctx.envelope.api_type, &e),
     };
     if let Some(pending) = pending {
         response.extensions_mut().insert(pending);
@@ -51,7 +80,7 @@ pub async fn run_conversation_pipeline(
     response
 }
 
-/// Emit a DecisionRecord to the pipeline exporter.
+/// Emit a `DecisionRecord` to the pipeline exporter.
 pub(super) fn emit_decision_record(
     pipeline: &PipelineState,
     ctx: &PipelineCtx,
@@ -63,7 +92,8 @@ pub(super) fn emit_decision_record(
         Err(e) => AttemptResult::Failed {
             code: format!("{e}"),
             phase: format!("{:?}", ctx.state),
-            retryable: !ctx.committed,
+            retryable: !ctx.committed
+                && !matches!(e, VkdgError::UpstreamError { code, .. } if matches!(code, 401 | 403)),
             committed: ctx.committed,
         },
     };
@@ -98,8 +128,9 @@ pub struct PendingLog {
 fn pending_log(
     pipeline: &PipelineState,
     ctx: &PipelineCtx,
-    ok: bool,
+    outcome: &Result<Response, VkdgError>,
     attempt: u32,
+    operation: &Operation,
 ) -> Option<PendingLog> {
     use vkdg_admin::handlers::requests::{
         DecisionInfo, ExcludedInfo, RequestRecord, STATUS_PENDING,
@@ -107,14 +138,14 @@ fn pending_log(
     use vkdg_core::ApiType;
 
     let log = pipeline.request_log.as_ref()?;
+    let ok = outcome.is_ok();
     // A successful response is only headers so far; the body decides the rest.
     let status = if ok { STATUS_PENDING } else { "failed" }.to_string();
     // Derive started_at_ms from the first state transition (Received timestamp).
-    let started_at_ms = ctx
-        .transitions
-        .first()
-        .map(|(_, t)| t.timestamp_millis())
-        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    let started_at_ms = ctx.transitions.first().map_or_else(
+        || chrono::Utc::now().timestamp_millis(),
+        |(_, t)| t.timestamp_millis(),
+    );
     let duration_ms = chrono::Utc::now().timestamp_millis() - started_at_ms;
     let api_type = match &ctx.envelope.api_type {
         ApiType::AnthropicMessages => "anthropic",
@@ -124,6 +155,20 @@ fn pending_log(
         ApiType::VkdgNative => "vkdg",
     }
     .to_string();
+
+    let (thinking_requested, message_count) = match operation {
+        Operation::Conversation(req) => (
+            Some(req.thinking.is_some()),
+            Some(u32::try_from(req.messages.len()).unwrap_or(u32::MAX)),
+        ),
+        _ => (None, None),
+    };
+    let error_message = if ok {
+        None
+    } else {
+        outcome.as_ref().err().map(|e| e.to_string())
+    };
+
     Some(PendingLog {
         price: if ok { ctx.price.clone() } else { None },
         log: Arc::clone(log),
@@ -151,6 +196,19 @@ fn pending_log(
             input_tokens: None,
             output_tokens: None,
             cost_microdollars: None,
+            stop_reason: None,
+            error_message,
+            thinking_requested,
+            message_count,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            context_usage_pct: None,
+            state_transitions: Some(
+                ctx.transitions
+                    .iter()
+                    .map(|(s, t)| (format!("{s:?}"), t.timestamp_millis()))
+                    .collect(),
+            ),
         },
     })
 }

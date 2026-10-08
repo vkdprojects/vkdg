@@ -8,6 +8,10 @@
     required?: boolean;
     disabled?: boolean;
     error?: string;
+    /** Helper text under the field, linked to it with aria-describedby. */
+    hint?: string;
+    /** Number inputs only. */
+    min?: number;
     autocomplete?: HTMLInputElement['autocomplete'];
   }
 
@@ -20,11 +24,15 @@
     required = false,
     disabled = false,
     error,
+    hint,
+    min,
     autocomplete,
   }: Props = $props();
 
   const inputId = $derived(id ?? `input-${Math.random().toString(36).slice(2)}`);
   const errorId = $derived(`${inputId}-error`);
+  const hintId = $derived(`${inputId}-hint`);
+  const describedBy = $derived(error ? errorId : hint ? hintId : undefined);
 </script>
 
 <div class="field">
@@ -39,64 +47,35 @@
     {required}
     {disabled}
     {autocomplete}
+    {min}
     aria-invalid={error ? 'true' : undefined}
-    aria-describedby={error ? errorId : undefined}
+    aria-describedby={describedBy}
     class:has-error={!!error}
   />
   {#if error}
-    <p id={errorId} class="error" role="alert">{error}</p>
+    <p id={errorId} class="error-msg" role="alert">{error}</p>
+  {:else if hint}
+    <p id={hintId} class="field-hint">{hint}</p>
   {/if}
 </div>
 
 <style>
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
+  .field { min-width: 0; }
 
-  label {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--text-2);
-  }
+  /* Base label is a column flexbox; keep the required marker inline with the text. */
+  label { display: block; }
 
-  .req {
-    color: var(--danger);
-  }
+  .req { color: var(--danger); }
 
-  input {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-1);
-    font-size: 0.875rem;
-    padding: 0.4375rem 0.625rem;
-    transition: border-color 0.15s;
-    width: 100%;
-  }
-
-  input:focus {
-    border-color: var(--accent);
-    outline: none;
-  }
-
-  input::placeholder {
-    color: var(--text-3);
-  }
-
-  input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  input.has-error {
+  input.has-error,
+  input.has-error:hover:not(:focus) {
     border-color: var(--danger);
   }
 
-  .error {
-    font-size: 0.75rem;
-    color: var(--danger);
-    margin: 0;
+  input.has-error:focus {
+    box-shadow: 0 0 0 var(--focus-w) var(--danger-subtle);
   }
+
+  .error-msg { margin: 0; }
+  .field-hint { margin: 0; }
 </style>

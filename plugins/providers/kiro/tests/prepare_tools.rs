@@ -7,7 +7,7 @@
 //! The wire shape is taken from AWS's Smithy model
 //! (`amzn-codewhisperer-streaming-client`: `UserInputMessageContext.tools`,
 //! `ToolSpecification`, `ToolResult`, `AssistantResponseMessage.toolUses`) and
-//! agrees with OmniRoute, Kiro-Go and jwadow/kiro-gateway. The rejection rules
+//! agrees with `OmniRoute`, Kiro-Go and jwadow/kiro-gateway. The rejection rules
 //! (description length, name length, schema keywords, orphan results) come from
 //! those gateways' production fixes, each of which records the upstream 400.
 
@@ -41,10 +41,8 @@ fn connection() -> ConnectionConfig {
 }
 
 fn credential() -> Credential {
-    let extra: HashMap<String, String> = [("auth_method", "social")]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect();
+    let extra: HashMap<String, String> =
+        HashMap::from([("auth_method".to_owned(), "social".to_owned())]);
     Credential {
         token: "tok".into(),
         extra: Arc::new(extra),
@@ -60,6 +58,7 @@ fn weather_tool() -> Tool {
             "properties": { "city": { "type": "string" } },
             "required": ["city"]
         }),
+        cache_control: None,
     }
 }
 
@@ -81,6 +80,7 @@ fn request(messages: Vec<Message>, tools: Vec<Tool>) -> Operation {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
+        ..Default::default()
     })
 }
 
@@ -144,6 +144,7 @@ fn schema_keywords_kiro_rejects_are_stripped_at_every_depth() {
             },
             "$defs": { "x": { "type": "string" } }
         }),
+        cache_control: None,
     };
     let b = body(&request(vec![text(Role::User, "go")], vec![tool]));
     let schema = current_tools(&b)[0]["toolSpecification"]["inputSchema"]["json"].clone();
@@ -172,11 +173,13 @@ fn descriptions_are_never_empty_and_long_ones_are_relocated_not_cut() {
             name: "bare".into(),
             description: None,
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         },
         Tool {
             name: "verbose".into(),
             description: Some(long_doc.clone()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         },
     ];
     let b = body(&request(vec![text(Role::User, "hi")], tools));
@@ -211,6 +214,7 @@ fn over_long_tool_names_are_shortened_uniquely() {
             name,
             description: Some("d".into()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         })
         .collect();
     let b = body(&request(vec![text(Role::User, "hi")], tools));
@@ -237,6 +241,7 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -244,6 +249,9 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C and sunny".into(),
+                images: vec![],
+                is_error: false,
+                cache_control: None,
             }]),
         },
     ];
@@ -286,6 +294,7 @@ fn a_result_only_turn_still_carries_the_tools() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -293,6 +302,9 @@ fn a_result_only_turn_still_carries_the_tools() {
             content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
                 tool_use_id: "tu_1".into(),
                 content: "18C".into(),
+                images: vec![],
+                is_error: false,
+                cache_control: None,
             }]),
         },
     ];
@@ -310,6 +322,9 @@ fn orphan_tool_results_become_text_instead_of_a_rejected_request() {
         content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
             tool_use_id: "tu_gone".into(),
             content: "stale output".into(),
+            images: vec![],
+            is_error: false,
+            cache_control: None,
         }]),
     }];
     let b = body(&request(messages, vec![weather_tool()]));
@@ -339,4 +354,277 @@ fn no_tools_means_no_tool_context() {
         tools.is_none(),
         "no tools key must be sent when the client declared none: {b}"
     );
+}
+
+/// Refutes: sending enormous tool results in history turns, which wastes tokens
+/// and defeats the upstream prompt cache on every subsequent turn.
+/// A result exceeding 2 000 chars in a history turn must be truncated with a
+/// suffix that records the original length; results already within the limit
+/// must pass through verbatim.
+#[test]
+fn history_tool_results_over_2000_chars_are_truncated() {
+    // Build a 5-message conversation so the tool result lands in history, not
+    // in current_turn.  Layout: user → assistant(tool_use) → user(tool_result)
+    // → assistant(text) → user(text).  The last user turn becomes current_turn;
+    // everything before it is history.
+    let long_content = "x".repeat(5_000);
+    let messages = vec![
+        text(Role::User, "Weather in Paris?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_1".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({ "city": "Paris" }),
+                cache_control: None,
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: long_content,
+                images: vec![],
+                is_error: false,
+                cache_control: None,
+            }]),
+        },
+        text(Role::Assistant, "The weather is fine."),
+        text(Role::User, "Thanks"),
+    ];
+    let b = body(&request(messages, vec![weather_tool()]));
+
+    // Find the history user turn that carried tool results.
+    let history = b["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let history_results = history
+        .iter()
+        .find_map(|h| h["userInputMessage"]["userInputMessageContext"]["toolResults"].as_array())
+        .expect("a history user turn with toolResults");
+
+    let text_val = history_results[0]["content"][0]["text"]
+        .as_str()
+        .expect("content text");
+    assert!(
+        text_val.len() <= 2_100,
+        "history tool result must be bounded; got {} bytes",
+        text_val.len()
+    );
+    // Short results must pass through unchanged.
+    let short_content = "18C and sunny".to_owned();
+    let messages2 = vec![
+        text(Role::User, "Weather?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_2".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({ "city": "Paris" }),
+                cache_control: None,
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_2".into(),
+                content: short_content.clone(),
+                images: vec![],
+                is_error: false,
+                cache_control: None,
+            }]),
+        },
+        text(Role::Assistant, "Got it."),
+        text(Role::User, "Thanks"),
+    ];
+    let b2 = body(&request(messages2, vec![weather_tool()]));
+    let history2 = b2["conversationState"]["history"]
+        .as_array()
+        .expect("history array");
+    let history_results2 = history2
+        .iter()
+        .find_map(|h| h["userInputMessage"]["userInputMessageContext"]["toolResults"].as_array())
+        .expect("a history user turn with toolResults");
+    assert_eq!(
+        history_results2[0]["content"][0]["text"].as_str().unwrap(),
+        short_content,
+        "short tool result must not be modified"
+    );
+}
+
+/// Refutes: truncating the current turn's tool results. Only history turns are
+/// truncated; the live result a model just produced must travel in full so the
+/// next model call can act on it.
+#[test]
+fn current_turn_tool_results_are_never_truncated() {
+    // 3-message conversation: last user turn is current_turn, not history.
+    let long_content = "y".repeat(5_000);
+    let messages = vec![
+        text(Role::User, "Read a file?"),
+        Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                id: "tu_1".into(),
+                name: "get_weather".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            }]),
+        },
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: long_content,
+                images: vec![],
+                is_error: false,
+                cache_control: None,
+            }]),
+        },
+    ];
+    let b = body(&request(messages, vec![weather_tool()]));
+
+    let current_results = current(&b)["userInputMessageContext"]["toolResults"]
+        .as_array()
+        .expect("current turn must have toolResults");
+    let text_val = current_results[0]["content"][0]["text"]
+        .as_str()
+        .expect("content text");
+    assert_eq!(
+        text_val.len(),
+        5_000,
+        "current turn tool result must not be truncated; got {} chars",
+        text_val.len()
+    );
+    assert!(
+        !text_val.contains("truncated"),
+        "current turn result must not carry a truncation suffix"
+    );
+}
+
+/// Refutes: cutting an assistant call away from its immediately following result
+/// at the history cap, with or without the protected system-bearing user turn.
+#[test]
+fn history_cap_keeps_tool_round_trips_adjacent() {
+    for with_system in [false, true] {
+        for tail in ["result", "confirmation", "assistant"] {
+            let current_is_result = tail == "result";
+            for rounds in [50, 51, 52] {
+                let mut messages = vec![text(Role::User, "initial request")];
+                for i in 0..rounds {
+                    let id = format!("call_{i}");
+                    messages.push(Message {
+                        role: Role::Assistant,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolUse {
+                            id: id.clone(),
+                            name: "get_weather".into(),
+                            input: json!({}),
+                            cache_control: None,
+                        }]),
+                    });
+                    messages.push(Message {
+                        role: Role::User,
+                        content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                            tool_use_id: id,
+                            content: format!("result_{i}"),
+                            images: vec![],
+                            is_error: false,
+                            cache_control: None,
+                        }]),
+                    });
+                }
+                if !current_is_result {
+                    messages.push(text(Role::Assistant, "completed"));
+                    if tail == "confirmation" {
+                        messages.push(text(Role::User, "Sim, pf"));
+                    }
+                }
+                let mut op = request(messages, vec![weather_tool()]);
+                if with_system {
+                    let Operation::Conversation(conv) = &mut op else {
+                        panic!("conversation fixture");
+                    };
+                    conv.system = Some("system instructions".into());
+                }
+                let b = body(&op);
+                let history = b["conversationState"]["history"]
+                    .as_array()
+                    .expect("history");
+                assert!(history.len() < 100, "history cap must hold");
+                let kept_calls: Vec<_> = history
+                    .iter()
+                    .flat_map(|item| {
+                        item["assistantResponseMessage"]["toolUses"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                    })
+                    .map(|call| call["toolUseId"].as_str().expect("call id"))
+                    .collect();
+                let kept_count = match (with_system, tail) {
+                    (true, "result") | (false, "confirmation" | "assistant") => 49,
+                    (false, "result") => 50,
+                    _ => 48,
+                };
+                let expected: Vec<_> = (rounds - kept_count..rounds)
+                    .map(|i| format!("call_{i}"))
+                    .collect();
+                assert_eq!(kept_calls, expected, "retain the longest complete suffix");
+                let mut pending: Vec<&str> = Vec::new();
+                let mut previous_assistant = false;
+                for (index, item) in history
+                    .iter()
+                    .chain(std::iter::once(&b["conversationState"]["currentMessage"]))
+                    .enumerate()
+                {
+                    if let Some(assistant) = item.get("assistantResponseMessage") {
+                        assert!(pending.is_empty(), "unanswered call before turn {index}");
+                        assert!(!previous_assistant, "consecutive assistants at {index}");
+                        pending = assistant["toolUses"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|u| u["toolUseId"].as_str().expect("call id"))
+                            .collect();
+                        previous_assistant = true;
+                    } else {
+                        let user = &item["userInputMessage"];
+                        let results: Vec<&str> = user["userInputMessageContext"]["toolResults"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|r| r["toolUseId"].as_str().expect("result id"))
+                            .collect();
+                        assert_eq!(
+                            results, pending,
+                            "adjacency at turn {index}, system={with_system}, current_result={current_is_result}, rounds={rounds}"
+                        );
+                        assert!(
+                            index == 0 || previous_assistant,
+                            "consecutive users at turn {index}"
+                        );
+                        pending.clear();
+                        previous_assistant = false;
+                    }
+                }
+                assert!(pending.is_empty(), "unanswered final call");
+                if with_system {
+                    assert!(history[0]["userInputMessage"]["content"]
+                        .as_str()
+                        .expect("system-bearing content")
+                        .contains("system instructions"));
+                }
+                if current_is_result {
+                    assert_eq!(
+                        current(&b)["userInputMessageContext"]["toolResults"][0]["content"][0]
+                            ["text"],
+                        format!("result_{}", rounds - 1)
+                    );
+                } else if tail == "confirmation" {
+                    assert_eq!(current(&b)["content"], "Sim, pf");
+                } else {
+                    assert_eq!(current(&b)["content"], "Continue.");
+                }
+            }
+        }
+    }
 }

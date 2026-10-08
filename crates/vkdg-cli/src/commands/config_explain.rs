@@ -16,18 +16,18 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
     let session = std::env::var("VKDG_ADMIN_SESSION").unwrap_or_default();
 
     let encoded_model = urlencoding::encode(model);
-    let url = format!("{}/admin/v1/routes/preview?model={}", base, encoded_model);
+    let url = format!("{base}/admin/v1/routes/preview?model={encoded_model}");
 
     let client = reqwest::Client::new();
     let mut req = client.get(&url);
     if !session.is_empty() {
-        req = req.header("Cookie", format!("vkdg_session={}", session));
+        req = req.header("Cookie", format!("vkdg_session={session}"));
     }
 
     let resp = req
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to reach admin API: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to reach admin API: {e}"))?;
 
     if resp.status() == 401 {
         anyhow::bail!("unauthorized -- set VKDG_ADMIN_SESSION");
@@ -39,7 +39,7 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
     let body: serde_json::Value = resp
         .json()
         .await
-        .map_err(|e| anyhow::anyhow!("failed to parse response: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to parse response: {e}"))?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&body)?);
@@ -48,10 +48,10 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
 
     let unknown = serde_json::Value::String("unknown".into());
     let model_out = body.get("model").unwrap_or(&unknown);
-    println!("Model: {}", model_out);
+    println!("Model: {model_out}");
 
     if let Some(combo) = body.get("combo_id").and_then(|v| v.as_str()) {
-        println!("Resolved combo: {}", combo);
+        println!("Resolved combo: {combo}");
     }
 
     let eligible = body
@@ -73,7 +73,7 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
     } else {
         println!("Eligible connections ({}):", eligible.len());
         for c in &eligible {
-            println!("  {}", c);
+            println!("  {c}");
         }
     }
 
@@ -88,7 +88,7 @@ pub async fn run(model: &str, json_output: bool) -> Result<()> {
         for e in &excluded {
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("?");
             let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("  {} ({})", id, reason);
+            println!("  {id} ({reason})");
         }
     }
 

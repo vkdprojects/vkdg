@@ -23,6 +23,7 @@ pub struct SessionPin {
 }
 
 impl SessionPin {
+    #[allow(clippy::cast_sign_loss)] // age is non-negative duration; sign loss harmless
     pub fn is_expired(&self) -> bool {
         let age = Utc::now().signed_duration_since(self.pinned_at);
         age.num_seconds() as u64 > self.ttl_secs

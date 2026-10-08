@@ -1,0 +1,12 @@
+{
+  "path": ["src"],
+  "format": ["markup", "typescript", "css"],
+  "formatsExts": { "markup": ["svelte"], "typescript": ["ts"], "css": ["css"] },
+  "ignore": ["**/paraglide/**", "**/__tests__/**", "**/*.test.ts"],
+  "minLines": 5,
+  "minTokens": 50,
+  "threshold": 1,
+  "reporters": ["console"],
+  "absolute": false,
+  "gitignore": true
+}

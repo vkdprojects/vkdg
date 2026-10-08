@@ -1,4 +1,4 @@
-//! VKDG provider: SambaNova Cloud (OpenAI-compatible, free tier).
+//! VKDG provider: `SambaNova` Cloud (OpenAI-compatible, free tier).
 use vkdg_provider_sdk::openai_compat::OpenAiCompatAdapter;
 
 pub fn provider() -> OpenAiCompatAdapter {

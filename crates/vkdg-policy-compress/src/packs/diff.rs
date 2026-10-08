@@ -15,7 +15,7 @@ use crate::FilterPack;
 pub struct DiffPack;
 
 impl FilterPack for DiffPack {
-    fn id(&self) -> &str {
+    fn id(&self) -> &'static str {
         "rtk:diff"
     }
 
@@ -23,7 +23,7 @@ impl FilterPack for DiffPack {
         ContentClass::Diff
     }
 
-    fn description(&self) -> &str {
+    fn description(&self) -> &'static str {
         "Compresses unified diffs; keeps headers + first 40 changed lines"
     }
 

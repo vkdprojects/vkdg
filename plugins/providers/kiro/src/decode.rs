@@ -1,5 +1,5 @@
-//! Maps Kiro (CodeWhisperer `generateAssistantResponse`) EventStream frames to
-//! [`ConversationEvent`]s. Mirrors OmniRoute's `transformEventStreamToSSE`.
+//! Maps Kiro (`CodeWhisperer` `generateAssistantResponse`) `EventStream` frames to
+//! [`ConversationEvent`]s. Mirrors `OmniRoute`'s `transformEventStreamToSSE`.
 //!
 //! Kiro has no explicit terminal event: `Completed` (and synthesized `Usage`) are
 //! emitted from [`KiroEventDecoder::finish`] at end of stream.
@@ -13,7 +13,7 @@ use vkdg_operations::{ConversationEvent, StopReason, UsageCount};
 use crate::eventstream::{Frame, FrameError};
 
 /// Context window used to turn `contextUsagePercentage` into tokens when the
-/// model's own limit is unknown (OmniRoute `KIRO_DEFAULT_MAX_INPUT_TOKENS`).
+/// model's own limit is unknown (`OmniRoute` `KIRO_DEFAULT_MAX_INPUT_TOKENS`).
 const DEFAULT_MAX_INPUT_TOKENS: u64 = 200_000;
 
 #[derive(Debug, Default)]
@@ -38,6 +38,14 @@ impl KiroEventDecoder {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Returns `Some(pct)` if Kiro reported a context-usage percentage; `None` otherwise.
+    pub fn context_usage_pct(&self) -> Option<f64> {
+        if self.context_usage_pct > 0.0 {
+            Some(self.context_usage_pct)
+        } else {
+            None
+        }
+    }
 
     pub fn on_frame(&mut self, frame: &Frame, out: &mut Vec<ConversationEvent>) {
         if self.terminated {
@@ -51,20 +59,17 @@ impl KiroEventDecoder {
         }
 
         let payload = parse_payload(&frame.payload);
-        match frame.header_str(":message-type") {
-            Some("exception") | Some("error") => {
-                // AWS names the failure in a header; the Kiro plane puts an
-                // `error_code` in the payload instead.
-                let kind = frame
-                    .header_str(":exception-type")
-                    .or_else(|| frame.header_str(":error-code"))
-                    .or_else(|| error_code(&payload))
-                    .unwrap_or("UnknownException");
-                let message = error_message(&payload).unwrap_or_default();
-                self.fail(out, exception_status(kind), format!("{kind}: {message}"));
-                return;
-            }
-            _ => {}
+        if let Some("exception" | "error") = frame.header_str(":message-type") {
+            // AWS names the failure in a header; the Kiro plane puts an
+            // `error_code` in the payload instead.
+            let kind = frame
+                .header_str(":exception-type")
+                .or_else(|| frame.header_str(":error-code"))
+                .or_else(|| error_code(&payload))
+                .unwrap_or("UnknownException");
+            let message = error_message(&payload).unwrap_or_default();
+            self.fail(out, exception_status(kind), format!("{kind}: {message}"));
+            return;
         }
 
         match frame.header_str(":event-type").unwrap_or_default() {
@@ -105,7 +110,7 @@ impl KiroEventDecoder {
                 }
             }
             "metadataEvent" | "messageMetadataEvent" | "metricsEvent" | "usageEvent" => {
-                self.on_metrics(&payload)
+                self.on_metrics(&payload);
             }
             "invalidStateEvent" => {
                 let message = error_message(&payload).unwrap_or("invalid state");
@@ -118,7 +123,7 @@ impl KiroEventDecoder {
     }
 
     /// Surfaces a framing error; the stream is unusable afterwards.
-    pub fn on_frame_error(&mut self, err: FrameError, out: &mut Vec<ConversationEvent>) {
+    pub fn on_frame_error(&mut self, err: &FrameError, out: &mut Vec<ConversationEvent>) {
         self.fail(out, 502, format!("kiro eventstream: {err}"));
     }
 
@@ -132,6 +137,9 @@ impl KiroEventDecoder {
             return;
         }
         self.terminated = true;
+        // Flush any partial thinking content accumulated in thinking_pending
+        // before closing the stream — mirrors OmniRoute's flushPendingThinking.
+        self.flush_thinking(out);
         self.flush_buffered_tool_inputs(out);
         if let Some((input_tokens, output_tokens)) = self.usage() {
             out.push(ConversationEvent::Usage {
@@ -156,7 +164,11 @@ impl KiroEventDecoder {
     fn fail(&mut self, out: &mut Vec<ConversationEvent>, code: u16, message: String) {
         self.terminated = true;
         out.push(ConversationEvent::Failed {
-            error: VkdgError::UpstreamError { code, message },
+            error: VkdgError::UpstreamError {
+                code,
+                message,
+                retry_after: None,
+            },
         });
     }
 
@@ -178,14 +190,14 @@ impl KiroEventDecoder {
                 );
                 return;
             };
-            let id = match str_field(&tool_use, "toolUseId").filter(|id| !id.is_empty()) {
-                Some(id) => id.to_owned(),
-                None => {
-                    self.generated_tool_ids += 1;
-                    format!("call_kiro_{}", self.generated_tool_ids)
-                }
+            let id = if let Some(id) = str_field(&tool_use, "toolUseId").filter(|id| !id.is_empty())
+            {
+                id.to_owned()
+            } else {
+                self.generated_tool_ids += 1;
+                format!("call_kiro_{}", self.generated_tool_ids)
             };
-            let next = self.tool_indices.len() as u32;
+            let next = u32::try_from(self.tool_indices.len()).unwrap_or(u32::MAX);
             let index = *self.tool_indices.entry(id.clone()).or_insert_with(|| {
                 out.push(ConversationEvent::ToolCallDelta {
                     tool_use_id: id.clone(),
@@ -275,7 +287,7 @@ impl KiroEventDecoder {
         }
     }
 
-    /// Reported counts if Kiro sent any; otherwise OmniRoute's `ensureKiroUsage`
+    /// Reported counts if Kiro sent any; otherwise `OmniRoute`'s `ensureKiroUsage`
     /// estimate: output ≈ chars/4, total ≈ context% × window, input = total − output.
     fn usage(&self) -> Option<(UsageCount, UsageCount)> {
         if let Some((input, output)) = self.reported_usage {
@@ -286,6 +298,9 @@ impl KiroEventDecoder {
         } else {
             0
         };
+        #[allow(clippy::cast_precision_loss)] // DEFAULT_MAX_INPUT_TOKENS = 200_000 fits exactly in f64
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        // percentage 0–100, result always non-negative and fits u64
         let total = (self.context_usage_pct * DEFAULT_MAX_INPUT_TOKENS as f64 / 100.0) as u64;
         if total == 0 && output == 0 {
             return None;
@@ -297,7 +312,7 @@ impl KiroEventDecoder {
         ))
     }
 
-    /// Stream-safe `<thinking>…</thinking>` splitter (ported from OmniRoute's
+    /// Stream-safe `<thinking>…</thinking>` splitter (ported from `OmniRoute`'s
     /// `kiroThinking.ts`). Tags can span chunk boundaries: partial tag prefixes
     /// are held in `self.thinking_pending` and completed on the next call.
     fn split_thinking(&mut self, raw: &str, out: &mut Vec<ConversationEvent>) {
@@ -332,7 +347,8 @@ impl KiroEventDecoder {
                     if !flushable.is_empty() {
                         self.emit(flushable, out);
                     }
-                    self.thinking_pending = text[hold_from..].to_owned();
+                    self.thinking_pending.clear();
+                    self.thinking_pending.push_str(&text[hold_from..]);
                     return;
                 }
                 Some(idx) => {
@@ -363,7 +379,7 @@ impl KiroEventDecoder {
     }
 
     /// Drain pending at end of stream; routes leftover partial tags to
-    /// whichever channel is currently open (mirrors OmniRoute `flushPendingThinking`).
+    /// whichever channel is currently open (mirrors `OmniRoute` `flushPendingThinking`).
     pub fn flush_thinking(&mut self, out: &mut Vec<ConversationEvent>) {
         if !self.thinking_pending.is_empty() {
             let leftover = std::mem::take(&mut self.thinking_pending);

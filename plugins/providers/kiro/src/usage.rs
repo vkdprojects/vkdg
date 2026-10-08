@@ -27,6 +27,8 @@
 //! would erase that difference. The payload carries no remaining/available
 //! field, so any "remaining" is derived (`limit - used`) by the caller.
 
+use std::fmt::Write as _;
+
 use futures::future::BoxFuture;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -56,11 +58,36 @@ impl UsageProvider for KiroUsage {
 }
 
 /// Auth method persisted at login (`api_key` for a `ksk_` key), else Builder ID.
-fn auth_method(extra: &std::collections::HashMap<String, String>) -> &str {
+pub(crate) fn auth_method(extra: &std::collections::HashMap<String, String>) -> &str {
     extra
         .get("auth_method")
-        .map(String::as_str)
-        .unwrap_or(crate::auth::AUTH_BUILDER_ID)
+        .map_or(crate::auth::AUTH_BUILDER_ID, String::as_str)
+}
+
+/// `https://q.<region>.amazonaws.com` for the account's runtime region: the
+/// host of every control-plane operation (`GetUsageLimits`, `ListAvailableModels`).
+pub(crate) fn control_plane_base(credential: &Credential) -> String {
+    let extra = credential.extra.as_ref();
+    let region = runtime_region(
+        extra.get("profile_arn").map(String::as_str),
+        extra.get("oidc_region").map(String::as_str),
+    );
+    control_plane_host(&region)
+}
+
+/// The credential's own token, plus `tokentype: API_KEY` for an API key. Never a
+/// `profileArn` header: AWS answers 403 when an API key sends one.
+pub(crate) fn authorize(
+    req: reqwest::RequestBuilder,
+    credential: &Credential,
+    auth_method: &str,
+) -> reqwest::RequestBuilder {
+    let req = req.bearer_auth(&credential.token);
+    if sends_api_key_token_type(auth_method) {
+        req.header("tokentype", "API_KEY")
+    } else {
+        req
+    }
 }
 
 /// POST `GetUsageLimits` for one account and return the parsed JSON body.
@@ -73,21 +100,12 @@ async fn fetch_usage_body(
     credential: &Credential,
 ) -> Result<Value, ProviderError> {
     let extra = credential.extra.as_ref();
-    let auth = auth_method(extra);
-    let region = runtime_region(
-        extra.get("profile_arn").map(String::as_str),
-        extra.get("oidc_region").map(String::as_str),
-    );
-
-    let mut req = client
-        .post(format!("{}/", control_plane_host(&region)))
+    let req = client
+        .post(format!("{}/", control_plane_base(credential)))
         .header("content-type", "application/x-amz-json-1.0")
         .header("accept", "application/json")
-        .header("x-amz-target", USAGE_TARGET)
-        .bearer_auth(&credential.token);
-    if sends_api_key_token_type(auth) {
-        req = req.header("tokentype", "API_KEY");
-    }
+        .header("x-amz-target", USAGE_TARGET);
+    let req = authorize(req, credential, auth_method(extra));
 
     let resp = req
         .json(&serde_json::json!({}))
@@ -138,11 +156,12 @@ pub fn parse_usage(body: &Value) -> Result<UsageSnapshot, ProviderError> {
         .and_then(Value::as_f64)
         .or_else(|| credit.get("usageLimit").and_then(Value::as_f64));
 
-    let credits_period_end = credit
+    let period_end_secs = credit
         .get("nextDateReset")
         .or_else(|| body.get("nextDateReset"))
-        .and_then(Value::as_f64)
-        .map(|s| s as i64);
+        .and_then(Value::as_f64);
+    #[allow(clippy::cast_possible_truncation)] // Unix timestamp seconds always fit in i64
+    let credits_period_end = period_end_secs.map(|s| s as i64);
 
     let plan = body
         .get("subscriptionInfo")
@@ -159,9 +178,10 @@ pub fn parse_usage(body: &Value) -> Result<UsageSnapshot, ProviderError> {
         .map(fingerprint);
 
     Ok(UsageSnapshot {
-        credits_used,
+        credits_used: Some(credits_used),
         credits_limit,
         credits_period_end,
+        windows: Vec::new(),
         plan,
         upstream_user_ref,
     })
@@ -180,8 +200,10 @@ fn hex8(bytes: &[u8]) -> String {
     bytes
         .iter()
         .take(4)
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>()
+        .fold(String::with_capacity(8), |mut s, b| {
+            write!(s, "{b:02x}").expect("infallible");
+            s
+        })
 }
 
 #[cfg(test)]
@@ -195,7 +217,7 @@ mod tests {
         serde_json::json!({
             "daysUntilReset": 0,
             "limits": [],
-            "nextDateReset": 1790812800.0,
+            "nextDateReset": 1_790_812_800.0,
             "overageConfiguration": { "overageStatus": "DISABLED" },
             "subscriptionInfo": {
                 "subscriptionTitle": "KIRO POWER",
@@ -220,7 +242,7 @@ mod tests {
         serde_json::json!({
             "daysUntilReset": 0,
             "limits": [],
-            "nextDateReset": 1790812800.0,
+            "nextDateReset": 1_790_812_800.0,
             "overageConfiguration": { "overageStatus": "DISABLED" },
             "subscriptionInfo": {
                 "subscriptionTitle": "KIRO PRO MAX",
@@ -262,9 +284,10 @@ mod tests {
     #[test]
     fn parses_used_plan_and_period_from_real_body() {
         let s = parse_usage(&kiro_pro_max()).unwrap();
-        assert_eq!(s.credits_used, 2285.75);
+        assert_eq!(s.credits_used, Some(2285.75));
+        assert!(s.windows.is_empty(), "Kiro meters credits, not windows");
         assert_eq!(s.plan.as_deref(), Some("KIRO PRO MAX"));
-        assert_eq!(s.credits_period_end, Some(1790812800));
+        assert_eq!(s.credits_period_end, Some(1_790_812_800));
     }
 
     // Refutes leaking the raw userId, and refutes a constant/empty fingerprint:
@@ -274,7 +297,9 @@ mod tests {
     fn user_ref_is_a_stable_nonreversible_fingerprint_or_absent() {
         let raw = "d-9067c98495.b4482408-a011-703b-a535-d5cd9bb0d646";
         let pro_max = parse_usage(&kiro_pro_max()).unwrap();
-        let user_ref = pro_max.upstream_user_ref.expect("PRO MAX reported a userId");
+        let user_ref = pro_max
+            .upstream_user_ref
+            .expect("PRO MAX reported a userId");
         assert!(!user_ref.contains(raw), "raw userId must never be exposed");
         assert_eq!(user_ref, fingerprint(raw), "fingerprint must be stable");
         assert_ne!(user_ref, fingerprint("some-other-user"));
@@ -306,7 +331,7 @@ mod tests {
             }]
         });
         let s = parse_usage(&body).unwrap();
-        assert_eq!(s.credits_used, 12.5);
+        assert_eq!(s.credits_used, Some(12.5));
         assert_eq!(s.credits_limit, None);
         assert_eq!(s.credits_period_end, None);
     }

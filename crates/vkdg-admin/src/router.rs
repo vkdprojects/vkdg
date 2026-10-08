@@ -1,13 +1,13 @@
 use crate::handlers::requests::RequestLog;
 use crate::session::SessionStore;
 use axum::{
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
-use vkdg_config::ConfigRx;
+use vkdg_config::{ConfigRx, ConfigTx, GatewayStore};
 use vkdg_connections::ConnectionCatalog;
 
 #[derive(Clone)]
@@ -29,9 +29,13 @@ pub struct AdminState {
     /// Fires a smoke request through a specific connection and returns latency and status.
     /// `None` = no data plane, the endpoint answers 503.
     pub connection_tester: Option<ConnectionTester>,
+    /// Persistent store for connections/routes; `None` = read-only (no CRUD).
+    pub gateway_store: Option<Arc<GatewayStore>>,
+    /// Sender to push a new snapshot after every store write.
+    pub config_tx: Option<ConfigTx>,
 }
 
-/// Sends one smoke request (`"Hello"`, max_tokens=1) through the named connection
+/// Sends one smoke request (`"Hello"`, `max_tokens=1`) through the named connection
 /// and returns `(latency_ms, ok, error)`. Spawned as a blocking task if needed.
 pub type ConnectionTester = Arc<
     dyn Fn(String) -> std::pin::Pin<Box<dyn Future<Output = ConnectionTestResult> + Send>>
@@ -69,15 +73,27 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/connections",
-            get(crate::handlers::connections::list_connections),
+            get(crate::handlers::connections::list_connections)
+                .post(crate::handlers::connections::create_connection),
         )
         .route(
             "/admin/v1/connections/{id}",
-            get(crate::handlers::connections::get_connection),
+            get(crate::handlers::connections::get_connection)
+                .put(crate::handlers::connections::update_connection)
+                .patch(crate::handlers::connections::patch_connection)
+                .delete(crate::handlers::connections::delete_connection),
         )
         .route(
             "/admin/v1/connections/{id}/test",
             axum::routing::post(crate::handlers::connections::test_connection),
+        )
+        .route(
+            "/admin/v1/connections/{id}/reset-cooldown",
+            axum::routing::post(crate::handlers::connections::reset_connection_cooldown),
+        )
+        .route(
+            "/admin/v1/connections/{id}/models/sync",
+            post(crate::handlers::model_sync::sync_models),
         )
         .route(
             "/admin/v1/keys",
@@ -101,11 +117,16 @@ pub fn build_admin_router(state: AdminState) -> Router {
         )
         .route(
             "/admin/v1/routes",
-            get(crate::handlers::routes::list_routes),
+            get(crate::handlers::routes::list_routes).post(crate::handlers::routes::create_route),
         )
         .route(
             "/admin/v1/routes/preview",
             get(crate::handlers::routes::preview_route),
+        )
+        .route(
+            "/admin/v1/routes/{id}",
+            put(crate::handlers::routes::update_route)
+                .delete(crate::handlers::routes::delete_route),
         )
         .route(
             "/admin/v1/requests",
@@ -161,5 +182,110 @@ pub fn build_admin_router(state: AdminState) -> Router {
             "/admin/v1/accounts/{id}",
             delete(crate::handlers::oauth::delete_account),
         )
+        .route(
+            "/admin/v1/accounts/{id}/connection",
+            post(crate::handlers::oauth::enable_account),
+        )
+        .route(
+            "/admin/v1/config/export",
+            get(crate::handlers::config::export_config),
+        )
+        .route("/admin/v1/stats", get(crate::handlers::stats::get_stats))
+        .route("/metrics", get(crate::handlers::stats::get_metrics))
+        .route(
+            "/admin/v1/catalog/{provider}",
+            get(crate::handlers::catalog::get_catalog).put(crate::handlers::catalog::put_catalog),
+        )
+        .route(
+            "/admin/v1/catalog/{provider}/import-url",
+            post(crate::handlers::catalog::import_catalog_url),
+        )
         .with_state(state)
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use axum::body::Body;
+    use http::{Method, Request, StatusCode};
+    use tower::ServiceExt;
+    use vkdg_config::ConfigSnapshot;
+
+    fn state() -> AdminState {
+        let (_tx, rx) = tokio::sync::watch::channel(Arc::new(ConfigSnapshot::default_empty()));
+        let dir = std::env::temp_dir().join(format!("vkdg-authz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        AdminState {
+            sessions: SessionStore::new("t".into()),
+            config_rx: rx,
+            started_at: Arc::new(Instant::now()),
+            key_store: Arc::new(vkdg_governance::VirtualKeyStore::in_memory().unwrap()),
+            request_log: RequestLog::new(),
+            combos: None,
+            catalog: None,
+            logins: None,
+            reload_plugins: None,
+            connection_tester: None,
+            // A real store, so a missing auth check would reach it and succeed.
+            gateway_store: Some(Arc::new(GatewayStore::open(&dir.join("gw.db")).unwrap())),
+            config_tx: None,
+        }
+    }
+
+    // Refutes: a handler that forgets `get_session` (each handler checks it
+    // itself; there is no router-wide layer). Every route not in PUBLIC must
+    // answer 401 with no cookie, including ones that would otherwise succeed.
+    #[tokio::test]
+    async fn every_non_public_route_requires_a_session() {
+        const PUBLIC: &[(&str, &str)] = &[
+            ("GET", "/admin/v1/system"),
+            ("POST", "/admin/v1/session"),
+            ("DELETE", "/admin/v1/session"),
+            ("GET", "/admin/v1/setup"),
+            ("GET", "/metrics"),
+        ];
+        let routes: &[(&str, &str, &str)] = &[
+            ("GET", "/admin/v1/session/me", ""),
+            (
+                "POST",
+                "/admin/v1/setup",
+                r#"{"password":"xxxxxxxxxxxxxxxx"}"#,
+            ),
+            ("GET", "/admin/v1/connections", ""),
+            ("GET", "/admin/v1/keys", ""),
+            ("GET", "/admin/v1/routes", ""),
+            ("GET", "/admin/v1/requests", ""),
+            ("GET", "/admin/v1/plugins", ""),
+            ("DELETE", "/admin/v1/plugins/x", ""),
+            ("GET", "/admin/v1/stats", ""),
+            ("GET", "/admin/v1/config/export", ""),
+            ("GET", "/admin/v1/catalog/codex", ""),
+            ("PUT", "/admin/v1/catalog/codex", r#"{"models":[]}"#),
+            (
+                "POST",
+                "/admin/v1/catalog/codex/import-url",
+                r#"{"url":"http://127.0.0.1:1/"}"#,
+            ),
+        ];
+        let app = build_admin_router(state());
+        let mut open = Vec::new();
+        for (m, path, body) in routes {
+            assert!(!PUBLIC.contains(&(*m, *path)));
+            let req = Request::builder()
+                .method(Method::from_bytes(m.as_bytes()).unwrap())
+                .uri(*path)
+                .header("content-type", "application/json")
+                .body(Body::from(*body))
+                .unwrap();
+            let status = app.clone().oneshot(req).await.unwrap().status();
+            if status != StatusCode::UNAUTHORIZED {
+                open.push(format!("{m} {path} -> {status}"));
+            }
+        }
+        assert!(
+            open.is_empty(),
+            "reachable without a session:\n{}",
+            open.join("\n")
+        );
+    }
 }

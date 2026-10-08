@@ -1,0 +1,15 @@
+# Keep the build context small. Dockerfile.gateway compiles everything inside
+# the image; Dockerfile.dev only needs the cross-compiled binary below.
+.git
+target/**
+!target/x86_64-unknown-linux-musl/*/vkdg
+**/node_modules
+references
+apps/console/build
+apps/console/.svelte-kit
+apps/console/.cache
+apps/console/playwright-report
+apps/console/test-results
+**/.env
+**/.env.*
+!**/.env.example

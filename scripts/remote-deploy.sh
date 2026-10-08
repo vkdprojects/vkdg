@@ -76,7 +76,7 @@ for prefix in rollback- dev-; do
     | while read -r t; do [ "$t" = "$TAG" ] || docker rmi "vkdg-gateway:$t" >/dev/null 2>&1 || true; done
 done
 docker image prune -f >/dev/null
-docker builder prune -f --keep-storage 3GB >/dev/null 2>&1 || true
+docker builder prune -f --keep-storage 8GB >/dev/null 2>&1 || true
 echo "disk after deploy: $(df -h / | awk 'NR==2 {print $3 " used, " $4 " free"}')"
 REMOTE
 

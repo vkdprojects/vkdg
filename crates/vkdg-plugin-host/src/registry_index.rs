@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(index.search("cargo", None).len(), 1, "description");
         assert_eq!(index.search("rust", None).len(), 1, "tag");
         assert_eq!(index.search("", None).len(), 2, "empty query lists all");
-        assert_eq!(index.search("nonexistent", None).len(), 0);
+        assert!(index.search("nonexistent", None).is_empty());
     }
 
     /// Refutes: a kind filter that does not filter.
@@ -235,7 +235,9 @@ mod tests {
         let packs = index.search("", Some(PluginManifestKind::FilterPack));
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].name, "rust-build-errors");
-        assert_eq!(index.search("", Some(PluginManifestKind::Router)).len(), 0);
+        assert!(index
+            .search("", Some(PluginManifestKind::Router))
+            .is_empty());
     }
 
     /// Refutes: an exact name buried under substring matches.

@@ -2,7 +2,7 @@ use anyhow::Result;
 use vkdg_config::load_and_validate;
 
 /// Check that `path` points to a valid, fully-referenced gateway config.
-pub fn run(path: &str) -> Result<()> {
+pub async fn run(path: &str) -> Result<()> {
     match load_and_validate(path, 0) {
         Ok(snap) => {
             println!(

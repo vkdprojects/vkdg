@@ -71,6 +71,6 @@ mod tests {
             "The user prefers dark mode and TypeScript.",
         )];
         let facts = extract_facts(&msgs);
-        assert_ne!(facts.len(), 0);
+        assert!(!facts.is_empty());
     }
 }

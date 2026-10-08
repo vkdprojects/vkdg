@@ -40,7 +40,7 @@ pub enum InjectMode {
     AsSystem,
 }
 
-/// A single step in a `PromptChain`.
+/// A single step in a PromptChain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainStep {
     /// Connection to use for this step. `None` = auto-route from catalog using the request model.
@@ -60,7 +60,7 @@ pub enum StrategyKind {
     PowerOfTwoChoices,
     FallbackChain,
     /// Multi-factor scored strategy.
-    /// `mode_pack`: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
+    /// mode_pack: "ship-fast" | "cost-saver" | "quality-first" | "offline-friendly" | "balanced"
     Scored {
         mode_pack: String,
     },
@@ -106,16 +106,14 @@ impl EligibilityFilter {
 // ── Routing hints ─────────────────────────────────────────────────────────────
 
 /// Optional live signals to improve routing decisions.
-/// Populated by the gateway from `QuotaTracker` and latency measurements.
-/// All maps are keyed by `ConnectionId`; absent entries use scorer defaults.
+/// Populated by the gateway from QuotaTracker and latency measurements.
+/// All maps are keyed by ConnectionId; absent entries use scorer defaults.
 #[derive(Debug, Default, Clone)]
 pub struct RoutingHints {
-    /// `quota_headroom` per connection: 0.0 = exhausted, 1.0 = full
+    /// quota_headroom per connection: 0.0 = exhausted, 1.0 = full
     pub quota_headroom: HashMap<ConnectionId, f32>,
     /// p50 latency per connection in milliseconds
     pub latency_p50_ms: HashMap<ConnectionId, u32>,
-    /// Requests currently in flight per connection. Absent = 0.
-    pub in_flight: HashMap<ConnectionId, u32>,
     /// Request-level mode pack override (from X-VKDG-Mode header or combo)
     pub mode_pack: Option<String>,
 }
@@ -130,7 +128,7 @@ pub struct RouteResult {
     /// Non-empty only for Fusion routes. Contains all targets to dispatch in parallel.
     /// The pipeline races these and returns the first successful response.
     pub fusion_targets: Vec<ConnectionId>,
-    /// Non-empty when strategy is `PromptChain`; steps to execute sequentially.
+    /// Non-empty when strategy is PromptChain; steps to execute sequentially.
     pub chain_steps: Vec<ChainStep>,
     /// Hooks of the matched route. Empty for auto-routed requests.
     pub hooks: PluginHooks,

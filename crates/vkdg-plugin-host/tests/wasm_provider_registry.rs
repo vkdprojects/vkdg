@@ -73,7 +73,6 @@ fn operation() -> Operation {
         system: None,
         required_capabilities: CapabilitySet::default(),
         thinking: None,
-        ..Default::default()
     })
 }
 

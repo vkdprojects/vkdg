@@ -41,7 +41,10 @@ impl Compressor for StackedCompressor {
     }
 
     fn estimate_tokens(&self, req: &ConversationRequest) -> u32 {
-        self.stages.first().map_or(0, |s| s.estimate_tokens(req))
+        self.stages
+            .first()
+            .map(|s| s.estimate_tokens(req))
+            .unwrap_or(0)
     }
 
     fn compress(
@@ -49,7 +52,11 @@ impl Compressor for StackedCompressor {
         mut req: ConversationRequest,
         budget: u32,
     ) -> Result<(ConversationRequest, CompressionMetrics), CompressionError> {
-        let _original_tokens = self.stages.first().map_or(0, |s| s.estimate_tokens(&req));
+        let _original_tokens = self
+            .stages
+            .first()
+            .map(|s| s.estimate_tokens(&req))
+            .unwrap_or(0);
 
         let mut total_removed = 0u32;
         let mut stage_names: Vec<String> = Vec::new();
@@ -113,7 +120,6 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
-            ..Default::default()
         };
         // With a small message, savings may be 0 — just verify it doesn't panic
         let result = c.compress(req, 10000);

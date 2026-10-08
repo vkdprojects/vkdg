@@ -276,7 +276,6 @@ impl OAuthProvider for MyProvider {
 What the core does with it:
 
 - `vkdg login <provider> [--method <id>] [--opt key=value …]` runs the method, saves an account to the account store, and prints the `auth: { type: account, account: <id> }` snippet. `vkdg login <provider> --list-methods` shows the methods and fields. `vkdg accounts list|remove <id>` manages saved accounts.
-- Connecting an account in the console (`POST …/poll`, `POST …/import`) also creates the connection that serves it: `id` = the account id, `auth: { type: account, account: <id> }`, `models` = `ProviderAdapter::default_models()` (default `["*"]`: return patterns only your provider serves, or an empty list when it cannot serve requests yet and no connection should exist). An account that already has a connection (reconnect, YAML, hand-made) keeps it untouched. The response carries `connection_id`, or `connection_error` when the account was saved but the connection was not. `DELETE /admin/v1/accounts/{id}` removes the account's connections and drops them from routes. `vkdg login` does not create one: it prints the snippet.
 - Admin API (loopback, session required): `GET /admin/v1/providers/{id}/login-methods`, `POST /admin/v1/oauth/{provider}/start` (`{method?, params}`), `POST /admin/v1/oauth/{provider}/poll` (`{login_id, code?}`; `code` is for PKCE), `POST /admin/v1/oauth/{provider}/import`, `GET /admin/v1/accounts`, `DELETE /admin/v1/accounts/{id}`. Responses never include tokens or plugin login state.
 - At request time, `CredentialManager` loads the account and calls `refresh_token` through the registry once the token is within 5 minutes of expiry, with one refresh per account at a time. It persists the result and then passes `Credential { token, extra }` to `prepare()`.
 
@@ -305,8 +304,7 @@ Want it bundled with VKDG for everyone?
 ## Reference
 
 - WIT interface: [`wit/provider.wit`](../../wit/provider.wit)
-- OpenAI-compat shared module: [`crates/vkdg-provider-sdk/src/openai_compat/`](../../crates/vkdg-provider-sdk/src/openai_compat/mod.rs)
-- Anthropic Messages shared body builder: [`crates/vkdg-provider-sdk/src/anthropic_messages/`](../../crates/vkdg-provider-sdk/src/anthropic_messages/mod.rs)
+- OpenAI-compat shared module: [`crates/vkdg-provider-sdk/src/openai_compat.rs`](../../crates/vkdg-provider-sdk/src/openai_compat.rs)
 - `ProviderAdapter` trait: [`crates/vkdg-provider-sdk/src/request.rs`](../../crates/vkdg-provider-sdk/src/request.rs)
 - `OAuthProvider` trait: [`crates/vkdg-provider-sdk/src/oauth.rs`](../../crates/vkdg-provider-sdk/src/oauth.rs)
 - Built-in examples: `plugins/providers/anthropic/`, `plugins/providers/groq/`, `plugins/providers/claude-code/`

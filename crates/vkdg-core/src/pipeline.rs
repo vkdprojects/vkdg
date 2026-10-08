@@ -9,10 +9,6 @@ pub struct PipelineCtx {
     pub envelope: RequestEnvelope,
     pub state: AttemptState,
     pub connection_id: Option<ConnectionId>,
-    /// Connection the caller insists on (the admin "Test" button). The router is
-    /// bypassed and there is no failover to a sibling: the answer must be about
-    /// this connection, whatever model it lists.
-    pub pinned_connection: Option<ConnectionId>,
     pub committed: bool,
     pub transitions: Vec<(AttemptState, DateTime<Utc>)>,
     /// Route the router chose (`auto` when no route matched).
@@ -33,7 +29,6 @@ impl PipelineCtx {
             envelope,
             state: AttemptState::Received,
             connection_id: None,
-            pinned_connection: None,
             committed: false,
             transitions: vec![(AttemptState::Received, Utc::now())],
             route_id: None,

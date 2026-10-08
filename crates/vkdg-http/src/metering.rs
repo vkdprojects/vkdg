@@ -6,7 +6,7 @@
 //! provider was reached.
 //!
 //! Anthropic reports `usage.input_tokens` in `message_start` and a growing
-//! `usage.output_tokens` in `message_delta`; `OpenAI` reports
+//! `usage.output_tokens` in `message_delta`; OpenAI reports
 //! `usage.prompt_tokens` / `completion_tokens` in the body or the final stream
 //! chunk. Counts only grow, so the meter keeps the largest value seen per field.
 
@@ -38,151 +38,83 @@ impl TokenUsage {
     }
 }
 
-/// Tracks reported usage and logical completion without collecting SSE bodies.
+/// Incremental usage parser over response bytes, SSE or JSON.
 #[derive(Debug, Default)]
 pub struct UsageMeter {
-    framer: vkdg_provider_sdk::SseFramer,
-    json_body: Vec<u8>,
+    /// Bytes of an incomplete trailing line.
+    partial: Vec<u8>,
+    /// Whole non-SSE body, parsed once at the end.
+    body: Vec<u8>,
     sse: Option<bool>,
-    state: MeterState,
-}
-
-#[derive(Debug, Default)]
-struct MeterState {
     usage: TokenUsage,
-    stop_reason: Option<String>,
-    context_usage_pct: Option<f64>,
-    end: crate::sse::StreamEnd,
 }
 
+/// Non-streaming bodies larger than this are not metered from their JSON: the
+/// usage block would be at the top level of a body this size only for giant
+/// outputs, and buffering them twice is not worth it.
 const MAX_JSON_BODY: usize = 8 * 1024 * 1024;
 
 impl UsageMeter {
     pub fn feed(&mut self, chunk: &[u8]) {
-        if self.sse.is_none() {
-            let Some(first) = chunk.iter().find(|b| !b.is_ascii_whitespace()) else {
-                return;
-            };
-            self.sse = Some(!matches!(first, b'{' | b'['));
-        }
-        if self.sse == Some(false) {
-            if self.json_body.len() + chunk.len() <= MAX_JSON_BODY {
-                self.json_body.extend_from_slice(chunk);
+        let is_sse = *self.sse.get_or_insert_with(|| looks_like_sse(chunk));
+        if !is_sse {
+            if self.body.len() + chunk.len() <= MAX_JSON_BODY {
+                self.body.extend_from_slice(chunk);
             }
             return;
         }
-        let state = &mut self.state;
-        self.framer.push(chunk, |frame| match frame {
-            Ok(frame) => {
-                let value = serde_json::from_str::<Value>(&frame.data).ok();
-                state.end.observe(frame.event, &frame.data, value.as_ref());
-                if let Some(value) = value.as_ref() {
-                    state.observe(value);
-                }
-            }
-            Err(_) => state.end = crate::sse::StreamEnd::Failed,
-        });
+        self.partial.extend_from_slice(chunk);
+        while let Some(pos) = self.partial.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=pos).collect();
+            self.observe_line(&line);
+        }
     }
 
-    /// Flush reported usage, but never treat an unterminated SSE frame as a
-    /// terminal event. A client can disconnect in the middle of `[DONE]`.
+    /// Usage seen so far, including a trailing line or JSON body not yet
+    /// terminated. Safe to call more than once.
     pub fn finish(&mut self) -> TokenUsage {
         if self.sse == Some(true) {
-            let state = &mut self.state;
-            self.framer.finish(|frame| {
-                if let Ok(frame) = frame {
-                    if let Ok(value) = serde_json::from_str::<Value>(&frame.data) {
-                        state.observe(&value);
-                    }
-                }
-            });
-        } else if let Ok(value) = serde_json::from_slice::<Value>(&self.json_body) {
-            self.state.observe(&value);
+            let rest = std::mem::take(&mut self.partial);
+            self.observe_line(&rest);
+        } else if let Ok(v) = serde_json::from_slice::<Value>(&self.body) {
+            self.observe(&v);
         }
-        self.state.usage
+        self.usage
     }
 
-    pub fn stop_reason(&self) -> Option<String> {
-        self.state.stop_reason.clone()
+    fn observe_line(&mut self, line: &[u8]) {
+        let Some(data) = line.strip_prefix(b"data:") else {
+            return;
+        };
+        if let Ok(v) = serde_json::from_slice::<Value>(data.trim_ascii()) {
+            self.observe(&v);
+        }
     }
 
-    pub fn context_usage_pct(&self) -> Option<f64> {
-        self.state.context_usage_pct
-    }
-
-    pub(crate) fn stream_end(&self) -> crate::sse::StreamEnd {
-        self.state.end
+    fn observe(&mut self, v: &Value) {
+        // Anthropic `message_start` nests usage under `message`.
+        for usage in [v.get("usage"), v.pointer("/message/usage")]
+            .into_iter()
+            .flatten()
+        {
+            let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+            let (read, write) = (
+                n("cache_read_input_tokens"),
+                n("cache_creation_input_tokens"),
+            );
+            let input = n("input_tokens").max(n("prompt_tokens")) + read + write;
+            let output = n("output_tokens").max(n("completion_tokens"));
+            self.usage.input = self.usage.input.max(input);
+            self.usage.output = self.usage.output.max(output);
+            self.usage.cache_read = self.usage.cache_read.max(read);
+            self.usage.cache_write = self.usage.cache_write.max(write);
+        }
     }
 }
 
-impl MeterState {
-    fn observe(&mut self, value: &Value) {
-        let usage = value
-            .get("usage")
-            .or_else(|| value.get("message").and_then(|m| m.get("usage")))
-            .or_else(|| value.get("response").and_then(|r| r.get("usage")));
-        if let Some(usage) = usage {
-            let read = usage
-                .get("cache_read_input_tokens")
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    usage
-                        .pointer("/prompt_tokens_details/cached_tokens")
-                        .and_then(Value::as_u64)
-                })
-                .or_else(|| {
-                    usage
-                        .pointer("/input_tokens_details/cached_tokens")
-                        .and_then(Value::as_u64)
-                });
-            let write = usage
-                .get("cache_creation_input_tokens")
-                .and_then(Value::as_u64);
-            if let Some(n) = read {
-                self.usage.cache_read = n;
-            }
-            if let Some(n) = write {
-                self.usage.cache_write = n;
-            }
-            if let Some(n) = usage.get("prompt_tokens").and_then(Value::as_u64) {
-                self.usage.input = n.saturating_add(self.usage.cache_write);
-            } else if let Some(n) = usage.get("input_tokens").and_then(Value::as_u64) {
-                self.usage.input = if usage.get("input_tokens_details").is_some() {
-                    n
-                } else {
-                    n.saturating_add(self.usage.cache_read)
-                        .saturating_add(self.usage.cache_write)
-                };
-            }
-            if let Some(n) = usage
-                .get("output_tokens")
-                .or_else(|| usage.get("completion_tokens"))
-                .and_then(Value::as_u64)
-            {
-                self.usage.output = n;
-            }
-        }
-        let stop = value
-            .pointer("/delta/stop_reason")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                value
-                    .get("choices")
-                    .and_then(Value::as_array)
-                    .and_then(|choices| {
-                        choices
-                            .iter()
-                            .find_map(|c| c.get("finish_reason").and_then(Value::as_str))
-                    })
-            })
-            .or_else(|| value.get("stop_reason").and_then(Value::as_str));
-        if let Some(stop) = stop.filter(|s| !s.is_empty()) {
-            self.stop_reason = Some(stop.to_owned());
-        }
-        if value.get("type").and_then(Value::as_str) == Some("vkdg_context_usage") {
-            self.context_usage_pct = value.get("pct").and_then(Value::as_f64);
-        }
-    }
+fn looks_like_sse(first: &[u8]) -> bool {
+    let t = first.trim_ascii_start();
+    t.starts_with(b"event:") || t.starts_with(b"data:") || t.starts_with(b":")
 }
 
 #[cfg(test)]
@@ -279,56 +211,5 @@ mod tests {
         );
         assert_eq!(meter(&["not json"]), TokenUsage::default());
         assert_eq!(meter(&[]), TokenUsage::default());
-    }
-}
-
-#[cfg(test)]
-mod openai_cache_tests {
-    use super::*;
-
-    fn meter(chunks: &[&str]) -> TokenUsage {
-        let mut m = UsageMeter::default();
-        for c in chunks {
-            m.feed(c.as_bytes());
-        }
-        m.finish()
-    }
-
-    // Refutes: treating the OpenAI shape like the Anthropic one. `prompt_tokens`
-    // already counts the cached tokens, so adding a cache read on top bills them twice,
-    // and ignoring `prompt_tokens_details.cached_tokens` bills them at the full price.
-    // Cache creation is outside `prompt_tokens` (the gateway's own extension field).
-    #[test]
-    fn openai_usage_reads_cached_tokens_without_double_counting() {
-        let u = meter(&[
-            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":112,\"completion_tokens\":3,\"total_tokens\":115,\"prompt_tokens_details\":{\"cached_tokens\":100},\"cache_creation_input_tokens\":20}}\n\n",
-            "data: [DONE]\n\n",
-        ]);
-        assert_eq!(
-            u,
-            TokenUsage {
-                input: 132,
-                output: 3,
-                cache_read: 100,
-                cache_write: 20,
-            }
-        );
-    }
-
-    // Same shape in a non-streaming body.
-    #[test]
-    fn openai_json_body_reads_cached_tokens() {
-        let u = meter(&[
-            "{\"usage\":{\"prompt_tokens\":50,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":40}}}",
-        ]);
-        assert_eq!(
-            u,
-            TokenUsage {
-                input: 50,
-                output: 1,
-                cache_read: 40,
-                cache_write: 0,
-            }
-        );
     }
 }

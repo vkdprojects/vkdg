@@ -301,7 +301,7 @@ routes:
         assert!(snap2.version > snap1.version);
     }
 
-    /// Defeat: `watch()` would panic or propagate a bad snapshot on invalid reload.
+    /// Defeat: watch() would panic or propagate a bad snapshot on invalid reload.
     /// Verifies the channel setup and that a valid initial snapshot is preserved.
     #[tokio::test]
     async fn watch_rejects_invalid_reload() {
@@ -329,7 +329,7 @@ routes:
 
     /// Plausible wrong impl: invalid config reload replaces the active snapshot,
     /// causing the gateway to activate an invalid configuration.
-    /// `watch()` must reject the reload and keep the current snapshot.
+    /// watch() must reject the reload and keep the current snapshot.
     #[tokio::test]
     async fn invalid_reload_does_not_replace_active_snapshot() {
         use std::io::Write;

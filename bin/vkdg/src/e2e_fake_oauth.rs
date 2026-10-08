@@ -51,7 +51,7 @@ impl ProviderAdapter for FakeOAuth {
         PROVIDER_ID
     }
 
-    fn display_name(&self) -> &'static str {
+    fn display_name(&self) -> &str {
         "Fake OAuth (e2e)"
     }
 

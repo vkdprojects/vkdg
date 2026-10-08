@@ -1,14 +1,14 @@
 //! Free-tier provider definitions.
 //!
-//! Each provider is declared as a static slice of `ConnectionConfig`.
-//! Operators call `free_tier_connections()` to get the full list,
-//! then add them to their `ConnectionCatalog`.
+//! Each provider is declared as a static slice of ConnectionConfig.
+//! Operators call free_tier_connections() to get the full list,
+//! then add them to their ConnectionCatalog.
 
 use vkdg_connections::{AuthKind, ConnectionConfig, ProviderKind};
 use vkdg_core::{CapabilitySet, ConnectionId};
 
 /// Models available on Groq free tier (as of 2026).
-/// Rate limits apply; see <https://console.groq.com/docs/rate-limits>
+/// Rate limits apply; see https://console.groq.com/docs/rate-limits
 pub const GROQ_MODELS: &[&str] = &[
     "llama-3.1-70b-versatile",
     "llama-3.1-8b-instant",
@@ -34,7 +34,7 @@ pub const FIREWORKS_MODELS: &[&str] = &[
     "accounts/fireworks/models/mixtral-8x7b-instruct",
 ];
 
-/// Returns `ConnectionConfig` entries for all free-tier providers.
+/// Returns ConnectionConfig entries for all free-tier providers.
 ///
 /// Only providers whose API key env var is set are included.
 /// Silently skips providers with missing keys — callers decide
@@ -52,7 +52,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             auth: AuthKind::ApiKey {
                 env_var: "GROQ_API_KEY".into(),
             },
-            models: GROQ_MODELS.iter().map(|s| (*s).to_string()).collect(),
+            models: GROQ_MODELS.iter().map(|s| s.to_string()).collect(),
             max_concurrent: 30,
             weight: 1,
             tags: vec!["free-tier".into(), "groq".into()],
@@ -71,7 +71,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             auth: AuthKind::ApiKey {
                 env_var: "TOGETHER_API_KEY".into(),
             },
-            models: TOGETHER_MODELS.iter().map(|s| (*s).to_string()).collect(),
+            models: TOGETHER_MODELS.iter().map(|s| s.to_string()).collect(),
             max_concurrent: 20,
             weight: 1,
             tags: vec!["free-tier".into(), "together".into()],
@@ -90,7 +90,7 @@ pub fn free_tier_connections() -> Vec<ConnectionConfig> {
             auth: AuthKind::ApiKey {
                 env_var: "FIREWORKS_API_KEY".into(),
             },
-            models: FIREWORKS_MODELS.iter().map(|s| (*s).to_string()).collect(),
+            models: FIREWORKS_MODELS.iter().map(|s| s.to_string()).collect(),
             max_concurrent: 25,
             weight: 1,
             tags: vec!["free-tier".into(), "fireworks".into()],

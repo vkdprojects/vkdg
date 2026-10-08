@@ -46,10 +46,6 @@ export interface ConnectionSummary {
   /** `unknown` when the data plane is not running. */
   status: ConnectionStatus;
   model_count: number;
-  /** Model patterns this connection serves, e.g. `claude-*`. */
-  models: string[];
-  /** Share of traffic relative to other connections matching the same model. */
-  weight: number;
   active_requests: number;
   max_concurrent: number;
   /** RFC 3339; set while cooling down or while the circuit is open. */
@@ -58,13 +54,6 @@ export interface ConnectionSummary {
   account_id?: string;
   /** Set only while cooling down. */
   failure_count?: number;
-}
-
-/** PATCH body: an absent field is left as it is. `models` must be non-empty; the numbers at least 1. */
-export interface ConnectionPatch {
-  models?: string[];
-  max_concurrent?: number;
-  weight?: number;
 }
 
 export interface ConnectionTestResult {
@@ -129,16 +118,6 @@ export interface CreatedKey extends ClientKey {
   key: string;
 }
 
-export type UsageWindowKind = 'five_hour' | 'weekly' | 'weekly_sonnet' | 'weekly_opus';
-
-export interface UsageWindow {
-  kind: UsageWindowKind;
-  /** 0-100 as reported by the upstream; may exceed 100 on overshoot. */
-  used_percent: number;
-  /** Unix seconds; null when the upstream gave no reset time. */
-  resets_at: number | null;
-}
-
 export interface Account {
   id: string;
   provider: string;
@@ -163,12 +142,6 @@ export interface Account {
   credits_checked_at?: string;
   /** Opaque fingerprint of the upstream user, when reported. */
   credits_user_ref?: string;
-  /**
-   * Rate-limit windows for providers that meter by window (Claude Code, Codex).
-   * Only windows the upstream reported are present — a plan with no general
-   * weekly limit has no `weekly` entry. Absent when none were reported.
-   */
-  usage_windows?: UsageWindow[];
 }
 
 export type OAuthFlow = 'authorization_code_pkce' | 'device_code' | 'import_token';
@@ -214,18 +187,10 @@ export type LoginStart =
     }
   | { flow: 'authorization_code_pkce'; login_id: string; authorize_url: string };
 
-/** What happened to the connection that serves a freshly connected account. */
-export interface ConnectionOutcome {
-  /** Connection created (or already existing) for the account. */
-  connection_id?: string;
-  /** Why it could not be created; the account itself was saved. */
-  connection_error?: string;
-}
-
 export type LoginPoll =
   | { status: 'pending' | 'slow_down' }
   | { status: 'failed'; message: string }
-  | ({ status: 'done'; account: Account } & ConnectionOutcome);
+  | { status: 'done'; account: Account };
 
 export interface RouteSummary {
   id: string;
@@ -261,21 +226,6 @@ export interface RequestSummary {
   output_tokens?: number | null;
   /** Microdollars at the provider's list price; absent when it lists none. */
   cost_microdollars?: number | null;
-  /** Model stop reason; absent until stream ends. */
-  stop_reason?: string | null;
-  /** Error message when status is "failed". */
-  error_message?: string | null;
-  /** Whether thinking/extended reasoning was requested. */
-  thinking_requested?: boolean | null;
-  /** Number of messages in the conversation. */
-  message_count?: number | null;
-  /** Pipeline phase timestamps: [[phase_name, unix_ms], ...]. Absent on older records. */
-  state_transitions?: [string, number][] | null;
-  /** Prompt-cache tokens read from / written to the provider cache. */
-  cache_read_tokens?: number | null;
-  cache_write_tokens?: number | null;
-  /** Kiro context window usage (0–100+%). Only present for Kiro-backed requests. */
-  context_usage_pct?: number | null;
 }
 
 export type RequestStatusFilter = 'all' | 'completed' | 'cancelled' | 'failed';
@@ -340,16 +290,6 @@ export const api = {
     req<{ items: ConnectionSummary[]; total: number }>('GET', '/admin/v1/connections'),
   testConnection: (id: string) =>
     req<ConnectionTestResult>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/test`),
-  patchConnection: (id: string, patch: ConnectionPatch) =>
-    req<ConnectionSummary>('PATCH', `/admin/v1/connections/${encodeURIComponent(id)}`, patch),
-  resetConnectionCooldown: (id: string) =>
-    req<ConnectionSummary>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/reset-cooldown`),
-  /** Removes the connection and every route target naming it; the account behind it stays. */
-  deleteConnection: (id: string) =>
-    req<void>('DELETE', `/admin/v1/connections/${encodeURIComponent(id)}`),
-  /** Asks the provider for its concrete model ids and replaces the connection's `models` with them. */
-  syncConnectionModels: (id: string) =>
-    req<{ models: string[]; count: number }>('POST', `/admin/v1/connections/${encodeURIComponent(id)}/models/sync`),
   listKeys: () =>
     req<{ items: ClientKey[]; total: number }>('GET', '/admin/v1/keys'),
   createKey: (name: string, scopes: KeyScope[], limits: KeyLimits = {}) =>
@@ -368,9 +308,6 @@ export const api = {
     req<{ items: Account[]; total: number }>('GET', '/admin/v1/accounts'),
   deleteAccount: (id: string) =>
     req<void>('DELETE', `/admin/v1/accounts/${encodeURIComponent(id)}`),
-  /** Creates the routing connection for an account, or returns the one it already has. */
-  enableAccount: (accountId: string) =>
-    req<{ connection_id: string }>('POST', `/admin/v1/accounts/${encodeURIComponent(accountId)}/connection`),
   /** Providers on this gateway that support interactive login, plugins included. */
   oauthProviders: () =>
     req<{ items: OAuthProvider[] }>('GET', '/admin/v1/providers/oauth'),
@@ -382,7 +319,7 @@ export const api = {
   pollLogin: (provider: string, login_id: string, code?: string) =>
     req<LoginPoll>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/poll`, { login_id, code }),
   importToken: (provider: string, method: string, params: Record<string, string>, accountId?: string) =>
-    req<{ status: 'done'; account: Account } & ConnectionOutcome>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params, account_id: accountId }),
+    req<{ status: 'done'; account: Account }>('POST', `/admin/v1/oauth/${encodeURIComponent(provider)}/import`, { method, params, account_id: accountId }),
   listRoutes: () =>
     req<{ items: RouteSummary[] }>('GET', '/admin/v1/routes'),
   previewRoute: (model: string) =>

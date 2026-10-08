@@ -3,15 +3,13 @@
   import { AlertDialog } from 'bits-ui';
   import { toast } from 'svelte-sonner';
   import { api } from '$lib/api.js';
-  import type { Account, ConnectionOutcome, ConnectionSummary } from '$lib/api.js';
+  import type { Account } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
-  import { AccountCredits, Badge, Button, Card, EmptyState, Spinner, StatusDot, UsageOverview } from '$lib/components/index.js';
+  import { AccountCredits, Badge, Button, Card, EmptyState, Spinner, StatusDot } from '$lib/components/index.js';
   import { formatRelativeTime } from '$lib/format.js';
-  import AccountRouting from './AccountRouting.svelte';
   import ConnectAccountModal from './ConnectAccountModal.svelte';
 
   let accounts = $state<Account[]>([]);
-  let connections = $state<ConnectionSummary[]>([]);
   let loading = $state(true);
   let connectOpen = $state(false);
   let connectProvider = $state('kiro');
@@ -37,9 +35,7 @@
 
   async function refresh() {
     try {
-      const [accountList, connectionList] = await Promise.all([api.listAccounts(), api.listConnections()]);
-      accounts = accountList.items;
-      connections = connectionList.items;
+      accounts = (await api.listAccounts()).items;
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -56,14 +52,8 @@
     connectOpen = true;
   }
 
-  function onConnected(account: Account, outcome: ConnectionOutcome) {
-    if (outcome.connection_error) {
-      toast.warning(m.acct_connection_failed({ error: outcome.connection_error }));
-    } else if (outcome.connection_id) {
-      toast.success(m.acct_connected_with_connection({ label: account.label, id: outcome.connection_id }));
-    } else {
-      toast.success(m.acct_connected({ label: account.label }));
-    }
+  function onConnected(account: Account) {
+    toast.success(m.acct_connected({ label: account.label }));
     refresh();
   }
 
@@ -94,7 +84,6 @@
   {:else if accounts.length === 0}
     <EmptyState title={m.acct_empty()} description={m.acct_empty_desc()} />
   {:else}
-    <div class="overview-slot"><UsageOverview {accounts} /></div>
     <div class="account-grid">
       {#each accounts as account (account.id)}
         <Card padding="0">
@@ -130,12 +119,6 @@
             {#if account.revoked_reason}
               <p class="reason">{account.revoked_reason}</p>
             {/if}
-
-            <AccountRouting
-              {account}
-              connections={connections.filter((c) => c.account_id === account.id)}
-              onchanged={refresh}
-            />
 
             <footer class="account-actions">
               <Button
@@ -200,8 +183,6 @@
     font-size: 0.875rem;
     padding: 16px 0;
   }
-
-  .overview-slot { margin-bottom: 1rem; }
 
   .account-grid {
     display: grid;

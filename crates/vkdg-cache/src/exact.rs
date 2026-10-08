@@ -73,7 +73,7 @@ impl CacheBackend for SqliteExactCache {
                 )
                 .map_err(|e| VkdgError::Internal(e.to_string()))?;
             let mut rows = stmt
-                .query(params![key, i64::try_from(now).unwrap_or(i64::MAX)])
+                .query(params![key, now as i64])
                 .map_err(|e| VkdgError::Internal(e.to_string()))?;
             if let Some(row) = rows
                 .next()
@@ -82,11 +82,11 @@ impl CacheBackend for SqliteExactCache {
                 Ok(CacheResult::Hit(CacheEntry {
                     model: row.get(0).unwrap_or_default(),
                     response_json: row.get(1).unwrap_or_default(),
-                    cached_at_secs: u64::try_from(row.get::<_, i64>(2).unwrap_or(0)).unwrap_or(0),
+                    cached_at_secs: row.get::<_, i64>(2).unwrap_or(0) as u64,
                     ttl_secs: row
                         .get::<_, Option<i64>>(3)
                         .unwrap_or(None)
-                        .map(|v| u32::try_from(v.max(0)).unwrap_or(u32::MAX)),
+                        .map(|v| v as u32),
                     cache_type: row.get(4).unwrap_or_else(|_| "exact".into()),
                     hit_score: None,
                 }))
@@ -101,7 +101,7 @@ impl CacheBackend for SqliteExactCache {
     async fn store(&self, key: &str, entry: CacheEntry) -> Result<(), VkdgError> {
         let conn = Arc::clone(&self.conn);
         let key = key.to_string();
-        let now = i64::try_from(unix_secs()).unwrap_or(i64::MAX);
+        let now = unix_secs() as i64;
         spawn_blocking(move || {
             let conn = conn.blocking_lock();
             conn.execute(
@@ -113,7 +113,7 @@ impl CacheBackend for SqliteExactCache {
                     entry.model,
                     entry.response_json,
                     now,
-                    entry.ttl_secs.map(i64::from),
+                    entry.ttl_secs.map(|v| v as i64),
                     entry.cache_type,
                 ],
             )
@@ -142,14 +142,15 @@ impl CacheBackend for SqliteExactCache {
 fn unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_cache() -> SqliteExactCache {
+    async fn make_cache() -> SqliteExactCache {
         SqliteExactCache::in_memory().unwrap()
     }
 
@@ -167,7 +168,7 @@ mod tests {
     // Plausible wrong impl: store succeeds but lookup returns Miss (key mismatch)
     #[tokio::test]
     async fn store_and_lookup_hit() {
-        let c = make_cache();
+        let c = make_cache().await;
         c.store("key1", make_entry("claude-3-5-haiku"))
             .await
             .unwrap();
@@ -180,7 +181,7 @@ mod tests {
     // Plausible wrong impl: different keys share the same row (collision)
     #[tokio::test]
     async fn different_keys_independent() {
-        let c = make_cache();
+        let c = make_cache().await;
         c.store("key1", make_entry("m1")).await.unwrap();
         assert!(matches!(c.lookup("key2").await.unwrap(), CacheResult::Miss));
     }
@@ -188,7 +189,7 @@ mod tests {
     // Plausible wrong impl: expired entries returned as hits
     #[tokio::test]
     async fn expired_entry_is_miss() {
-        let c = make_cache();
+        let c = make_cache().await;
         c.store("key1", make_entry("m1")).await.unwrap();
         // Force cached_at=0, ttl_secs=1 so it's expired relative to any real timestamp
         {
@@ -205,7 +206,7 @@ mod tests {
     // Plausible wrong impl: invalidate_tenant removes entries from other tenants
     #[tokio::test]
     async fn invalidate_tenant_scoped() {
-        let c = make_cache();
+        let c = make_cache().await;
         {
             let conn = c.conn.lock().await;
             conn.execute(

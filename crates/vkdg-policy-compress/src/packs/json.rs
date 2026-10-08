@@ -14,7 +14,7 @@ use crate::FilterPack;
 pub struct JsonOutputPack;
 
 impl FilterPack for JsonOutputPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:json-output"
     }
 
@@ -22,7 +22,7 @@ impl FilterPack for JsonOutputPack {
         ContentClass::JsonOutput
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compacts pretty-printed JSON to single-line form via serde_json"
     }
 

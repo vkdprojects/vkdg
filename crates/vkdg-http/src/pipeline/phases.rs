@@ -56,7 +56,7 @@ pub(super) async fn resolve_combo_and_session(
 
     ComboSessionResolution {
         combo_model: combo.as_ref().and_then(|c| c.model.clone()),
-        combo_id: combo.map(|c| c.id),
+        combo_id: combo.map(|c| c.id.clone()),
         effective_compressor_id,
         compression_threshold,
         session_preferred,
@@ -69,11 +69,11 @@ pub(super) async fn prepare_operation(
     mut operation: Operation,
     envelope: &RequestEnvelope,
     compression_threshold: u32,
-    effective_compressor_id: Option<&str>,
+    effective_compressor_id: &Option<String>,
 ) -> (Operation, Option<CompressionMetrics>) {
     let mut compression_metrics: Option<CompressionMetrics> = None;
     // Context compression (pre-dispatch)
-    let skip_compression = effective_compressor_id == Some("none");
+    let skip_compression = effective_compressor_id.as_deref() == Some("none");
     if !skip_compression {
         if let Some(compressor) = &pipeline.compressor {
             if let Operation::Conversation(conv_req) = &operation {
@@ -113,7 +113,10 @@ pub(super) async fn prepare_operation(
     if let (Some(global_prompt), Operation::Conversation(conv_req)) =
         (&pipeline.global_system_prompt, &mut operation)
     {
-        conv_req.prepend_system(global_prompt);
+        conv_req.system = Some(match &conv_req.system {
+            None => global_prompt.clone(),
+            Some(existing) => format!("{global_prompt}\n\n{existing}"),
+        });
     }
 
     // Memory injection
@@ -125,7 +128,7 @@ pub(super) async fn prepare_operation(
             .last()
             .and_then(|m| match &m.content {
                 MessageContent::Text(t) => Some(t.as_str()),
-                MessageContent::Blocks(_) => None,
+                _ => None,
             })
             .unwrap_or("");
         let memories = memory_store.retrieve(&envelope.tenant_id.0, query, 5).await;
@@ -138,7 +141,7 @@ pub(super) async fn prepare_operation(
     (operation, compression_metrics)
 }
 
-pub(super) async fn post_response_accounting(
+pub(super) fn post_response_accounting(
     pipeline: &PipelineState,
     ctx: &vkdg_core::pipeline::PipelineCtx,
     response_body: Option<&bytes::Bytes>,
@@ -179,15 +182,18 @@ pub(super) async fn post_response_accounting(
     if let Some(body) = response_body {
         if pipeline.eval_enabled {
             let metrics = vkdg_eval::LatencyMetrics {
-                latency_ms: u32::try_from(start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
+                latency_ms: start_time.elapsed().as_millis() as u32,
                 ttft_ms: None, // Phase E: track TTFT in streaming
-                token_count: u32::try_from(body.len() / 4).unwrap_or(u32::MAX),
+                token_count: (body.len() / 4) as u32,
             };
             let eval = vkdg_eval::EvalScorer::score(
                 &ctx.envelope.request_id.0.to_string(),
-                ctx.connection_id.as_ref().map_or("", |c| c.0.as_str()),
+                ctx.connection_id
+                    .as_ref()
+                    .map(|c| c.0.as_str())
+                    .unwrap_or(""),
                 &String::from_utf8_lossy(body),
-                &metrics,
+                metrics,
             );
             tracing::debug!(
                 score = eval.score,
@@ -198,7 +204,7 @@ pub(super) async fn post_response_accounting(
         }
     }
 
-    // Quota: non-streaming only (needs the response body to estimate tokens)
+    // Quota + session pin: non-streaming only
     if let Some(approx_tokens) = response_body.map(|b| (b.len() / 4) as u64) {
         if let Some(tracker) = &pipeline.quota_tracker {
             if let Some(conn_id) = &ctx.connection_id {
@@ -209,22 +215,23 @@ pub(super) async fn post_response_accounting(
                 });
             }
         }
-    }
-
-    // Session pin: streaming and non-streaming alike, since agents stream. It is
-    // awaited, not spawned: the next turn of the conversation can arrive before a
-    // spawned task runs and would be routed afresh to another connection.
-    if let (Some(registry), Some(session_key), Some(conn_id)) = (
-        &pipeline.session_registry,
-        &ctx.envelope.session_key,
-        &ctx.connection_id,
-    ) {
-        registry.pin(session_key.0.clone(), conn_id.clone()).await;
+        if let (Some(registry), Some(session_key), Some(conn_id)) = (
+            &pipeline.session_registry,
+            &ctx.envelope.session_key,
+            &ctx.connection_id,
+        ) {
+            let registry = Arc::clone(registry);
+            let session_id = session_key.0.clone();
+            let conn_id = conn_id.clone();
+            tokio::spawn(async move {
+                registry.pin(session_id, conn_id).await;
+            });
+        }
     }
 
     // Latency recording (unconditional)
     if let (Some(tracker), Some(conn_id)) = (&pipeline.latency_tracker, &ctx.connection_id) {
-        let latency_ms = u32::try_from(start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+        let latency_ms = start_time.elapsed().as_millis() as u32;
         let tracker = Arc::clone(tracker);
         let conn_id = conn_id.clone();
         tokio::spawn(async move {
@@ -277,7 +284,7 @@ pub fn relay_on_rotation(
             };
             let content = match &m.content {
                 MessageContent::Text(t) => t.chars().take(200).collect::<String>(),
-                MessageContent::Blocks(_) => "[non-text content]".into(),
+                _ => "[non-text content]".into(),
             };
             format!("{role}: {content}")
         })
@@ -301,5 +308,8 @@ pub fn relay_on_rotation(
         "context-relay on account rotation",
     );
 
-    conv_req.prepend_system(&relay_block);
+    conv_req.system = Some(match &conv_req.system {
+        None => relay_block,
+        Some(existing) => format!("{relay_block}\n\n{existing}"),
+    });
 }

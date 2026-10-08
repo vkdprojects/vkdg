@@ -1,4 +1,4 @@
-//! Observability: tracing setup, OTLP export, and `DecisionRecord` logging.
+//! Observability: tracing setup, OTLP export, and DecisionRecord logging.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};

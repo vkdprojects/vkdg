@@ -1,4 +1,4 @@
-//! Parse `OpenAI` Chat Completions SSE chunks and Images API responses.
+//! Parse OpenAI Chat Completions SSE chunks and Images API responses.
 //!
 //! `parse_sse_line` returns a `Vec` rather than `Option` to handle parallel
 //! tool calls in a single chunk (where `delta.tool_calls` may contain multiple
@@ -54,7 +54,7 @@ struct OaiUsage {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Parse one SSE data line from an `OpenAI` Chat Completions stream.
+/// Parse one SSE data line from an OpenAI Chat Completions stream.
 ///
 /// Returns a `Vec` to support parallel tool calls where a single chunk may
 /// contain multiple `tool_calls` entries, each producing its own event.
@@ -84,8 +84,9 @@ pub fn parse_sse_line(data: &str, request_id: &RequestId) -> Vec<ConversationEve
         }
     }
 
-    let Some(choice) = chunk.choices.into_iter().next() else {
-        return vec![];
+    let choice = match chunk.choices.into_iter().next() {
+        Some(c) => c,
+        None => return vec![],
     };
 
     // finish_reason chunk — must check before delta to avoid emitting spurious events.
@@ -152,7 +153,7 @@ pub fn parse_sse_line(data: &str, request_id: &RequestId) -> Vec<ConversationEve
     vec![]
 }
 
-/// Map an `OpenAI` `finish_reason` string to a [`StopReason`].
+/// Map an OpenAI `finish_reason` string to a [`StopReason`].
 fn parse_stop_reason(reason: &str) -> StopReason {
     match reason {
         "stop" => StopReason::EndTurn,
@@ -185,9 +186,9 @@ struct OaiImageDatum {
 
 // ── Images API public API ─────────────────────────────────────────────────────
 
-/// Parse an `OpenAI` Images API response body into an [`ImageResponse`].
+/// Parse an OpenAI Images API response body into an [`ImageResponse`].
 ///
-/// `OpenAI` format: `{"created": 1234567890, "data": [{"url": "...", "revised_prompt": "..."}]}`
+/// OpenAI format: `{"created": 1234567890, "data": [{"url": "...", "revised_prompt": "..."}]}`
 pub fn parse_image_response(
     body: &[u8],
     request_id: &RequestId,
@@ -234,7 +235,7 @@ mod tests {
         );
     }
 
-    /// delta.content should produce an `OutputDelta` event with the text.
+    /// delta.content should produce an OutputDelta event with the text.
     #[test]
     fn parse_output_delta() {
         let data = r#"{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}"#;
@@ -248,7 +249,7 @@ mod tests {
         );
     }
 
-    /// First `tool_call` chunk (with name) should yield a `ToolCallDelta` carrying the name.
+    /// First tool_call chunk (with name) should yield a ToolCallDelta carrying the name.
     #[test]
     fn parse_tool_call_name_chunk() {
         let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}"#;
@@ -263,7 +264,7 @@ mod tests {
         );
     }
 
-    /// Subsequent `tool_call` chunks carry argument fragments, not name.
+    /// Subsequent tool_call chunks carry argument fragments, not name.
     #[test]
     fn parse_tool_call_args_chunk() {
         let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc"}}]},"finish_reason":null}]}"#;
@@ -296,7 +297,7 @@ mod tests {
         );
     }
 
-    /// `finish_reason:stop` must produce Completed{EndTurn}.
+    /// finish_reason:stop must produce Completed{EndTurn}.
     #[test]
     fn parse_finish_reason_stop() {
         let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#;
@@ -312,7 +313,7 @@ mod tests {
         );
     }
 
-    /// `finish_reason:tool_calls` must produce Completed{ToolUse}.
+    /// finish_reason:tool_calls must produce Completed{ToolUse}.
     #[test]
     fn parse_finish_reason_tool_calls() {
         let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#;
@@ -335,7 +336,7 @@ mod tests {
         assert!(events.is_empty(), "{events:?}");
     }
 
-    /// A chunk with two parallel `tool_calls` must produce two `ToolCallDelta` events.
+    /// A chunk with two parallel tool_calls must produce two ToolCallDelta events.
     #[test]
     fn parse_parallel_tool_calls() {
         let data = r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"tool_a","arguments":""}},{"index":1,"id":"call_b","function":{"name":"tool_b","arguments":""}}]},"finish_reason":null}]}"#;
@@ -356,7 +357,7 @@ mod tests {
     fn parse_image_response_url() {
         let body = br#"{"created":1234567890,"data":[{"url":"https://example.com/img.png","revised_prompt":"a fluffy cat"}]}"#;
         let resp = parse_image_response(body, &rid()).unwrap();
-        assert_eq!(resp.created, 1_234_567_890);
+        assert_eq!(resp.created, 1234567890);
         assert_eq!(resp.data.len(), 1);
         assert_eq!(
             resp.data[0].url.as_deref(),

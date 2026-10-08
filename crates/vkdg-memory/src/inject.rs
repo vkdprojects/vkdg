@@ -17,13 +17,14 @@ pub fn inject_memories(
         .map(|m| format!("- {}", m.fact))
         .collect::<Vec<_>>()
         .join("\n");
-    let prefix = format!("Relevant context from previous interactions:\n{memory_block}\n");
-    match req.system {
-        None => req.system = Some(prefix),
-        // The prefix ends with a newline, so the blank-line join of the blocks
-        // adds exactly one more: the same text as before.
-        Some(_) => req.prepend_system(prefix.trim_end_matches('\n')),
-    }
+    let prefix = format!(
+        "Relevant context from previous interactions:\n{}\n",
+        memory_block
+    );
+    req.system = match req.system.take() {
+        None => Some(prefix),
+        Some(existing) => Some(format!("{prefix}\n{existing}")),
+    };
     req
 }
 
@@ -45,7 +46,6 @@ mod tests {
             system: None,
             required_capabilities: CapabilitySet::default(),
             thinking: None,
-            ..Default::default()
         }
     }
 
@@ -83,35 +83,6 @@ mod tests {
             sys.find("User prefers Python") < sys.find("You are helpful."),
             "memory must come before original system"
         );
-    }
-
-    // The client's cache breakpoint sits on its own system block. Memories
-    // change the system text, so the blocks must follow or be dropped: a stale
-    // block set would send the prompt without the memories.
-    #[test]
-    fn memories_keep_system_blocks_in_step_with_the_system_text() {
-        use vkdg_operations::{CacheControl, SystemBlock};
-        let marked = Some(CacheControl::default());
-        let req = ConversationRequest {
-            system: Some("You are helpful.".into()),
-            system_blocks: vec![SystemBlock {
-                text: "You are helpful.".into(),
-                cache_control: marked.clone(),
-            }],
-            ..empty_req()
-        };
-        let out = inject_memories(req, &[mem("User prefers Python")]);
-        let blocks = out
-            .system_for_wire()
-            .expect("blocks still describe the system");
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].text.contains("User prefers Python"));
-        assert_eq!(
-            blocks[0].cache_control, None,
-            "memories are not a breakpoint"
-        );
-        assert_eq!(blocks[1].text, "You are helpful.");
-        assert_eq!(blocks[1].cache_control, marked);
     }
 
     // Plausible wrong impl: inject with empty memories modifies request

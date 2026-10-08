@@ -15,8 +15,6 @@ Input adapter for the OpenAI Chat Completions protocol. Decodes wire requests â†
 - A decode error returns an HTTP response with a valid OpenAI error body, never a generic 500
 - `encode_event` for `Completed` always emits `data: [DONE]` as the final frame
 - Parallel tool call deltas are encoded preserving the `index` field
-- Decode carries `tool_choice`, `parallel_tool_calls`, `stop`, `top_p`, `max_completion_tokens` (over `max_tokens`), the text beside `tool_calls`, every `system`/`developer` message, and `image_url` parts as images; a value it cannot carry (unknown `tool_choice`, non-string `stop`, `top_p` outside 0..1, unknown role or content part) is a `400` naming the field, never a silent default
-- A tool call whose `arguments` is not a JSON object replays as `{}`: clients echo model output verbatim, and rejecting it would wedge the session
 
 ## Focal test
 

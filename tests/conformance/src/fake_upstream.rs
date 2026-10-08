@@ -33,28 +33,23 @@ pub enum FakeUpstreamBehavior {
     /// Return a well-formed Anthropic-style 200 non-streaming response.
     AnthropicOk { content: String },
     /// Return a well-formed Anthropic SSE stream (text/event-stream).
-    /// Emits: `message_start` → `content_block_start` → `content_block_delta` → `message_delta` → [DONE]
+    /// Emits: message_start → content_block_start → content_block_delta → message_delta → [DONE]
     AnthropicStreamOk { content: String },
     /// Return HTTP 429 in Anthropic error format.
     AnthropicOk429,
     /// Return OpenAI-format streaming SSE chunks (text/event-stream).
     OpenAIStreamOk { content: String },
-    /// Return HTTP 429 in `OpenAI` error format.
+    /// Return HTTP 429 in OpenAI error format.
     OpenAI429,
     /// Stream raw bytes with an arbitrary content-type: lets a test serve a
-    /// non-SSE upstream protocol such as Kiro's AWS `EventStream` framing.
+    /// non-SSE upstream protocol such as Kiro's AWS EventStream framing.
     RawStream { content_type: String, body: Vec<u8> },
-    /// SSE stream with zero content deltas: only `message_start` + `message_delta`(stop) + `[DONE]`.
-    /// Tests that the pipeline produces a valid `stop_reason` response on an empty content stream.
-    AnthropicStreamEmpty,
 }
 
 #[derive(Clone)]
 pub struct FakeUpstreamState {
     pub behavior: FakeUpstreamBehavior,
     pub call_count: Arc<AtomicUsize>,
-    /// Every request body received, parsed as JSON (`null` when not JSON).
-    pub bodies: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
 }
 
 impl FakeUpstreamState {
@@ -65,15 +60,8 @@ impl FakeUpstreamState {
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
-async fn handle(
-    State(state): State<FakeUpstreamState>,
-    body: axum::body::Bytes,
-) -> impl IntoResponse {
+async fn handle(State(state): State<FakeUpstreamState>) -> impl IntoResponse {
     state.call_count.fetch_add(1, Ordering::Relaxed);
-    state
-        .bodies
-        .lock()
-        .push(serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null));
 
     match &state.behavior {
         FakeUpstreamBehavior::StaticJson { status, body } => {
@@ -180,30 +168,6 @@ async fn handle(
                 .body(axum::body::Body::from(body.clone()))
                 .unwrap()
         }
-        // Empty content stream: message_start + message_delta(stop_reason) + [DONE].
-        // No content_block_start or content_block_delta events.
-        FakeUpstreamBehavior::AnthropicStreamEmpty => {
-            let sse = format!(
-                "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
-                serde_json::to_string(&json!({
-                    "type": "message_start",
-                    "message": {"id": "msg_empty_01", "type": "message", "role": "assistant",
-                                "content": [], "model": "claude-3-5-sonnet-20241022",
-                                "stop_reason": null, "usage": {"input_tokens": 5, "output_tokens": 0}}
-                })).unwrap(),
-                serde_json::to_string(&json!({
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": null},
-                    "usage": {"output_tokens": 0}
-                })).unwrap(),
-            );
-            axum::response::Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "text/event-stream")
-                .header("cache-control", "no-cache")
-                .body(axum::body::Body::from(sse))
-                .unwrap()
-        }
     }
 }
 
@@ -224,7 +188,6 @@ impl FakeUpstream {
         let state = FakeUpstreamState {
             behavior,
             call_count: Arc::new(AtomicUsize::new(0)),
-            bodies: Arc::default(),
         };
 
         let app = Router::new()
@@ -256,11 +219,6 @@ impl FakeUpstream {
     /// Number of requests the fake upstream has received.
     pub fn call_count(&self) -> usize {
         self.state.call_count()
-    }
-
-    /// The JSON body of every request received, oldest first.
-    pub fn bodies(&self) -> Vec<serde_json::Value> {
-        self.state.bodies.lock().clone()
     }
 }
 

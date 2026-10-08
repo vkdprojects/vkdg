@@ -11,8 +11,7 @@ Gateway HTTP server: frontdoor, admission guard, SSE parser, upstream HTTP clien
 - `AppState`: state injected into Axum handlers; cloneable, thread-safe
 - `build_router(state: AppState) -> Router`: builds the `axum::Router` with routes `/v1/messages`, `/health`, `/info`
 - `serve(config: ServerConfig, router: Router)`: starts the server and waits for a shutdown signal
-- `sse` module: incremental SSE parser (a view over `vkdg-provider-sdk`'s `SseFramer`), termination guard and heartbeat; `upstream` module: `HttpClient` that forwards to providers
-- `pipeline::relay`: how an upstream response reaches the client: passthrough (same dialect, bytes untouched), translation (different dialect, see `docs/sdk/dialect-translation.md`) or the adapter's own decoder (Kiro)
+- `sse` module: incremental SSE parser; `upstream` module: `HttpClient` that forwards to providers
 
 ## Invariants
 

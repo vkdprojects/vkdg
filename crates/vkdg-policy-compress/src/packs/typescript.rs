@@ -13,7 +13,7 @@ use crate::FilterPack;
 pub struct TypeScriptBuildPack;
 
 impl FilterPack for TypeScriptBuildPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:typescript-build"
     }
 
@@ -21,7 +21,7 @@ impl FilterPack for TypeScriptBuildPack {
         ContentClass::TypeScriptBuild
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses tsc output; keeps first 20 error lines"
     }
 
@@ -36,7 +36,7 @@ impl FilterPack for TypeScriptBuildPack {
             .iter()
             .filter(|l| l.contains("error TS") || l.contains("error:"))
             .take(20)
-            .map(|s| (*s).to_string())
+            .map(|s| s.to_string())
             .collect();
         if total_errors > 20 {
             out.push(format!("... {} more errors", total_errors - 20));

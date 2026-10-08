@@ -10,25 +10,14 @@ locale = "en"
 # Project-specific identifiers that look like typos to the checker.
 vkdg = "vkdg"
 VKDG = "VKDG"
-# lucide-svelte's icon is really spelled this way.
-SendHorizonal = "SendHorizonal"
 
 [default.extend-words]
 # café appears in the SSE parser UTF-8 boundary test as a multi-byte test fixture.
 caf = "caf"
-# "Hel" + "lo": streamed text split mid-word in the translation fixtures.
-Hel = "Hel"
-# "mis-escapes", "mis-frames": a prefix in hyphenated words in test comments.
-mis = "mis"
-# Accepted spelling variant, used in an error-path comment and test names.
-unparseable = "unparseable"
 
 [files]
 extend-exclude = [
     "Cargo.lock",
     "*.snap",
     "bun.lockb",
-    # Portuguese-language files: the checker is English-only.
-    "apps/console/messages/pt-BR.json",
-    "apps/console/REDESIGN-NOTES.md",
 ]

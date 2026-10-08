@@ -1,7 +1,7 @@
 //! Data-plane client authentication.
 //!
 //! Every `/v1/*` route is wrapped once by [`require_api_key`]. It accepts the
-//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (`OpenAI`
+//! key as `x-api-key` (Anthropic clients) or `Authorization: Bearer` (OpenAI
 //! clients), checks the endpoint's scope, and puts the caller's identity in the
 //! request extensions as [`ClientIdentity`] for the ingress handlers.
 //!
@@ -292,7 +292,7 @@ fn metered(
         .filter(|_| log_history)
         .map(|p| {
             let id = p.record.request_id.clone();
-            p.log.push(&p.record);
+            p.log.push(p.record);
             (p.log, id, p.price)
         });
     if charge.is_none() && history.is_none() {
@@ -332,14 +332,7 @@ impl Metered {
             return;
         };
         let usage = self.meter.finish();
-        let stop_reason = self.meter.stop_reason();
-        let context_usage_pct = self.meter.context_usage_pct();
-        let final_status = match self.meter.stream_end() {
-            crate::sse::StreamEnd::Completed => "completed",
-            crate::sse::StreamEnd::Failed => "failed",
-            crate::sse::StreamEnd::Open if self.ended => "completed",
-            crate::sse::StreamEnd::Open => "cancelled",
-        };
+        let ended = self.ended;
         let write = move || {
             if let Some((store, key_id)) = charge {
                 if let Err(e) = store.record_usage(&key_id, usage.input, usage.output) {
@@ -347,14 +340,7 @@ impl Metered {
                 }
             }
             if let Some((log, id, price)) = history {
-                log.finish(
-                    &id,
-                    usage.billed(),
-                    Some(final_status),
-                    price.as_ref(),
-                    stop_reason,
-                    context_usage_pct,
-                );
+                log.finish(&id, usage.billed(), ended, price.as_ref());
             }
         };
         // SQLite is blocking; keep it off the async workers.
@@ -427,7 +413,7 @@ fn reject(path: &str, status: StatusCode, message: &str) -> Response {
     reject_as(path, status, kind, code, message)
 }
 
-/// `kind` is the Anthropic `error.type`; `code` the `OpenAI` `error.code`.
+/// `kind` is the Anthropic `error.type`; `code` the OpenAI `error.code`.
 fn reject_as(path: &str, status: StatusCode, kind: &str, code: &str, message: &str) -> Response {
     let body = if path.starts_with("/v1/messages") {
         json!({ "type": "error", "error": { "type": kind, "message": message } })
@@ -736,14 +722,6 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 cost_microdollars: None,
-                stop_reason: None,
-                error_message: None,
-                thinking_requested: None,
-                message_count: None,
-                state_transitions: None,
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-                context_usage_pct: None,
             },
             price,
         }
@@ -894,116 +872,5 @@ mod tests {
         drop(resp);
         let r = settled(&log, "req-1").await.expect("row written");
         assert_eq!(r.status, "cancelled");
-    }
-
-    // Refutes: discarding a body after a valid terminal event being classified as
-    // cancellation, and stream errors or bare EOF being classified as success.
-    #[tokio::test]
-    async fn stream_history_distinguishes_terminal_failure_and_disconnect() {
-        use futures::StreamExt;
-        struct TestCase<'a> {
-            id: &'a str,
-            chunks: &'a [&'a str],
-            eof: bool,
-            status: &'a str,
-            stop: Option<&'a str>,
-        }
-        let cases = [
-            TestCase {
-                id: "chat_done",
-                chunks: &[
-                    "data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4}}\n\n",
-                    "data: [DONE]\n\n",
-                ],
-                eof: false,
-                status: "completed",
-                stop: Some("tool_calls"),
-            },
-            TestCase {
-                id: "anthropic_done",
-                chunks: &[
-                    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":4}}\n\n",
-                    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
-                ],
-                eof: false,
-                status: "completed",
-                stop: Some("end_turn"),
-            },
-            TestCase {
-                id: "error_done",
-                chunks: &[
-                    "data: {\"error\":{\"message\":\"synthetic failure\"}}\n\n",
-                    "data: [DONE]\n\n",
-                ],
-                eof: false,
-                status: "failed",
-                stop: None,
-            },
-            TestCase {
-                id: "bare_eof",
-                chunks: &[
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
-                ],
-                eof: true,
-                status: "completed",
-                stop: None,
-            },
-            TestCase {
-                id: "disconnected",
-                chunks: &[
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
-                ],
-                eof: false,
-                status: "cancelled",
-                stop: None,
-            },
-            TestCase {
-                id: "finish_without_done",
-                chunks: &[
-                    "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n",
-                ],
-                eof: false,
-                status: "cancelled",
-                stop: Some("stop"),
-            },
-            TestCase {
-                id: "content_not_terminal",
-                chunks: &[
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"[DONE] message_stop response.completed\"}}]}\n\n",
-                ],
-                eof: false,
-                status: "cancelled",
-                stop: None,
-            },
-        ];
-        for case in cases {
-            let log = Arc::new(vkdg_admin::handlers::requests::RequestLog::new());
-            let pending = pending(&log, case.id, None);
-            let source = futures::stream::iter(
-                case.chunks
-                    .iter()
-                    .map(|c| Ok::<_, std::io::Error>(bytes::Bytes::copy_from_slice(c.as_bytes()))),
-            );
-            let source: Pin<
-                Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
-            > = if case.eof {
-                Box::pin(source)
-            } else {
-                Box::pin(source.chain(futures::stream::pending()))
-            };
-            let mut response = Response::new(axum::body::Body::from_stream(source));
-            response.extensions_mut().insert(pending);
-            let mut body = metered(response, None, true).into_body().into_data_stream();
-            for _ in case.chunks {
-                body.next().await.unwrap().unwrap();
-            }
-            if case.eof {
-                assert!(body.next().await.is_none());
-            }
-            drop(body);
-            let row = settled(&log, case.id).await.unwrap();
-            assert_eq!(row.status, case.status, "{}", case.id);
-            assert_eq!(row.stop_reason.as_deref(), case.stop, "{}", case.id);
-        }
     }
 }

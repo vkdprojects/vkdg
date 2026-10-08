@@ -50,8 +50,8 @@ impl ComboService {
         self.resolver.all()
     }
 
-    pub fn create(&self, combo: &Combo) -> Result<Combo, ComboError> {
-        validate(combo)?;
+    pub fn create(&self, combo: Combo) -> Result<Combo, ComboError> {
+        validate(&combo)?;
         self.edit(|all| {
             if all.iter().any(|c| c.id == combo.id) {
                 return Err(ComboError::Exists);
@@ -65,7 +65,6 @@ impl ComboService {
     /// model). Policies the edit does not carry (compression, cache, mode
     /// pack, and the budget when `combo.budget` is `None`) are kept: merged
     /// under the write lock so a concurrent edit cannot slip in between.
-    #[allow(clippy::assigning_clones)] // id.to_owned() on &str; clone_from is not applicable
     pub fn update(&self, id: &str, mut combo: Combo) -> Result<Combo, ComboError> {
         combo.id = id.to_owned();
         validate(&combo)?;
@@ -180,7 +179,7 @@ mod tests {
     fn writes_apply_to_the_router_and_survive_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let (svc, router) = service(dir.path());
-        svc.create(&combo("fast", &["c1"])).unwrap();
+        svc.create(combo("fast", &["c1"])).unwrap();
         assert!(router.routes().iter().any(|r| r.match_models == ["fast"]));
 
         let (reopened, router2) = service(dir.path());
@@ -201,13 +200,13 @@ mod tests {
         let mut chain = combo("b", &["c1"]);
         chain.strategy = StrategyKind::PromptChain { steps: vec![] };
         for bad in [combo("x", &[]), combo("x*", &["c1"]), no_model, chain] {
-            assert!(matches!(svc.create(&bad), Err(ComboError::Invalid(_))));
+            assert!(matches!(svc.create(bad), Err(ComboError::Invalid(_))));
         }
         assert!(svc.list().is_empty());
         assert!(!dir.path().join("combos.json").exists());
-        svc.create(&combo("a", &["c1"])).unwrap();
+        svc.create(combo("a", &["c1"])).unwrap();
         assert_eq!(
-            svc.create(&combo("a", &["c2"])).err(),
+            svc.create(combo("a", &["c2"])).err(),
             Some(ComboError::Exists)
         );
     }
@@ -221,7 +220,7 @@ mod tests {
         let handles: Vec<_> = (0..16)
             .map(|i| {
                 let svc = Arc::clone(&svc);
-                std::thread::spawn(move || svc.create(&combo(&format!("c{i}"), &["t"])).unwrap())
+                std::thread::spawn(move || svc.create(combo(&format!("c{i}"), &["t"])).unwrap())
             })
             .collect();
         for h in handles {
@@ -251,7 +250,7 @@ mod tests {
             max_cost_microdollars: Some(5),
             overflow: "strict".into(),
         });
-        svc.create(&seeded).unwrap();
+        svc.create(seeded).unwrap();
         let got = svc.update("c", combo("ignored", &["t2"])).unwrap();
         assert_eq!(got.id, "c");
         assert_eq!(got.targets[0].0, "t2");

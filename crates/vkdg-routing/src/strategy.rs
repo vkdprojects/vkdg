@@ -42,7 +42,7 @@ impl Default for RoundRobinStrategy {
 
 #[async_trait]
 impl Strategy for RoundRobinStrategy {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "round_robin"
     }
 
@@ -71,7 +71,7 @@ pub struct FallbackChainStrategy;
 
 #[async_trait]
 impl Strategy for FallbackChainStrategy {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "fallback_chain"
     }
 
@@ -111,7 +111,7 @@ pub struct LowestLatencyStrategy;
 
 #[async_trait]
 impl Strategy for LowestLatencyStrategy {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "lowest_latency"
     }
 
@@ -130,11 +130,9 @@ impl Strategy for LowestLatencyStrategy {
     }
 }
 
-/// Power of two choices: sample two distinct eligible targets, take the one with
-/// fewer requests in flight; a tie goes to the first sample, which is random.
-/// Latency is deliberately not a signal here: it is only measured on targets
-/// that receive traffic, so preferring the faster one starves the other for as
-/// long as the first stays fast. Use `lowest_latency` to chase latency.
+/// Power of two choices: sample two distinct eligible targets, take the faster.
+/// Spreads load across near-equal targets instead of piling onto one, while
+/// still steering away from slow ones.
 pub struct PowerOfTwoChoicesStrategy {
     seed: AtomicUsize,
 }
@@ -164,7 +162,7 @@ impl Default for PowerOfTwoChoicesStrategy {
 
 #[async_trait]
 impl Strategy for PowerOfTwoChoicesStrategy {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "power_of_two_choices"
     }
 
@@ -175,10 +173,7 @@ impl Strategy for PowerOfTwoChoicesStrategy {
         filter: &EligibilityFilter,
         hints: &RoutingHints,
     ) -> Result<ConnectionId> {
-        let eligible: Vec<&ConnectionId> = candidates
-            .iter()
-            .filter(|c| !filter.is_excluded(c))
-            .collect();
+        let eligible = with_latency(candidates, filter, hints);
         let n = eligible.len();
         if n == 0 {
             return Err(VkdgError::NoEligibleConnection);
@@ -189,12 +184,7 @@ impl Strategy for PowerOfTwoChoicesStrategy {
         } else {
             a
         };
-        let load = |c: &ConnectionId| hints.in_flight.get(c).copied().unwrap_or(0);
-        let pick = if load(eligible[b]) < load(eligible[a]) {
-            b
-        } else {
-            a
-        };
-        Ok(eligible[pick].clone())
+        let pick = if eligible[b].1 < eligible[a].1 { b } else { a };
+        Ok(eligible[pick].0.clone())
     }
 }

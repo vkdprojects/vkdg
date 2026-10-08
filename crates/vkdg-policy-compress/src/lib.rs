@@ -1,5 +1,5 @@
 //! Context compression policy for conversation requests.
-//! Applied as a `pre_dispatch` hook when configured on a route.
+//! Applied as a pre_dispatch hook when configured on a route.
 //! Never modifies context without explicit route consent.
 
 pub mod caveman;
@@ -23,15 +23,15 @@ pub use truncate::{TruncateCompressor, TruncatePolicy, TruncateResult};
 
 use vkdg_operations::ConversationRequest;
 
-/// A filter pack applies targeted text transformations to one `ContentClass`.
+/// A filter pack applies targeted text transformations to one ContentClass.
 ///
 /// Implement this trait to add a new pack.
-/// Register via `PackRegistry`; enable/disable per route.
+/// Register via PackRegistry; enable/disable per route.
 pub trait FilterPack: Send + Sync {
     /// Unique identifier: `"rtk:<name>"` for built-in, `"custom:<name>"` for user packs.
     fn id(&self) -> &str;
 
-    /// Which `ContentClass` this pack handles.
+    /// Which ContentClass this pack handles.
     fn handles(&self) -> ContentClass;
 
     /// Apply the filter and return the compressed text.
@@ -83,7 +83,7 @@ pub enum CompressionStrategy {
     ModelSummarize { model: String, budget_tokens: u32 },
 }
 
-/// Apply the configured compression strategy to a `ConversationRequest`.
+/// Apply the configured compression strategy to a ConversationRequest.
 /// Returns the (possibly modified) request and metrics about what changed.
 pub fn apply(
     strategy: &CompressionStrategy,

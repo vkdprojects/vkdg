@@ -141,7 +141,7 @@ impl Router {
                 if let Some(conn_id) = &step.connection_id {
                     if !route.targets.contains(conn_id) {
                         return Err(VkdgError::ConfigInvalid {
-                            field: format!("strategy.steps[{i}].connection_id"),
+                            field: format!("strategy.steps[{}].connection_id", i),
                             message: format!("connection '{}' not in route targets", conn_id.0),
                         });
                     }

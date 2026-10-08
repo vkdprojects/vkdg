@@ -12,20 +12,18 @@ pub async fn run() -> Result<()> {
     let rust_version = std::process::Command::new("rustc")
         .arg("--version")
         .output()
-        .map_or_else(
-            |_| "not found".into(),
-            |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        );
-    println!("  rustc:          {rust_version}");
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|_| "not found".into());
+    println!("  rustc:          {}", rust_version);
 
     // Check 2: RUST_LOG
     let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "(not set)".to_string());
-    println!("  RUST_LOG:       {rust_log}");
+    println!("  RUST_LOG:       {}", rust_log);
     println!();
 
     // Check 3: Gateway data plane reachability
     let base = std::env::var("VKDG_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".into());
-    let data_plane_ok = check_url(&format!("{base}/health")).await;
+    let data_plane_ok = check_url(&format!("{}/health", base)).await;
     print_check("data plane /health", &base, data_plane_ok);
     if !data_plane_ok {
         all_ok = false;
@@ -34,7 +32,7 @@ pub async fn run() -> Result<()> {
     // Check 4: Admin API reachability
     let admin_base =
         std::env::var("VKDG_ADMIN_URL").unwrap_or_else(|_| "http://127.0.0.1:9090".into());
-    let admin_ok = check_url(&format!("{admin_base}/admin/v1/system")).await;
+    let admin_ok = check_url(&format!("{}/admin/v1/system", admin_base)).await;
     print_check("admin API /system", &admin_base, admin_ok);
     if !admin_ok {
         all_ok = false;
@@ -65,7 +63,8 @@ async fn check_url(url: &str) -> bool {
         .await
         .ok()
         .and_then(|r| r.ok())
-        .is_some_and(|r| r.status().is_success())
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
 }
 
 fn print_check(name: &str, detail: &str, ok: bool) {

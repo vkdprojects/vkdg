@@ -13,12 +13,12 @@ pub struct EvalScorer;
 
 impl EvalScorer {
     /// Score a response based on latency and content quality.
-    /// Returns an `EvalResult` with a score in [0.0, 1.0].
+    /// Returns an EvalResult with a score in [0.0, 1.0].
     pub fn score(
         request_id: &str,
         connection_id: &str,
         response_body: &str,
-        metrics: &LatencyMetrics,
+        metrics: LatencyMetrics,
     ) -> EvalResult {
         let mut notes = Vec::new();
         let mut score = 1.0f32;
@@ -38,8 +38,6 @@ impl EvalScorer {
 
         // Check 3: latency score (penalize > 5000ms)
         if metrics.latency_ms > 5000 {
-            #[allow(clippy::cast_precision_loss)]
-            // u32→f32 for latency penalty; precision loss acceptable for scoring
             let penalty = ((metrics.latency_ms as f32 - 5000.0) / 10000.0).min(0.3);
             notes.push(format!("high latency: {}ms", metrics.latency_ms));
             score -= penalty;
@@ -48,7 +46,7 @@ impl EvalScorer {
         // Check 4: TTFT score (penalize > 2000ms)
         if let Some(ttft) = metrics.ttft_ms {
             if ttft > 2000 {
-                notes.push(format!("slow TTFT: {ttft}ms"));
+                notes.push(format!("slow TTFT: {}ms", ttft));
                 score -= 0.1;
             }
         }
@@ -90,7 +88,7 @@ mod tests {
     // Plausible wrong impl: empty response returns Pass
     #[test]
     fn empty_response_fails() {
-        let r = EvalScorer::score("req-1", "conn-1", "", &metrics(100));
+        let r = EvalScorer::score("req-1", "conn-1", "", metrics(100));
         assert_eq!(r.status, EvalStatus::Fail);
         assert!(r.notes.iter().any(|n| n.contains("empty")));
     }
@@ -99,15 +97,15 @@ mod tests {
     #[test]
     fn error_body_fails() {
         let body = r#"{"type":"error","error":{"message":"rate limited"}}"#;
-        let r = EvalScorer::score("req-1", "conn-1", body, &metrics(100));
+        let r = EvalScorer::score("req-1", "conn-1", body, metrics(100));
         assert!(r.score < 0.7, "error body must reduce score: {}", r.score);
     }
 
     // Plausible wrong impl: high latency response passes with perfect score
     #[test]
     fn high_latency_penalizes_score() {
-        let r_fast = EvalScorer::score("r", "c", "hello", &metrics(100));
-        let r_slow = EvalScorer::score("r", "c", "hello", &metrics(8000));
+        let r_fast = EvalScorer::score("r", "c", "hello", metrics(100));
+        let r_slow = EvalScorer::score("r", "c", "hello", metrics(8000));
         assert!(
             r_slow.score < r_fast.score,
             "slow response must score lower"
@@ -117,7 +115,7 @@ mod tests {
     // Plausible wrong impl: good response fails
     #[test]
     fn good_response_passes() {
-        let r = EvalScorer::score("r", "c", "The answer is 42.", &metrics(150));
+        let r = EvalScorer::score("r", "c", "The answer is 42.", metrics(150));
         assert_eq!(r.status, EvalStatus::Pass);
         assert!(r.score >= 0.7);
     }

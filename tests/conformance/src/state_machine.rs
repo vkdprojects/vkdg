@@ -54,7 +54,7 @@ fn attempt_state_all_variants_exist() {
 
 // ── State ordering ─────────────────────────────────────────────────────────────
 
-/// Plausible wrong impl: Committed placed before `UpstreamOpen` (allowing retry
+/// Plausible wrong impl: Committed placed before UpstreamOpen (allowing retry
 /// after data has been sent). Test anchors the threshold position.
 /// PASSES.
 #[test]
@@ -87,9 +87,9 @@ fn committed_comes_after_upstream_open_in_pipeline() {
 
 // ── PipelineCtx: initial state ─────────────────────────────────────────────────
 
-/// Plausible wrong impl: `PipelineCtx` initialises with state = Authenticated
+/// Plausible wrong impl: PipelineCtx initialises with state = Authenticated
 /// instead of Received, causing the first transition to be skipped.
-/// PASSES (`PipelineCtx::new` sets state = Received).
+/// PASSES (PipelineCtx::new sets state = Received).
 #[test]
 fn pipeline_ctx_starts_at_received() {
     let ctx = PipelineCtx::new(make_envelope());
@@ -103,7 +103,7 @@ fn pipeline_ctx_starts_at_received() {
 
 // ── PipelineCtx: transition records ───────────────────────────────────────────
 
-/// Plausible wrong impl: `transition()` updates ctx.state but forgets to push
+/// Plausible wrong impl: transition() updates ctx.state but forgets to push
 /// to ctx.transitions, breaking audit log completeness.
 /// PASSES.
 #[test]
@@ -128,9 +128,9 @@ fn transition_records_history() {
 
 // ── PipelineCtx: can_retry contract ───────────────────────────────────────────
 
-/// Plausible wrong impl: `can_retry()` returns true always (never checks
+/// Plausible wrong impl: can_retry() returns true always (never checks
 /// committed flag), allowing silent replay of committed requests.
-/// FAILS unless `mark_committed()` clears `can_retry()`.
+/// FAILS unless mark_committed() clears can_retry().
 #[test]
 fn can_retry_false_after_mark_committed() {
     let mut ctx = PipelineCtx::new(make_envelope());
@@ -145,7 +145,7 @@ fn can_retry_false_after_mark_committed() {
     );
 }
 
-/// Plausible wrong impl: `mark_committed()` is idempotent but a second call
+/// Plausible wrong impl: mark_committed() is idempotent but a second call
 /// accidentally re-enables retry (toggles instead of sets).
 /// PASSES only if committed is stored as a bool, not flipped.
 #[test]
@@ -162,7 +162,7 @@ fn mark_committed_is_idempotent() {
 
 // ── PipelineCtx: transition after committed ────────────────────────────────────
 
-/// Plausible wrong impl: `transition()` after committed resets the committed
+/// Plausible wrong impl: transition() after committed resets the committed
 /// flag, allowing retry to sneak back in.
 /// PASSES only if committed is preserved across transitions.
 #[test]

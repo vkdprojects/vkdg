@@ -7,9 +7,9 @@ use crate::plan::Combo;
 
 /// Resolves a model name or request metadata to a Combo.
 ///
-/// Resolution order (matches `OmniRoute`'s behavior):
+/// Resolution order (matches OmniRoute's behavior):
 /// 1. Exact combo ID match ("coding-fast" literal)
-/// 2. Combo `match_patterns` glob ("code:*", "combo/*")
+/// 2. Combo match_patterns glob ("code:*", "combo/*")
 /// 3. Falls through to bare model routing
 ///
 /// The table is swapped whole by [`ComboResolver::replace`], so combos edited
@@ -88,7 +88,7 @@ mod tests {
     fn make_combo(id: &str, patterns: &[&str]) -> Combo {
         Combo {
             id: id.into(),
-            match_patterns: patterns.iter().map(|s| (*s).to_string()).collect(),
+            match_patterns: patterns.iter().map(|s| s.to_string()).collect(),
             strategy: StrategyKind::FallbackChain,
             targets: vec![],
             compression: None,

@@ -49,6 +49,34 @@ const STEP_ERR: &str = "▲";
 #[folder = "../../apps/console/build/"]
 struct ConsoleAssets;
 
+// ── Console caching ───────────────────────────────────────────────────────────
+
+/// `Cache-Control` for a console asset path. `SvelteKit` content-hashes
+/// everything under `/_app/immutable/`, so those never change at a given URL;
+/// anything else (the SPA shell, static files) must revalidate or a deploy
+/// would not reach browsers that already have it.
+fn console_cache_control(path: &str) -> &'static str {
+    if path.starts_with("/_app/immutable/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+/// Adds [`console_cache_control`] to every console response.
+async fn console_cache_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let value = console_cache_control(req.uri().path());
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static(value),
+    );
+    res
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -635,14 +663,15 @@ async fn serve(
     };
     // Console SPA served as fallback on the admin port (9090).
     // Data port (8080) = pure AI API. Admin port (9090) = admin API + embedded console.
-    let admin_router =
-        vkdg_admin::build_admin_router(admin_state).fallback_service(axum_embed::ServeEmbed::<
-            ConsoleAssets,
-        >::with_parameters(
-            Some("index.html".to_string()),
-            axum_embed::FallbackBehavior::Ok,
-            Some("index.html".to_string()),
-        ));
+    let admin_router = vkdg_admin::build_admin_router(admin_state).fallback_service(
+        Router::new()
+            .fallback_service(axum_embed::ServeEmbed::<ConsoleAssets>::with_parameters(
+                Some("index.html".to_string()),
+                axum_embed::FallbackBehavior::Ok,
+                Some("index.html".to_string()),
+            ))
+            .layer(axum::middleware::from_fn(console_cache_headers)),
+    );
     let admin_addr_banner = admin_addr.clone();
     tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(&admin_addr)
@@ -2308,6 +2337,30 @@ mod tests {
         let r = load_and_validate(path.to_str().unwrap(), 0).map_err(|e| e.to_string());
         let _ = std::fs::remove_dir_all(dir);
         r
+    }
+
+    // Refutes two opposite mistakes: (1) never caching, so every visit refetches
+    // all hashed bundles; (2) caching index.html or other unhashed files, so a
+    // deploy never reaches browsers that already loaded the console.
+    #[test]
+    fn hashed_assets_are_immutable_and_entry_documents_revalidate() {
+        let immutable = "public, max-age=31536000, immutable";
+        for p in [
+            "/_app/immutable/entry/start.3uylztwc.js",
+            "/_app/immutable/assets/0.9gmRqRD2.css",
+        ] {
+            assert_eq!(console_cache_control(p), immutable, "{p}");
+        }
+        for p in [
+            "/",
+            "/index.html",
+            "/providers",
+            "/_app/version.json",
+            "/brand/hero.jpg",
+            "/favicon.png",
+        ] {
+            assert_eq!(console_cache_control(p), "no-cache", "{p}");
+        }
     }
 
     // `vkdg setup` wrote auth/models at column 0; the file never loaded.

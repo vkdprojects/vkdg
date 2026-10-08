@@ -40,7 +40,7 @@ RUN bun run build
 # ── chef: pinned toolchain + cargo-chef ──────────────────────────────────────
 FROM rust:${RUST_VERSION}-alpine${ALPINE_VERSION} AS chef
 ARG CARGO_CHEF_VERSION
-RUN apk add --no-cache musl-dev ca-certificates
+RUN apk add --no-cache musl-dev
 RUN --mount=type=cache,id=vkdg-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     cargo install cargo-chef --locked --version ${CARGO_CHEF_VERSION}
 WORKDIR /src
@@ -71,6 +71,10 @@ RUN --mount=type=cache,id=vkdg-cargo-registry,target=/usr/local/cargo/registry,s
     cargo build --profile ${PROFILE} --target ${TARGET} -p vkdg \
     && install -D target/${TARGET}/${PROFILE}/vkdg /out/vkdg
 
+# ── certs: CA bundle for upstream HTTPS (tiny; keeps `prebuilt` toolchain-free)
+FROM alpine:${ALPINE_VERSION} AS certs
+RUN apk add --no-cache ca-certificates
+
 # ── runtime base: everything except the binary ──────────────────────────────
 FROM scratch AS runtime-base
 ARG VCS_REF=unknown
@@ -81,7 +85,7 @@ LABEL org.opencontainers.image.title="vkdg" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.licenses="MIT"
-COPY --from=chef /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 EXPOSE 8080 9090
 # No shell in scratch: the binary probes itself.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \

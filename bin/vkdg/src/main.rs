@@ -73,7 +73,7 @@ enum Command {
         quiet: bool,
     },
     Doctor,
-    /// Exit 0 when the gateway answers 2xx on /health (Docker HEALTHCHECK).
+    /// Exit 0 when the gateway answers 2xx on /health (used by Docker HEALTHCHECK).
     Healthcheck {
         #[arg(long, default_value = "http://127.0.0.1:8080/health")]
         url: String,

@@ -53,20 +53,52 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 SHA="$(git rev-parse --short=7 HEAD)"
 TAG="dev-$SHA"
-
-
-# ── Local build → stream → swap ─────────────────────────────────────────────
+# ── Local build → ship binary → image on the host ──────────────────────────
+# Upload is the bottleneck on a home connection, not the build. Instead of
+# streaming a whole image (~15 MB gz), rsync only the changed blocks of the
+# binary (~6 MB for a typical edit, measured) into a persistent context on the
+# host, which then packages `--target prebuilt` itself (no compile, seconds).
+# Without rsync >= 3 on both ends, fall back to streaming the image.
 PROFILE="${VKDG_PROFILE:-ship}"
 export VKDG_PROFILE="$PROFILE"
-build_local() {
+TRIPLE=x86_64-unknown-linux-musl
+BIN="target/$TRIPLE/$PROFILE/vkdg"
+source scripts/remote-lib.sh
+CTX="$REMOTE_BUILD_DIR/prebuilt"
+BUILD_ARGS=(--build-arg PROFILE="$PROFILE" --build-arg VCS_REF="$SHA"
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+
+RSYNC=""
+for r in /opt/homebrew/bin/rsync /usr/local/bin/rsync rsync; do
+  command -v "$r" >/dev/null && "$r" --version 2>/dev/null | head -1 | grep -q 'version 3' && { RSYNC="$r"; break; }
+done
+[ -n "$RSYNC" ] && ! rssh 'command -v rsync >/dev/null' && RSYNC=""
+
+compile_local() {
   (cd apps/console && bun install --frozen-lockfile && bun run build) &&
-  cargo zigbuild --profile "$PROFILE" -p vkdg --target x86_64-unknown-linux-musl &&
+  cargo zigbuild --profile "$PROFILE" -p vkdg --target "$TRIPLE"
+}
+
+ship_delta() {
+  echo "▶ syncing binary delta to $HOST ($RSYNC)" >&2
+  rssh "mkdir -p '$CTX/deploy' '$CTX/target/$TRIPLE/$PROFILE'" &&
+  "$RSYNC" -z --compress-choice=zstd --stats deploy/Dockerfile "$HOST:$CTX/deploy/Dockerfile" >/dev/null &&
+  "$RSYNC" -z --compress-choice=zstd --stats "$BIN" "$HOST:$CTX/$BIN" \
+    | awk '/Total bytes sent/ {print "  sent " $4 " bytes of the binary"}' >&2 &&
+  rssh "cd '$CTX' && DOCKER_BUILDKIT=1 docker build -q -f deploy/Dockerfile --target prebuilt \
+    $(printf '%q ' "${BUILD_ARGS[@]}") -t vkdg-gateway:$TAG . >/dev/null"
+}
+
+ship_image() {
   docker build --platform linux/amd64 -f deploy/Dockerfile --target prebuilt \
-    --build-arg PROFILE="$PROFILE" --build-arg VCS_REF="$SHA" \
-    --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    -t "vkdg-gateway:$TAG" . &&
+    "${BUILD_ARGS[@]}" -t "vkdg-gateway:$TAG" . &&
   { echo "▶ streaming vkdg-gateway:$TAG to $HOST" >&2
     docker save "vkdg-gateway:$TAG" | gzip -1 | ssh "$HOST" 'gunzip | docker load'; }
+}
+
+build_local() {
+  compile_local || return 1
+  if [ -n "$RSYNC" ]; then ship_delta; else ship_image; fi
 }
 
 start=$(date +%s)

@@ -70,6 +70,12 @@ pub(super) async fn run_pipeline_inner(
             ctx.envelope.session_key = super::session_affinity::derive(&ctx.envelope, conv);
         }
     }
+    // The same digest doubles as the provider-facing cache key; it carries no
+    // prompt text or raw session id, so it is safe to send upstream.
+    if let (Operation::Conversation(conv), Some(key)) = (&mut operation, &ctx.envelope.session_key)
+    {
+        conv.cache_key = Some(key.0.clone());
+    }
     let csr = resolve_combo_and_session(pipeline, &ctx.envelope).await;
 
     // 2b. Budget cap check ─────────────────────────────────────────────────────
@@ -861,12 +867,7 @@ async fn run_prompt_chain(
                         }
                     }
                     InjectMode::AsSystem => {
-                        conv_req.system = Some(match &conv_req.system {
-                            None => format!("Previous output:\n{prev}"),
-                            Some(existing) => {
-                                format!("Previous output:\n{prev}\n\n{existing}")
-                            }
-                        });
+                        conv_req.prepend_system(&format!("Previous output:\n{prev}"));
                     }
                 }
             }
@@ -875,7 +876,7 @@ async fn run_prompt_chain(
         // Override system for this step if configured.
         if let Operation::Conversation(conv_req) = &mut operation {
             if let Some(step_system) = &step.system {
-                conv_req.system = Some(step_system.clone());
+                conv_req.set_system(Some(step_system.clone()));
             }
         }
 

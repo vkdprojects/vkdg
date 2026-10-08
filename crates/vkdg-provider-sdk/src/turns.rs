@@ -75,7 +75,7 @@ fn message_pieces(message: &Message) -> impl Iterator<Item = Piece<'_>> {
 fn piece_text<'a>(piece: &Piece<'a>) -> Option<&'a str> {
     match piece {
         Piece::Text(t) => Some(t),
-        Piece::Block(ContentBlock::Text { text }) => Some(text),
+        Piece::Block(ContentBlock::Text { text, .. }) => Some(text),
         _ => None,
     }
 }
@@ -85,7 +85,7 @@ fn piece_text<'a>(piece: &Piece<'a>) -> Option<&'a str> {
 fn is_replayable(piece: &Piece<'_>) -> bool {
     match piece {
         Piece::Text(t) => !t.trim().is_empty(),
-        Piece::Block(ContentBlock::Text { text }) => !text.trim().is_empty(),
+        Piece::Block(ContentBlock::Text { text, .. }) => !text.trim().is_empty(),
         Piece::Block(ContentBlock::Thinking { signature, .. }) => {
             signature.as_deref().is_some_and(|s| !s.is_empty())
         }

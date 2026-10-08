@@ -537,6 +537,7 @@ fn history_tool_results_capped_not_current() {
                 content: big_result.clone(),
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
         Message {
@@ -599,6 +600,7 @@ fn utf8_tool_result_at_history_limit_prepares_a_request() {
                 id: "call-1".into(),
                 name: "read_file".into(),
                 input: json!({}),
+                cache_control: None,
             }]),
         },
         Message {
@@ -608,6 +610,7 @@ fn utf8_tool_result_at_history_limit_prepares_a_request() {
                 content: result,
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
         Message {

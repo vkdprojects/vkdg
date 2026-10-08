@@ -531,11 +531,13 @@ mod body_tests {
     #[test]
     fn the_clients_system_prompt_follows_the_identity_block_unchanged() {
         let v = body(Some("Be brief."));
+        // The identity stays first and unmarked; with no client marker anywhere the
+        // default policy puts its breakpoint on the client's own block.
         assert_eq!(
             v["system"],
             json!([
                 { "type": "text", "text": IDENTITY },
-                { "type": "text", "text": "Be brief." },
+                { "type": "text", "text": "Be brief.", "cache_control": { "type": "ephemeral" } },
             ])
         );
     }
@@ -601,6 +603,7 @@ mod body_tests {
                 name: "read".into(),
                 description: None,
                 input_schema: json!({ "type": "object" }),
+                cache_control: None,
             }],
             tool_choice: Some(ToolChoice::Named("read".into())),
             stop_sequences: vec!["END".into()],

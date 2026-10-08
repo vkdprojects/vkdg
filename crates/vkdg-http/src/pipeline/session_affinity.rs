@@ -30,10 +30,12 @@ pub fn derive(envelope: &RequestEnvelope, conv: &ConversationRequest) -> Option<
         absorb(&mut hasher, b"opening");
         absorb(&mut hasher, conv.system.as_deref().unwrap_or("").as_bytes());
         // `Message` serialises infallibly; an empty fallback would only widen
-        // the key's collisions, never break routing.
+        // the key's collisions, never break routing. A prompt-cache marker is a
+        // hint to the provider, not part of the opening, so it is left out.
+        let opening = vkdg_operations::without_cache_control(std::slice::from_ref(opening));
         absorb(
             &mut hasher,
-            &serde_json::to_vec(&opening.content).unwrap_or_default(),
+            &serde_json::to_vec(&opening[0].content).unwrap_or_default(),
         );
     }
     Some(SessionKey(hex(&hasher.finalize())))
@@ -153,6 +155,24 @@ mod tests {
         regrown.messages.push(msg(Role::Assistant, "a"));
         regrown.system = Some("changed".into());
         assert_eq!(derive(&e, &one), derive(&e, &regrown));
+    }
+
+    // Plausible wrong impl: the marker rides in the serialised opening message,
+    // so a client that adds `cache_control` re-pins every conversation.
+    #[test]
+    fn cache_control_markers_do_not_change_the_key() {
+        use vkdg_operations::{CacheControl, ContentBlock};
+        let opening = |cache_control| Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Text {
+                text: "open".into(),
+                cache_control,
+            }]),
+        };
+        let e = envelope("omp");
+        let plain = conv("sys", vec![opening(None)]);
+        let marked = conv("sys", vec![opening(Some(CacheControl::default()))]);
+        assert_eq!(derive(&e, &plain), derive(&e, &marked));
     }
 
     // Plausible wrong impl: the key embeds conversation text.

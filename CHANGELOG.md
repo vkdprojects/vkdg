@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Anthropic prompt caching:** `cache_control` from Anthropic clients (system blocks, text,
+  image, `tool_use`, `tool_result` blocks and custom tools) now reaches Anthropic-format
+  upstreams with its `ttl` intact. When a request carries no marker at all, the gateway marks
+  the last custom tool, the last system block and the last block of the last message; this applies
+  only to Anthropic-format providers and is never done on top of client markers. At most 4
+  breakpoints are sent (the last 4 are kept). Markers do not change the response-cache key or
+  the session-affinity digest. `ConversationRequest::cache_key` carries that digest for providers
+  with their own cache key. `cache_read_tokens` / `cache_write_tokens` appear in request logs and
+  the console.
+- **Codex and Kiro cache affinity:** requests with a `cache_key` now send it to Codex as the
+  body field `prompt_cache_key` and the headers `session_id` / `session-id` (OAuth and API-key
+  accounts; omitted when there is no key), and Kiro derives a deterministic UUID `conversationId`
+  from it (an explicit client `session_id` still wins; otherwise a random UUID as before). Field
+  and header names follow the openai/codex source; upstream cache hits are verified only by
+  `cache_read` tokens in the request log, and Kiro reuse by `conversationId` is unverified.
 - **OpenAI Codex provider:** full OAuth PKCE login flow via `auth.openai.com`, token refresh,
   and connection test. The provider appears in the console under "OpenAI Codex" alongside Claude
   Code and Kiro.

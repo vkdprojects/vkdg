@@ -146,7 +146,7 @@ impl Compressor for WasmCompressor {
             })
             .collect();
         if let Some(system) = parsed.system {
-            compressed.system = Some(system);
+            compressed.set_system(Some(system));
         }
 
         let metrics = CompressionMetrics {

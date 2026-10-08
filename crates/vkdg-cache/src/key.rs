@@ -23,7 +23,9 @@ pub fn cache_key(model: &str, api_type: &ApiType, req: &ConversationRequest) -> 
     hasher.update(format!("{api_type:?}").as_bytes());
     hasher.update([0]);
     // Serialize messages in stable order (they are ordered by position)
-    if let Ok(msgs_json) = serde_json::to_string(&req.messages) {
+    // A prompt-cache marker is a hint to the provider, not part of the request.
+    let messages = vkdg_operations::without_cache_control(&req.messages);
+    if let Ok(msgs_json) = serde_json::to_string(&*messages) {
         hasher.update(msgs_json.as_bytes());
     }
     if let Some(system) = &req.system {
@@ -67,6 +69,37 @@ mod tests {
         assert_eq!(
             cache_key(model, &ApiType::AnthropicMessages, &req1),
             cache_key(model, &ApiType::AnthropicMessages, &req2)
+        );
+    }
+
+    // Plausible wrong impl: a prompt-cache marker (a hint for the provider)
+    // changes the response-cache key, so the same question misses.
+    #[test]
+    fn cache_control_markers_do_not_change_the_key() {
+        use vkdg_operations::{CacheControl, ContentBlock};
+        let block = |cache_control| Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Text {
+                text: "hello".into(),
+                cache_control,
+            }]),
+        };
+        let mut plain = make_req("x");
+        plain.messages = vec![block(None)];
+        let mut marked = make_req("x");
+        marked.messages = vec![block(Some(CacheControl {
+            ttl: Some("1h".into()),
+        }))];
+        marked.system_blocks = vec![vkdg_operations::SystemBlock {
+            text: "sys".into(),
+            cache_control: Some(CacheControl::default()),
+        }];
+        plain.system = Some("sys".into());
+        marked.system = Some("sys".into());
+        let model = "claude-3-5-haiku-20241022";
+        assert_eq!(
+            cache_key(model, &ApiType::AnthropicMessages, &plain),
+            cache_key(model, &ApiType::AnthropicMessages, &marked)
         );
     }
 

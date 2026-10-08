@@ -4,7 +4,10 @@
 
 use serde_json::{json, Value};
 use vkdg_core::VkdgError;
-use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, ToolChoice};
+use vkdg_operations::{
+    CacheControl, ContentBlock, ConversationRequest, MessageContent, Operation, SystemBlock,
+    ToolChoice,
+};
 
 use crate::decode_request;
 
@@ -332,7 +335,10 @@ fn tool_use_input_defaults_to_an_empty_object_and_keeps_sent_values() {
             {"role": "assistant", "content": [wire]}
         ]}));
         let req = conversation(&body).expect("decode");
-        let ContentBlock::ToolUse { id, name, input } = only_block(&req) else {
+        let ContentBlock::ToolUse {
+            id, name, input, ..
+        } = only_block(&req)
+        else {
             panic!("expected ToolUse")
         };
         assert_eq!(id, "toolu_01");
@@ -413,4 +419,130 @@ fn server_tool_declarations_are_kept_verbatim_beside_custom_tools() {
 fn a_tool_without_schema_or_type_is_rejected_naming_its_index() {
     let field = rejected_field(&body_with(json!({"tools": [{"name": "x"}]})));
     assert_eq!(field, "tools[0]");
+}
+
+// ── cache_control ─────────────────────────────────────────────────────────────
+
+fn last_blocks(req: &ConversationRequest) -> &[ContentBlock] {
+    let Some(last) = req.messages.last() else {
+        panic!("no messages")
+    };
+    let MessageContent::Blocks(blocks) = &last.content else {
+        panic!("expected blocks, got {:?}", last.content)
+    };
+    blocks
+}
+
+#[allow(clippy::unnecessary_wraps)] // fills the `Option<CacheControl>` field of expected blocks
+fn marker(ttl: Option<&str>) -> Option<CacheControl> {
+    Some(CacheControl {
+        ttl: ttl.map(str::to_owned),
+    })
+}
+
+// Defeat: dropping the client's breakpoints at the door, so the upstream never
+// caches what the client asked it to, or losing the 1h `ttl` on the way.
+#[test]
+fn cache_control_on_every_block_kind_is_carried_with_its_ttl() {
+    let body = body_with(json!({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+        {"type": "tool_use", "id": "toolu_1", "name": "t", "input": {},
+         "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "r",
+         "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "unmarked"}
+    ]}]}));
+    let req = conversation(&body).unwrap();
+    let blocks = last_blocks(&req);
+    let found: Vec<Option<CacheControl>> = blocks
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { cache_control, .. }
+            | ContentBlock::Image { cache_control, .. }
+            | ContentBlock::ToolUse { cache_control, .. }
+            | ContentBlock::ToolResult { cache_control, .. } => cache_control.clone(),
+            other => panic!("unexpected block {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            marker(None),
+            marker(Some("1h")),
+            marker(Some("5m")),
+            marker(None),
+            None
+        ]
+    );
+}
+
+// Defeat: marking a custom tool's definition is lost, so the tools prefix is
+// never cached.
+#[test]
+fn cache_control_on_a_tool_definition_is_carried() {
+    let body = body_with(json!({"tools": [
+        {"name": "a", "input_schema": {"type": "object"}},
+        {"name": "b", "input_schema": {"type": "object"},
+         "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    ]}));
+    let req = conversation(&body).unwrap();
+    assert_eq!(req.tools[0].cache_control, None);
+    assert_eq!(req.tools[1].cache_control, marker(Some("1h")));
+}
+
+// Defeat: flattening system blocks to a string and losing which block is marked.
+#[test]
+fn marked_system_blocks_are_kept_next_to_the_joined_text() {
+    let body = body_with(json!({"system": [
+        {"type": "text", "text": "first"},
+        {"type": "text", "text": "second", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    ]}));
+    let req = conversation(&body).unwrap();
+    assert_eq!(req.system.as_deref(), Some("first\n\nsecond"));
+    assert_eq!(
+        req.system_blocks,
+        vec![
+            SystemBlock {
+                text: "first".into(),
+                cache_control: None
+            },
+            SystemBlock {
+                text: "second".into(),
+                cache_control: marker(Some("1h"))
+            },
+        ]
+    );
+    assert!(req.system_for_wire().is_some());
+}
+
+// Defeat: keeping structure nobody asked for, which would change every
+// non-cache consumer of system blocks.
+#[test]
+fn unmarked_or_plain_string_system_keeps_no_blocks() {
+    let plain = conversation(&body_with(json!({"system": "be brief"}))).unwrap();
+    assert_eq!(plain.system.as_deref(), Some("be brief"));
+    assert_eq!(plain.system_blocks, []);
+
+    let unmarked = conversation(&body_with(json!({"system": [
+        {"type": "text", "text": "a"}, {"type": "text", "text": "b"}
+    ]})))
+    .unwrap();
+    assert_eq!(unmarked.system.as_deref(), Some("a\n\nb"));
+    assert_eq!(unmarked.system_blocks, []);
+}
+
+// Defeat: treating any `cache_control` object as a breakpoint although only
+// `ephemeral` is defined.
+#[test]
+fn a_marker_of_an_unknown_type_is_not_a_breakpoint() {
+    let body = body_with(json!({"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "a", "cache_control": {"type": "persistent"}}
+    ]}]}));
+    let req = conversation(&body).unwrap();
+    match only_block(&req) {
+        ContentBlock::Text { cache_control, .. } => assert_eq!(*cache_control, None),
+        other => panic!("expected Text, got {other:?}"),
+    }
 }

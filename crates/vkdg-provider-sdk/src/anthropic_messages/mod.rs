@@ -6,6 +6,7 @@
 //! `OpenAI` builder in [`crate::turns`].
 
 mod blocks;
+mod cache_policy;
 mod thinking;
 
 use bytes::Bytes;
@@ -26,7 +27,13 @@ pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 ///
 /// `system_preamble`, when given, becomes the first `system` block and the
 /// client's system prompt follows it unchanged as its own block (the Claude Code
-/// subscription gate needs exactly that). Without it `system` is one string.
+/// subscription gate needs exactly that). Without it `system` is one string,
+/// unless the client sent blocks with prompt-cache breakpoints.
+///
+/// The client's `cache_control` breakpoints (system blocks, message blocks,
+/// custom tools) are passed through with their `ttl`; when it sent none the
+/// default breakpoints are added and when it sent more than the API allows the
+/// last four stay (see [`cache_policy::settle_breakpoints`]).
 ///
 /// Tool history is repaired to what Anthropic validates (see
 /// [`crate::turns::arrange`]) and `max_tokens`, sampling and `thinking` are
@@ -36,6 +43,18 @@ pub fn messages_body(
     model: &str,
     system_preamble: Option<&str>,
 ) -> Bytes {
+    let mut body = body_map(req, model, system_preamble);
+    cache_policy::settle_breakpoints(&mut body, system_preamble.is_some());
+    // A `Value` tree always serializes; the empty fallback only satisfies the type.
+    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+}
+
+/// The body as the request says it, before any breakpoint is added or trimmed.
+fn body_map(
+    req: &ConversationRequest,
+    model: &str,
+    system_preamble: Option<&str>,
+) -> Map<String, Value> {
     let conversation = arrange(&req.messages);
     let tool_choice = effective_tool_choice(req);
     let sampling = thinking::sampling(
@@ -58,17 +77,8 @@ pub fn messages_body(
         ),
     );
 
-    let system = system_text(req, &conversation.system_text);
-    match (system_preamble, system) {
-        (Some(preamble), system) => {
-            let mut blocks = vec![json!({ "type": "text", "text": preamble })];
-            blocks.extend(system.map(|s| json!({ "type": "text", "text": s })));
-            body.insert("system".into(), Value::Array(blocks));
-        }
-        (None, Some(system)) => {
-            body.insert("system".into(), Value::String(system));
-        }
-        (None, None) => {}
+    if let Some(system) = system_wire(req, &conversation.system_text, system_preamble) {
+        body.insert("system".into(), system);
     }
 
     if let Some(t) = sampling.temperature {
@@ -94,7 +104,7 @@ pub fn messages_body(
                     tool.insert("description".into(), Value::String(desc.clone()));
                 }
                 tool.insert("input_schema".into(), t.input_schema.clone());
-                Value::Object(tool)
+                blocks::marked(Value::Object(tool), t.cache_control.as_ref())
             })
             .collect();
         // Provider-run tools go as the client declared them.
@@ -108,8 +118,7 @@ pub fn messages_body(
         body.insert("thinking".into(), thinking);
     }
 
-    // A `Value` tree always serializes; the empty fallback only satisfies the type.
-    Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
+    body
 }
 
 /// Whether the request declares anything for a tool call to act on.
@@ -153,6 +162,46 @@ fn system_text(req: &ConversationRequest, from_history: &[&str]) -> Option<Strin
         .filter(|s| !s.trim().is_empty())
         .collect();
     (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
+/// The `system` field: the preamble (when given), then the client's prompt, then
+/// any system-role history messages.
+///
+/// The client's blocks, with their breakpoints, are used only while they still
+/// spell out `req.system` (see [`ConversationRequest::system_for_wire`]); a
+/// prompt that was edited since is sent as the text it now is. Without a
+/// preamble and without blocks it is one plain string, as before.
+fn system_wire(
+    req: &ConversationRequest,
+    from_history: &[&str],
+    preamble: Option<&str>,
+) -> Option<Value> {
+    let text_block = |t: &str| json!({ "type": "text", "text": t });
+    let client_blocks = req.system_for_wire();
+    if preamble.is_none() && client_blocks.is_none() {
+        return system_text(req, from_history).map(Value::String);
+    }
+    let mut blocks: Vec<Value> = preamble.map(text_block).into_iter().collect();
+    match client_blocks {
+        Some(client) => {
+            blocks.extend(
+                client
+                    .iter()
+                    .filter(|b| !b.text.trim().is_empty())
+                    .map(|b| blocks::marked(text_block(&b.text), b.cache_control.as_ref())),
+            );
+            let history: Vec<&str> = from_history
+                .iter()
+                .copied()
+                .filter(|s| !s.trim().is_empty())
+                .collect();
+            if !history.is_empty() {
+                blocks.push(text_block(&history.join("\n\n")));
+            }
+        }
+        None => blocks.extend(system_text(req, from_history).map(|s| text_block(&s))),
+    }
+    (!blocks.is_empty()).then_some(Value::Array(blocks))
 }
 
 #[cfg(test)]

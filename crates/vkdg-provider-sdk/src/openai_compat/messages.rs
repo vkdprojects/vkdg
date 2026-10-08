@@ -42,8 +42,10 @@ fn assistant_message(turn: &Turn<'_>) -> Option<Value> {
         match piece {
             Piece::Text(t) => text.push(t),
             Piece::Rendered(t) => text.push(t),
-            Piece::Block(ContentBlock::Text { text: t }) => text.push(t),
-            Piece::Block(ContentBlock::ToolUse { id, name, input }) => {
+            Piece::Block(ContentBlock::Text { text: t, .. }) => text.push(t),
+            Piece::Block(ContentBlock::ToolUse {
+                id, name, input, ..
+            }) => {
                 // `arguments` is a JSON string; a call replayed without any is `{}`.
                 let arguments = if input.is_null() {
                     "{}".to_owned()
@@ -107,8 +109,10 @@ fn user_turn(turn: &Turn<'_>, messages: &mut Vec<Value>) {
             Piece::MissingResult(id) => messages.push(tool_message(id, MISSING_RESULT_TEXT)),
             Piece::Text(t) => parts.push(text_part(t)),
             Piece::Rendered(t) => parts.push(text_part(t)),
-            Piece::Block(ContentBlock::Text { text }) => parts.push(text_part(text)),
-            Piece::Block(ContentBlock::Image { media_type, data }) => {
+            Piece::Block(ContentBlock::Text { text, .. }) => parts.push(text_part(text)),
+            Piece::Block(ContentBlock::Image {
+                media_type, data, ..
+            }) => {
                 parts.push(image_part(media_type, data));
             }
             Piece::Block(_) => {}

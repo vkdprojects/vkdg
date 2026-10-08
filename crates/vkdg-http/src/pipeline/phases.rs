@@ -113,10 +113,7 @@ pub(super) async fn prepare_operation(
     if let (Some(global_prompt), Operation::Conversation(conv_req)) =
         (&pipeline.global_system_prompt, &mut operation)
     {
-        conv_req.system = Some(match &conv_req.system {
-            None => global_prompt.clone(),
-            Some(existing) => format!("{global_prompt}\n\n{existing}"),
-        });
+        conv_req.prepend_system(global_prompt);
     }
 
     // Memory injection
@@ -304,8 +301,5 @@ pub fn relay_on_rotation(
         "context-relay on account rotation",
     );
 
-    conv_req.system = Some(match &conv_req.system {
-        None => relay_block,
-        Some(existing) => format!("{relay_block}\n\n{existing}"),
-    });
+    conv_req.prepend_system(&relay_block);
 }

@@ -28,6 +28,7 @@ fn call(id: &str, name: &str, input: Value) -> ContentBlock {
         id: id.into(),
         name: name.into(),
         input,
+        cache_control: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn result(id: &str, content: &str) -> ContentBlock {
         content: content.into(),
         images: vec![],
         is_error: false,
+        cache_control: None,
     }
 }
 
@@ -55,6 +57,7 @@ fn with_tools(mut req: ConversationRequest) -> ConversationRequest {
             name: (*n).into(),
             description: Some(format!("{n} tool")),
             input_schema: json!({"type": "object", "properties": {}}),
+            cache_control: None,
         })
         .collect();
     req
@@ -174,6 +177,7 @@ fn assistant_text_rides_with_tool_calls() {
             vec![
                 ContentBlock::Text {
                     text: "Checking.".into(),
+                    cache_control: None,
                 },
                 call("call_a", "get_weather", json!({"city": "Paris"})),
             ],
@@ -224,6 +228,7 @@ fn anthropic_style_tool_results_become_tool_messages_in_call_order() {
                 result("toolu_a", "sunny"),
                 ContentBlock::Text {
                     text: "now summarize".into(),
+                    cache_control: None,
                 },
             ],
         ),
@@ -303,18 +308,21 @@ fn images_become_image_url_parts() {
         vec![
             ContentBlock::Text {
                 text: "what is this?".into(),
+                cache_control: None,
             },
             ContentBlock::Image {
                 media_type: "image/png".into(),
                 data: ImageData::Base64 {
                     data: "iVBORw0KGgo=".into(),
                 },
+                cache_control: None,
             },
             ContentBlock::Image {
                 media_type: String::new(),
                 data: ImageData::Url {
                     url: "https://example.com/cat.jpg".into(),
                 },
+                cache_control: None,
             },
         ],
     )]);
@@ -362,7 +370,10 @@ fn thinking_blocks_are_not_sent() {
                     thinking: "secret".into(),
                     signature: Some("sig".into()),
                 },
-                ContentBlock::Text { text: "yo".into() },
+                ContentBlock::Text {
+                    text: "yo".into(),
+                    cache_control: None,
+                },
             ],
         ),
         blocks(
@@ -405,6 +416,7 @@ fn tool_result_images_follow_the_tool_message_as_a_user_message() {
                     },
                 }],
                 is_error: false,
+                cache_control: None,
             }],
         ),
     ]);
@@ -445,6 +457,7 @@ fn image_only_tool_result_gets_a_pointer_text_not_an_empty_message() {
                     },
                 }],
                 is_error: false,
+                cache_control: None,
             }],
         ),
     ]);
@@ -472,4 +485,30 @@ fn anthropic_server_tools_are_not_sent_to_openai_upstreams() {
     let body = wire(&req);
     assert!(body.get("tools").is_none(), "{body}");
     assert!(body.get("tool_choice").is_none(), "{body}");
+}
+
+// Defeat: leaking Anthropic's prompt-cache breakpoints into an OpenAI-format
+// body, which OpenAI rejects as an unknown field on strict-schema providers.
+#[test]
+fn anthropic_cache_markers_never_reach_an_openai_format_body() {
+    use vkdg_operations::{CacheControl, SystemBlock};
+    let marker = Some(CacheControl {
+        ttl: Some("1h".into()),
+    });
+    let mut req = with_tools(request(vec![blocks(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "hi".into(),
+            cache_control: marker.clone(),
+        }],
+    )]));
+    req.tools[1].cache_control = marker.clone();
+    req.system = Some("rules".into());
+    req.system_blocks = vec![SystemBlock {
+        text: "rules".into(),
+        cache_control: marker,
+    }];
+    let body = serde_json::to_string(&wire(&req)).unwrap();
+    assert!(!body.contains("cache_control"), "{body}");
+    assert!(body.contains("rules") && body.contains("hi"), "{body}");
 }

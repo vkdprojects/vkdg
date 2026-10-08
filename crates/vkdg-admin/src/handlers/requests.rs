@@ -517,4 +517,61 @@ mod tests {
         let (done, _) = log.list(10, Some("completed"));
         assert_eq!(done.len(), 1, "status column follows the record");
     }
+
+    // Without these the console cannot show whether prompt caching works: the
+    // numbers the provider reported must land on the stored row.
+    #[test]
+    fn finish_records_cache_read_and_write_tokens() {
+        use vkdg_core::pricing::BilledTokens;
+        let log = RequestLog::new();
+        log.push(&record("cached", STATUS_PENDING));
+        log.push(&record("cold", STATUS_PENDING));
+        let tokens = |cache_read, cache_write| BilledTokens {
+            input: 310,
+            output: 5,
+            cache_read,
+            cache_write,
+        };
+        log.finish(
+            "cached",
+            tokens(200, 100),
+            Some("completed"),
+            None,
+            None,
+            None,
+        );
+        log.finish("cold", tokens(0, 0), Some("completed"), None, None, None);
+        let r = log.get("cached").unwrap();
+        assert_eq!(
+            (r.cache_read_tokens, r.cache_write_tokens),
+            (Some(200), Some(100))
+        );
+        let r = log.get("cold").unwrap();
+        assert_eq!(
+            (r.cache_read_tokens, r.cache_write_tokens),
+            (None, None),
+            "no cache activity stays absent, not zero"
+        );
+    }
+
+    // History rows written before the cache fields existed must still load.
+    #[test]
+    fn a_record_stored_without_cache_fields_still_deserializes() {
+        let mut json = serde_json::to_value(record("old", "completed")).unwrap();
+        let obj = json.as_object_mut().unwrap();
+        obj.remove("cache_read_tokens");
+        obj.remove("cache_write_tokens");
+        let r: RequestRecord = serde_json::from_value(json).unwrap();
+        assert_eq!((r.cache_read_tokens, r.cache_write_tokens), (None, None));
+
+        let mut with = record("new", "completed");
+        with.cache_read_tokens = Some(7);
+        with.cache_write_tokens = Some(9);
+        let back: RequestRecord =
+            serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
+        assert_eq!(
+            (back.cache_read_tokens, back.cache_write_tokens),
+            (Some(7), Some(9))
+        );
+    }
 }

@@ -162,6 +162,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
                         content,
                         images,
                         is_error: false,
+                        cache_control: None,
                     }]),
                 });
             }
@@ -182,6 +183,7 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
             name: t.function.name,
             description: t.function.description,
             input_schema: t.function.parameters,
+            cache_control: None,
         })
         .collect();
     let tool_choice = ToolChoice::settle(decode_tool_choice(req.tool_choice)?, &tools, &[])?;
@@ -305,7 +307,10 @@ fn decode_user_content(content: OaiContent, index: usize) -> Result<MessageConte
     let blocks = parts
         .into_iter()
         .map(|part| match part.type_.as_str() {
-            "text" => part_text(part, index, false).map(|text| ContentBlock::Text { text }),
+            "text" => part_text(part, index, false).map(|text| ContentBlock::Text {
+                text,
+                cache_control: None,
+            }),
             "image_url" => {
                 let image = part
                     .image_url
@@ -327,7 +332,7 @@ fn decode_user_content(content: OaiContent, index: usize) -> Result<MessageConte
     let texts: Vec<String> = blocks
         .into_iter()
         .filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text),
+            ContentBlock::Text { text, .. } => Some(text),
             _ => None,
         })
         .collect();
@@ -350,7 +355,11 @@ fn image_parts(url: String) -> (String, ImageData) {
 
 fn image_block(url: String) -> ContentBlock {
     let (media_type, data) = image_parts(url);
-    ContentBlock::Image { media_type, data }
+    ContentBlock::Image {
+        media_type,
+        data,
+        cache_control: None,
+    }
 }
 
 fn base64_data_url(url: &str) -> Option<(&str, &str)> {
@@ -373,12 +382,16 @@ fn decode_assistant(m: OaiMessage, index: usize) -> Result<Message, VkdgError> {
     }
     let mut blocks = Vec::with_capacity(tool_calls.len() + 1);
     if !text.is_empty() {
-        blocks.push(ContentBlock::Text { text });
+        blocks.push(ContentBlock::Text {
+            text,
+            cache_control: None,
+        });
     }
     blocks.extend(tool_calls.into_iter().map(|tc| ContentBlock::ToolUse {
         id: tc.id,
         input: tool_call_input(&tc.function.arguments),
         name: tc.function.name,
+        cache_control: None,
     }));
     Ok(Message {
         role: Role::Assistant,
@@ -570,11 +583,13 @@ pub fn decode_responses_request(body: &[u8]) -> Result<(String, Operation), Vkdg
                 name,
                 description,
                 input_schema: parameters,
+                cache_control: None,
             },
             OaiResponsesTool::Nested(nested) => Tool {
                 name: nested.function.name,
                 description: nested.function.description,
                 input_schema: nested.function.parameters,
+                cache_control: None,
             },
         })
         .collect();

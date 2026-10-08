@@ -166,11 +166,13 @@ mod body_tests {
                             id: "call_1".into(),
                             name: "a".into(),
                             input: json!({}),
+                            cache_control: None,
                         },
                         ContentBlock::ToolUse {
                             id: "call_2".into(),
                             name: "b".into(),
                             input: json!({}),
+                            cache_control: None,
                         },
                     ]),
                 },
@@ -181,6 +183,7 @@ mod body_tests {
                         content: "one".into(),
                         images: vec![],
                         is_error: false,
+                        cache_control: None,
                     }]),
                 },
                 Message {
@@ -190,6 +193,7 @@ mod body_tests {
                         content: "two".into(),
                         images: vec![],
                         is_error: false,
+                        cache_control: None,
                     }]),
                 },
             ],
@@ -197,6 +201,7 @@ mod body_tests {
                 name: "a".into(),
                 description: None,
                 input_schema: json!({"type": "object"}),
+                cache_control: None,
             }],
             tool_choice: Some(ToolChoice::Required),
             thinking: Some(vkdg_operations::ThinkingRequest {

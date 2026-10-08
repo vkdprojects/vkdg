@@ -53,6 +53,8 @@ pub enum FakeUpstreamBehavior {
 pub struct FakeUpstreamState {
     pub behavior: FakeUpstreamBehavior,
     pub call_count: Arc<AtomicUsize>,
+    /// Every request body received, parsed as JSON (`null` when not JSON).
+    pub bodies: Arc<parking_lot::Mutex<Vec<serde_json::Value>>>,
 }
 
 impl FakeUpstreamState {
@@ -63,8 +65,15 @@ impl FakeUpstreamState {
 
 // ── Handler ────────────────────────────────────────────────────────────────────
 
-async fn handle(State(state): State<FakeUpstreamState>) -> impl IntoResponse {
+async fn handle(
+    State(state): State<FakeUpstreamState>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
     state.call_count.fetch_add(1, Ordering::Relaxed);
+    state
+        .bodies
+        .lock()
+        .push(serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null));
 
     match &state.behavior {
         FakeUpstreamBehavior::StaticJson { status, body } => {
@@ -215,6 +224,7 @@ impl FakeUpstream {
         let state = FakeUpstreamState {
             behavior,
             call_count: Arc::new(AtomicUsize::new(0)),
+            bodies: Arc::default(),
         };
 
         let app = Router::new()
@@ -246,6 +256,11 @@ impl FakeUpstream {
     /// Number of requests the fake upstream has received.
     pub fn call_count(&self) -> usize {
         self.state.call_count()
+    }
+
+    /// The JSON body of every request received, oldest first.
+    pub fn bodies(&self) -> Vec<serde_json::Value> {
+        self.state.bodies.lock().clone()
     }
 }
 

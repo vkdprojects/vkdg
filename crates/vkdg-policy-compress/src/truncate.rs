@@ -112,7 +112,7 @@ fn estimated_tokens(messages: &[Message]) -> u32 {
             MessageContent::Blocks(blocks) => blocks
                 .iter()
                 .map(|b| match b {
-                    ContentBlock::Text { text } => u32::try_from(text.len())
+                    ContentBlock::Text { text, .. } => u32::try_from(text.len())
                         .unwrap_or(u32::MAX)
                         .saturating_div(4),
                     ContentBlock::Image { .. }

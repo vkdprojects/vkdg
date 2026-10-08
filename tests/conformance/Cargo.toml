@@ -27,6 +27,7 @@ http = { workspace = true }
 bytes = { workspace = true }
 reqwest = { workspace = true }
 http-body = { workspace = true }
+parking_lot = { workspace = true }
 vkdg-provider-anthropic = { workspace = true }
 vkdg-provider-openai = { workspace = true }
 vkdg-provider-sdk = { workspace = true }

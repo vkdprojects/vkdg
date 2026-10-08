@@ -299,11 +299,7 @@ pub fn build_conversation_state(
     ConversationState {
         chat_trigger_type: "MANUAL",
         agent_task_type: "vibe",
-        conversation_id: conv
-            .session_id
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
+        conversation_id: conversation_id(conv),
         current_message: CurrentMessage {
             user_input_message: UserInput {
                 content: if let Some(prefix) = &thinking_prefix {
@@ -333,6 +329,30 @@ pub fn build_conversation_state(
     }
 }
 
+/// The Kiro `conversationId` for one request.
+///
+/// Precedence: an explicit client `session_id`; else a UUID derived from the
+/// gateway's `cache_key`, so every turn of one gateway conversation names the
+/// same Kiro conversation; else a fresh random UUID. The derived id is the first
+/// 16 bytes of `SHA-256(cache_key)` with version-4 and RFC 4122 variant bits set,
+/// so it is a valid UUID and reveals nothing beyond the (already hashed) key.
+fn conversation_id(conv: &ConversationRequest) -> String {
+    if let Some(id) = conv.session_id.as_deref().filter(|s| !s.is_empty()) {
+        return id.to_owned();
+    }
+    match conv.cache_key.as_deref().filter(|k| !k.is_empty()) {
+        Some(key) => {
+            let digest = Sha256::digest(key.as_bytes());
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(&digest[..16]);
+            uuid::Builder::from_random_bytes(bytes)
+                .into_uuid()
+                .to_string()
+        }
+        None => Uuid::new_v4().to_string(),
+    }
+}
+
 /// Group messages into alternating turns, keeping text, calls and results apart.
 fn collect_turns(conv: &ConversationRequest) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
@@ -351,10 +371,12 @@ fn collect_turns(conv: &ConversationRequest) -> Vec<Turn> {
             MessageContent::Blocks(blocks) => {
                 for block in blocks {
                     match block {
-                        ContentBlock::Text { text } if !text.is_empty() => {
+                        ContentBlock::Text { text, .. } if !text.is_empty() => {
                             turn.text.push(text.clone());
                         }
-                        ContentBlock::ToolUse { id, name, input } => {
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
                             turn.tool_uses.push(json!({
                                 "toolUseId": id,
                                 "name": wire_tool_name(name),
@@ -686,6 +708,65 @@ mod truncation_tests {
         assert_eq!(
             truncate_history_content(&ascii),
             format!("{}...[truncated, 2004 bytes total]", "a".repeat(2000))
+        );
+    }
+}
+
+#[cfg(test)]
+mod conversation_id_tests {
+    use super::*;
+
+    fn conv(session: Option<&str>, key: Option<&str>) -> ConversationRequest {
+        ConversationRequest {
+            session_id: session.map(str::to_owned),
+            cache_key: key.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    const KEY_A: &str = "3f2a9c0d5b7e41a8c6d2e0f19b8a7c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b";
+    const KEY_B: &str = "9b0a1f2e3d4c5b6a79881706f5e4d3c2b1a0f9e8d7c6b5a4938271605f4e3d2c";
+
+    // Refutes a fresh UUID per request: one gateway conversation must map to one
+    // Kiro conversation, and the id must be a well-formed v4 / RFC 4122 UUID.
+    #[test]
+    fn cache_key_derives_a_deterministic_valid_uuid() {
+        let a1 = conversation_id(&conv(None, Some(KEY_A)));
+        let a2 = conversation_id(&conv(None, Some(KEY_A)));
+        assert_eq!(a1, a2);
+        let parsed = Uuid::parse_str(&a1).unwrap();
+        assert_eq!(parsed.get_version_num(), 4);
+        assert_eq!(parsed.get_variant(), uuid::Variant::RFC4122);
+        assert_ne!(a1, KEY_A);
+    }
+
+    #[test]
+    fn different_cache_keys_give_different_ids() {
+        assert_ne!(
+            conversation_id(&conv(None, Some(KEY_A))),
+            conversation_id(&conv(None, Some(KEY_B)))
+        );
+    }
+
+    // Refutes the derived id overriding a client-named conversation.
+    #[test]
+    fn explicit_session_id_wins_over_cache_key() {
+        assert_eq!(
+            conversation_id(&conv(Some("client-session"), Some(KEY_A))),
+            "client-session"
+        );
+    }
+
+    // Refutes a constant id for requests that have nothing to anchor on.
+    #[test]
+    fn no_session_and_no_cache_key_is_random() {
+        let a = conversation_id(&conv(None, None));
+        let b = conversation_id(&conv(None, None));
+        assert_ne!(a, b);
+        assert!(Uuid::parse_str(&a).is_ok());
+        assert_ne!(
+            conversation_id(&conv(None, Some(""))),
+            conversation_id(&conv(None, Some("")))
         );
     }
 }

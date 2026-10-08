@@ -345,6 +345,7 @@ mod tests {
             name: "get_weather".into(),
             description: Some("Return weather".into()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         }];
         let body = build_body(&req, &openai_config());
         let v: Value = serde_json::from_slice(&body).unwrap();
@@ -375,6 +376,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "location": "NYC" }),
+                cache_control: None,
             }]),
         });
         let body = build_body(&req, &openai_config());
@@ -404,6 +406,7 @@ mod tests {
                 id: "call_1".into(),
                 name: "get_weather".into(),
                 input: json!({}),
+                cache_control: None,
             }]),
         });
         req.messages.push(Message {
@@ -413,6 +416,7 @@ mod tests {
                 content: "sunny, 22°C".into(),
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         });
         let body = build_body(&req, &openai_config());
@@ -451,6 +455,7 @@ mod tests {
             name: "get_weather".into(),
             description: None,
             input_schema: json!({ "type": "object" }),
+            cache_control: None,
         }];
         req.tool_choice = Some(vkdg_operations::ToolChoice::Named("get_weather".into()));
         req.stop_sequences = vec!["END".into()];

@@ -95,7 +95,7 @@ impl ProviderAdapter for CodexAdapter {
         let body = build_responses_body(req);
         let is_oauth = !matches!(config.auth, vkdg_connections::AuthKind::ApiKey { .. });
         let url = endpoint_url(config, is_oauth);
-        let headers = build_auth_headers(token, credential);
+        let headers = build_auth_headers(token, credential, req.cache_key.as_deref());
         Ok(PreparedRequest {
             url,
             headers,
@@ -395,7 +395,7 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn build_auth_headers(token: &str, credential: &Credential) -> HeaderMap {
+fn build_auth_headers(token: &str, credential: &Credential, cache_key: Option<&str>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(
         http::header::AUTHORIZATION,
@@ -418,6 +418,16 @@ fn build_auth_headers(token: &str, credential: &Credential) -> HeaderMap {
     if let Some(acc_id) = account_id {
         if let Ok(val) = acc_id.parse() {
             headers.insert(http::HeaderName::from_static("chatgpt-account-id"), val);
+        }
+    }
+
+    // Prompt-cache affinity: codex-rs sends the conversation id as `session_id`
+    // (older releases) / `session-id` (current main). Send both; the value is the
+    // gateway's hashed conversation key, never a client id.
+    if let Some(key) = cache_key {
+        if let Ok(val) = http::HeaderValue::from_str(key) {
+            headers.insert(http::HeaderName::from_static("session_id"), val.clone());
+            headers.insert(http::HeaderName::from_static("session-id"), val);
         }
     }
 
@@ -490,13 +500,14 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
                         input.push(message);
                     }
                     match block {
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             parts.push(json!({ "type": text_type, "text": text }));
                         }
                         ContentBlock::ToolUse {
                             id,
                             name,
                             input: arguments,
+                            ..
                         } => {
                             let args =
                                 serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into());
@@ -542,6 +553,10 @@ fn build_responses_body(req: &ConversationRequest) -> Bytes {
         ),
     );
     body.insert("store".into(), Value::Bool(false));
+    if let Some(key) = req.cache_key.as_deref() {
+        // Prompt-cache routing hint; codex-rs sends the conversation id here.
+        body.insert("prompt_cache_key".into(), Value::String(key.to_owned()));
+    }
     // Always stream; the /responses endpoint is SSE-first.
     body.insert("stream".into(), Value::Bool(true));
     // Not forwarded, on purpose: `tool_choice`, `stop_sequences`, `top_p` and
@@ -642,9 +657,11 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "first".into(),
+                        cache_control: None,
                     },
                     ContentBlock::Text {
                         text: "second".into(),
+                        cache_control: None,
                     },
                 ]),
             },
@@ -656,6 +673,7 @@ mod tests {
                 role: Role::User,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: "user block".into(),
+                    cache_control: None,
                 }]),
             },
             Message {
@@ -666,6 +684,7 @@ mod tests {
                 role: Role::System,
                 content: MessageContent::Blocks(vec![ContentBlock::Text {
                     text: "developer block".into(),
+                    cache_control: None,
                 }]),
             },
         ]);
@@ -704,28 +723,34 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "before calls".into(),
+                        cache_control: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_a".into(),
                         name: "first".into(),
                         input: json!({"text": "quoted \"value\"\n雪", "values": [1, true, null]}),
+                        cache_control: None,
                     },
                     ContentBlock::Text {
                         text: "between calls".into(),
+                        cache_control: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call_b".into(),
                         name: "second".into(),
                         input: json!({"nested": {"enabled": false}}),
+                        cache_control: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "call_b".into(),
                         content: "{\"result\":\"second\"}".into(),
                         is_error: false,
                         images: vec![],
+                        cache_control: None,
                     },
                     ContentBlock::Text {
                         text: "after second result".into(),
+                        cache_control: None,
                     },
                 ]),
             },
@@ -734,15 +759,18 @@ mod tests {
                 content: MessageContent::Blocks(vec![
                     ContentBlock::Text {
                         text: "before first result".into(),
+                        cache_control: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "call_a".into(),
                         content: "first result\n雪".into(),
                         is_error: false,
                         images: vec![],
+                        cache_control: None,
                     },
                     ContentBlock::Text {
                         text: "after first result".into(),
+                        cache_control: None,
                     },
                 ]),
             },
@@ -753,6 +781,7 @@ mod tests {
                     content: "pure tool result".into(),
                     is_error: true,
                     images: vec![],
+                    cache_control: None,
                 }]),
             },
         ]);
@@ -794,15 +823,18 @@ mod tests {
             content: MessageContent::Blocks(vec![
                 ContentBlock::Text {
                     text: "before result".into(),
+                    cache_control: None,
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "call_a".into(),
                     content: "result".into(),
                     is_error: false,
                     images: vec![],
+                    cache_control: None,
                 },
                 ContentBlock::Text {
                     text: "after result".into(),
+                    cache_control: None,
                 },
             ]),
         }]);
@@ -833,6 +865,7 @@ mod tests {
                 content: if index % 4 == 0 {
                     MessageContent::Blocks(vec![ContentBlock::Text {
                         text: format!("turn {index}"),
+                        cache_control: None,
                     }])
                 } else {
                     MessageContent::Text(format!("turn {index}"))
@@ -989,6 +1022,80 @@ mod tests {
         assert!(req.headers.get("chatgpt-account-id").is_none());
     }
 
+    const HASH: &str = "3f2a9c0d5b7e41a8c6d2e0f19b8a7c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b";
+
+    fn prepare_with_key(auth: AuthKind, cache_key: Option<&str>) -> PreparedRequest {
+        let config = ConnectionConfig {
+            id: vkdg_core::ConnectionId("codex-cache".into()),
+            provider: ProviderKind::Plugin { id: "codex".into() },
+            auth,
+            models: vec!["gpt-*".into()],
+            max_concurrent: 1,
+            weight: 1,
+            tags: vec![],
+            endpoint: None,
+            capabilities: CapabilitySet::default(),
+        };
+        let op = Operation::Conversation(ConversationRequest {
+            model: "gpt-5-codex".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hello".into()),
+            }],
+            cache_key: cache_key.map(str::to_owned),
+            ..Default::default()
+        });
+        let cred = Credential {
+            token: "t".into(),
+            extra: Arc::new(HashMap::new()),
+        };
+        CodexAdapter::new().prepare(&op, &config, &cred).unwrap()
+    }
+
+    fn auth_kinds() -> [AuthKind; 2] {
+        [
+            AuthKind::Account {
+                account_id: "oauth-user".into(),
+            },
+            AuthKind::ApiKey {
+                env_var: "OPENAI_API_KEY".into(),
+            },
+        ]
+    }
+
+    // Refutes dropping the cache routing hint: the Responses body and the session
+    // headers must carry the gateway's hashed conversation key on both auth paths.
+    #[test]
+    fn cache_key_becomes_prompt_cache_key_and_session_headers() {
+        for auth in auth_kinds() {
+            let req = prepare_with_key(auth, Some(HASH));
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            assert_eq!(body["prompt_cache_key"], HASH);
+            for name in ["session_id", "session-id"] {
+                assert_eq!(
+                    req.headers.get(name).map(|v| v.to_str().unwrap()),
+                    Some(HASH),
+                    "{name}"
+                );
+            }
+            for name in ["originator", "version", "user-agent"] {
+                assert!(req.headers.get(name).is_none(), "{name} must not be sent");
+            }
+        }
+    }
+
+    // Refutes inventing a key (or sending an empty field) when the request has none.
+    #[test]
+    fn no_cache_key_omits_prompt_cache_key_and_session_headers() {
+        for auth in auth_kinds() {
+            let req = prepare_with_key(auth, None);
+            let body: Value = serde_json::from_slice(&req.body).unwrap();
+            assert!(body.get("prompt_cache_key").is_none());
+            assert!(req.headers.get("session_id").is_none());
+            assert!(req.headers.get("session-id").is_none());
+        }
+    }
+
     #[test]
     fn tools_serialized_with_flat_function_schema() {
         let config = ConnectionConfig {
@@ -1020,6 +1127,7 @@ mod tests {
                     },
                     "required": ["location"]
                 }),
+                cache_control: None,
             }],
             max_tokens: None,
             temperature: None,
@@ -1076,6 +1184,7 @@ mod tests {
                         id: "call_123".into(),
                         name: "get_weather".into(),
                         input: json!({ "location": "San Francisco" }),
+                        cache_control: None,
                     }]),
                 },
                 Message {
@@ -1085,6 +1194,7 @@ mod tests {
                         content: "{\"temp\": 65}".into(),
                         is_error: false,
                         images: vec![],
+                        cache_control: None,
                     }]),
                 },
             ],

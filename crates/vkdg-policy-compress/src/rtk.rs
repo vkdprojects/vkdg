@@ -50,7 +50,7 @@ impl Compressor for RtkCompressor {
                         ContentBlock::ToolResult { content, .. } => u32::try_from(content.len())
                             .unwrap_or(u32::MAX)
                             .saturating_div(4),
-                        ContentBlock::Text { text } => u32::try_from(text.len())
+                        ContentBlock::Text { text, .. } => u32::try_from(text.len())
                             .unwrap_or(u32::MAX)
                             .saturating_div(4),
                         ContentBlock::Image { .. }
@@ -128,6 +128,7 @@ mod tests {
                     content: content.into(),
                     images: vec![],
                     is_error: false,
+                    cache_control: None,
                 }]),
             }],
             tools: vec![],

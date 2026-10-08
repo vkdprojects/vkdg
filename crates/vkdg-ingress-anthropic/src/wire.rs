@@ -67,6 +67,16 @@ pub struct AnthropicBlock {
     pub(crate) signature: Option<String>,
     // redacted_thinking block
     pub(crate) data: Option<String>,
+    /// `{"type":"ephemeral","ttl":"1h"}` — a prompt-cache breakpoint.
+    pub(crate) cache_control: Option<AnthropicCacheControl>,
+}
+
+/// A client prompt-cache breakpoint. `ttl` is carried verbatim.
+#[derive(Debug, Deserialize)]
+pub struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    pub(crate) type_: Option<String>,
+    pub(crate) ttl: Option<String>,
 }
 
 /// The `content` field of a `tool_result` block may be a plain string or
@@ -92,6 +102,7 @@ pub struct AnthropicTool {
     pub(crate) name: String,
     pub(crate) description: Option<String>,
     pub(crate) input_schema: serde_json::Value,
+    pub(crate) cache_control: Option<AnthropicCacheControl>,
 }
 
 // ── Error wire types ──────────────────────────────────────────────────────────

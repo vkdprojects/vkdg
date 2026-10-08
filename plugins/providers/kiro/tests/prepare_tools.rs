@@ -58,6 +58,7 @@ fn weather_tool() -> Tool {
             "properties": { "city": { "type": "string" } },
             "required": ["city"]
         }),
+        cache_control: None,
     }
 }
 
@@ -143,6 +144,7 @@ fn schema_keywords_kiro_rejects_are_stripped_at_every_depth() {
             },
             "$defs": { "x": { "type": "string" } }
         }),
+        cache_control: None,
     };
     let b = body(&request(vec![text(Role::User, "go")], vec![tool]));
     let schema = current_tools(&b)[0]["toolSpecification"]["inputSchema"]["json"].clone();
@@ -171,11 +173,13 @@ fn descriptions_are_never_empty_and_long_ones_are_relocated_not_cut() {
             name: "bare".into(),
             description: None,
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         },
         Tool {
             name: "verbose".into(),
             description: Some(long_doc.clone()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         },
     ];
     let b = body(&request(vec![text(Role::User, "hi")], tools));
@@ -210,6 +214,7 @@ fn over_long_tool_names_are_shortened_uniquely() {
             name,
             description: Some("d".into()),
             input_schema: json!({ "type": "object", "properties": {} }),
+            cache_control: None,
         })
         .collect();
     let b = body(&request(vec![text(Role::User, "hi")], tools));
@@ -236,6 +241,7 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -245,6 +251,7 @@ fn a_tool_round_trip_uses_tool_uses_and_tool_results() {
                 content: "18C and sunny".into(),
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
     ];
@@ -287,6 +294,7 @@ fn a_result_only_turn_still_carries_the_tools() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -296,6 +304,7 @@ fn a_result_only_turn_still_carries_the_tools() {
                 content: "18C".into(),
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
     ];
@@ -315,6 +324,7 @@ fn orphan_tool_results_become_text_instead_of_a_rejected_request() {
             content: "stale output".into(),
             images: vec![],
             is_error: false,
+            cache_control: None,
         }]),
     }];
     let b = body(&request(messages, vec![weather_tool()]));
@@ -366,6 +376,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: serde_json::json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -375,6 +386,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
                 content: long_content,
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
         text(Role::Assistant, "The weather is fine."),
@@ -409,6 +421,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
                 id: "tu_2".into(),
                 name: "get_weather".into(),
                 input: serde_json::json!({ "city": "Paris" }),
+                cache_control: None,
             }]),
         },
         Message {
@@ -418,6 +431,7 @@ fn history_tool_results_over_2000_chars_are_truncated() {
                 content: short_content.clone(),
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
         text(Role::Assistant, "Got it."),
@@ -453,6 +467,7 @@ fn current_turn_tool_results_are_never_truncated() {
                 id: "tu_1".into(),
                 name: "get_weather".into(),
                 input: serde_json::json!({}),
+                cache_control: None,
             }]),
         },
         Message {
@@ -462,6 +477,7 @@ fn current_turn_tool_results_are_never_truncated() {
                 content: long_content,
                 images: vec![],
                 is_error: false,
+                cache_control: None,
             }]),
         },
     ];
@@ -502,6 +518,7 @@ fn history_cap_keeps_tool_round_trips_adjacent() {
                             id: id.clone(),
                             name: "get_weather".into(),
                             input: json!({}),
+                            cache_control: None,
                         }]),
                     });
                     messages.push(Message {
@@ -511,6 +528,7 @@ fn history_cap_keeps_tool_round_trips_adjacent() {
                             content: format!("result_{i}"),
                             images: vec![],
                             is_error: false,
+                            cache_control: None,
                         }]),
                     });
                 }

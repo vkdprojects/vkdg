@@ -2,13 +2,13 @@
 
 use vkdg_core::VkdgError;
 use vkdg_operations::{
-    validated_stop_sequences, validated_top_p, CapabilitySet, ContentBlock, ConversationRequest,
-    ImageData, Message, MessageContent, Operation, Role, ServerTool, Tool, ToolChoice,
-    ToolResultImage,
+    validated_stop_sequences, validated_top_p, CacheControl, CapabilitySet, ContentBlock,
+    ConversationRequest, ImageData, Message, MessageContent, Operation, Role, ServerTool,
+    SystemBlock, Tool, ToolChoice, ToolResultImage,
 };
 
 use crate::wire::{
-    AnthropicBlock, AnthropicContent, AnthropicImageSource, AnthropicTool,
+    AnthropicBlock, AnthropicCacheControl, AnthropicContent, AnthropicImageSource, AnthropicTool,
     AnthropicToolResultContent,
 };
 
@@ -113,6 +113,10 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         (None, None) => None,
     };
 
+    let (system, system_blocks) = match req.system.map(decode_system) {
+        Some((text, blocks)) => (Some(text), blocks),
+        None => (None, Vec::new()),
+    };
     let operation = Operation::Conversation(ConversationRequest {
         model: base_model.clone(),
         messages,
@@ -121,7 +125,8 @@ pub fn decode_request(body: &[u8]) -> Result<(String, Operation), VkdgError> {
         max_tokens: req.max_tokens,
         temperature: req.temperature,
         stream: req.stream.unwrap_or(false),
-        system: req.system.map(system_text),
+        system,
+        system_blocks,
         required_capabilities: CapabilitySet::default(),
         thinking,
         tool_choice,
@@ -152,6 +157,7 @@ fn split_tools(raw: Vec<serde_json::Value>) -> Result<(Vec<Tool>, Vec<ServerTool
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool.input_schema,
+                cache_control: cache_control(tool.cache_control),
             });
             continue;
         }
@@ -211,17 +217,43 @@ fn decode_tool_choice(raw: serde_json::Value) -> Result<(ToolChoice, bool), Vkdg
     }
 }
 
-/// Flatten `system` to text. Block arrays keep their order, joined by a blank
-/// line; non-text blocks carry no system text and are skipped.
-fn system_text(system: AnthropicContent) -> String {
+/// Flatten `system` to text and, for a block array carrying prompt-cache
+/// markers, keep the text blocks with their markers. Block arrays keep their
+/// order, joined by a blank line; non-text blocks carry no system text and are
+/// skipped. Without a marker the blocks are not kept: the joined text says it all.
+fn decode_system(system: AnthropicContent) -> (String, Vec<SystemBlock>) {
     match system {
-        AnthropicContent::Text(s) => s,
-        AnthropicContent::Blocks(blocks) => blocks
-            .into_iter()
-            .filter(|b| b.type_ == "text")
-            .filter_map(|b| b.text)
-            .collect::<Vec<_>>()
-            .join("\n\n"),
+        AnthropicContent::Text(s) => (s, Vec::new()),
+        AnthropicContent::Blocks(blocks) => {
+            let blocks: Vec<SystemBlock> = blocks
+                .into_iter()
+                .filter(|b| b.type_ == "text")
+                .filter_map(|b| {
+                    let cache_control = cache_control(b.cache_control);
+                    b.text.map(|text| SystemBlock {
+                        text,
+                        cache_control,
+                    })
+                })
+                .collect();
+            let text = blocks
+                .iter()
+                .map(|b| b.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let marked = blocks.iter().any(|b| b.cache_control.is_some());
+            (text, if marked { blocks } else { Vec::new() })
+        }
+    }
+}
+
+/// The neutral marker for a wire `cache_control`. `ephemeral` is the only type
+/// Anthropic defines; anything else is not a breakpoint and is ignored.
+fn cache_control(raw: Option<AnthropicCacheControl>) -> Option<CacheControl> {
+    let raw = raw?;
+    match raw.type_.as_deref() {
+        None | Some("ephemeral") => Some(CacheControl { ttl: raw.ttl }),
+        Some(_) => None,
     }
 }
 
@@ -243,10 +275,20 @@ fn image_source(source: AnthropicImageSource) -> (String, ImageData) {
 /// Returns `None` for unrecognised block types.
 fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
     match b.type_.as_str() {
-        "text" => b.text.map(|t| ContentBlock::Text { text: t }),
+        "text" => {
+            let cache_control = cache_control(b.cache_control);
+            b.text.map(|text| ContentBlock::Text {
+                text,
+                cache_control,
+            })
+        }
         "image" => {
             let (media_type, data) = image_source(b.source?);
-            Some(ContentBlock::Image { media_type, data })
+            Some(ContentBlock::Image {
+                media_type,
+                data,
+                cache_control: cache_control(b.cache_control),
+            })
         }
         "tool_use" => {
             let id = b.id.unwrap_or_default();
@@ -254,7 +296,12 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
             let input = b
                 .input
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            Some(ContentBlock::ToolUse { id, name, input })
+            Some(ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                cache_control: cache_control(b.cache_control),
+            })
         }
         "tool_result" => {
             let tool_use_id = b.tool_use_id.unwrap_or_default();
@@ -285,6 +332,7 @@ fn anthropic_block_to_content(b: AnthropicBlock) -> Option<ContentBlock> {
                 content,
                 images,
                 is_error: b.is_error.unwrap_or(false),
+                cache_control: cache_control(b.cache_control),
             })
         }
         "thinking" => Some(ContentBlock::Thinking {

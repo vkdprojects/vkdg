@@ -3,11 +3,11 @@
 
 use serde_json::{json, Value};
 use vkdg_operations::{
-    ContentBlock, ConversationRequest, ImageData, Message, MessageContent, Role, ThinkingRequest,
-    Tool, ToolChoice,
+    CacheControl, ContentBlock, ConversationRequest, ImageData, Message, MessageContent, Role,
+    SystemBlock, ThinkingRequest, Tool, ToolChoice,
 };
 
-use super::{messages_body, DEFAULT_MAX_TOKENS};
+use super::{body_map, messages_body, DEFAULT_MAX_TOKENS};
 
 fn text(role: Role, t: &str) -> Message {
     Message {
@@ -28,6 +28,7 @@ fn call(id: &str, name: &str, input: Value) -> ContentBlock {
         id: id.into(),
         name: name.into(),
         input,
+        cache_control: None,
     }
 }
 
@@ -37,6 +38,7 @@ fn result(id: &str, content: &str) -> ContentBlock {
         content: content.into(),
         images: vec![],
         is_error: false,
+        cache_control: None,
     }
 }
 
@@ -45,6 +47,7 @@ fn tool(name: &str) -> Tool {
         name: name.into(),
         description: Some(format!("{name} tool")),
         input_schema: json!({"type": "object", "properties": {}}),
+        cache_control: None,
     }
 }
 
@@ -62,8 +65,10 @@ fn with_tools(mut req: ConversationRequest) -> ConversationRequest {
     req
 }
 
+/// The body before breakpoints are settled, so the shape tests see exactly what
+/// the request says; the breakpoint rules have their own tests.
 fn wire(req: &ConversationRequest) -> Value {
-    serde_json::from_slice(&messages_body(req, "claude-sonnet-4-5", None)).unwrap()
+    Value::Object(body_map(req, "claude-sonnet-4-5", None))
 }
 
 fn thinking(budget: Option<u32>) -> ThinkingRequest {
@@ -326,6 +331,7 @@ fn parallel_tool_results_become_one_user_turn_in_tool_use_order() {
             vec![
                 ContentBlock::Text {
                     text: "Checking.".into(),
+                    cache_control: None,
                 },
                 call("toolu_a", "get_weather", json!({"city": "Paris"})),
                 call("toolu_b", "get_time", json!({})),
@@ -437,6 +443,7 @@ fn duplicate_results_are_not_repeated_and_is_error_is_kept() {
                     content: "boom".into(),
                     images: vec![],
                     is_error: true,
+                    cache_control: None,
                 },
                 result("toolu_1", "late duplicate"),
             ],
@@ -467,18 +474,21 @@ fn images_use_the_anthropic_source_shape() {
         vec![
             ContentBlock::Text {
                 text: "what is this?".into(),
+                cache_control: None,
             },
             ContentBlock::Image {
                 media_type: "image/png".into(),
                 data: ImageData::Base64 {
                     data: "iVBORw0KGgo=".into(),
                 },
+                cache_control: None,
             },
             ContentBlock::Image {
                 media_type: String::new(),
                 data: ImageData::Url {
                     url: "https://example.com/cat.jpg".into(),
                 },
+                cache_control: None,
             },
         ],
     )]);
@@ -517,6 +527,7 @@ fn only_signed_thinking_is_replayed() {
                 },
                 ContentBlock::Text {
                     text: "done".into(),
+                    cache_control: None,
                 },
             ],
         ),
@@ -543,8 +554,12 @@ fn system_messages_fold_into_system_and_empty_text_is_dropped() {
             vec![
                 ContentBlock::Text {
                     text: String::new(),
+                    cache_control: None,
                 },
-                ContentBlock::Text { text: "yo".into() },
+                ContentBlock::Text {
+                    text: "yo".into(),
+                    cache_control: None,
+                },
             ],
         ),
     ]);
@@ -566,9 +581,7 @@ fn system_messages_fold_into_system_and_empty_text_is_dropped() {
 fn a_system_preamble_comes_first_as_its_own_block() {
     let mut req = request(vec![text(Role::User, "hi")]);
     req.system = Some("Be brief.".into());
-    let v: Value =
-        serde_json::from_slice(&messages_body(&req, "claude-sonnet-4-5", Some("IDENTITY")))
-            .unwrap();
+    let v = Value::Object(body_map(&req, "claude-sonnet-4-5", Some("IDENTITY")));
     assert_eq!(
         v["system"],
         json!([
@@ -577,10 +590,178 @@ fn a_system_preamble_comes_first_as_its_own_block() {
         ])
     );
     req.system = None;
-    let v: Value =
-        serde_json::from_slice(&messages_body(&req, "claude-sonnet-4-5", Some("IDENTITY")))
-            .unwrap();
+    let v = Value::Object(body_map(&req, "claude-sonnet-4-5", Some("IDENTITY")));
     assert_eq!(v["system"], json!([{"type": "text", "text": "IDENTITY"}]));
+}
+
+// ── prompt-cache breakpoints ─────────────────────────────────────────────────
+
+#[allow(clippy::unnecessary_wraps)] // fills the `Option<CacheControl>` field of every block literal
+fn marker(ttl: Option<&str>) -> Option<CacheControl> {
+    Some(CacheControl {
+        ttl: ttl.map(str::to_owned),
+    })
+}
+
+fn sent(req: &ConversationRequest, preamble: Option<&str>) -> Value {
+    serde_json::from_slice(&messages_body(req, "claude-sonnet-4-5", preamble)).unwrap()
+}
+
+// Defeat: markers dropped on the way upstream, `ttl` rewritten, or a marker
+// moved off its block.
+#[test]
+fn client_markers_reach_the_body_on_system_messages_and_tools_with_ttl_verbatim() {
+    let mut req = request(vec![
+        blocks(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "context".into(),
+                    cache_control: marker(Some("1h")),
+                },
+                ContentBlock::Text {
+                    text: "question".into(),
+                    cache_control: None,
+                },
+            ],
+        ),
+        blocks(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "c1".into(),
+                name: "get_weather".into(),
+                input: json!({}),
+                cache_control: marker(None),
+            }],
+        ),
+        blocks(
+            Role::User,
+            vec![ContentBlock::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "sunny".into(),
+                images: vec![],
+                is_error: false,
+                cache_control: marker(Some("5m")),
+            }],
+        ),
+    ]);
+    req.tools = vec![
+        tool("get_weather"),
+        Tool {
+            cache_control: marker(Some("1h")),
+            ..tool("get_time")
+        },
+    ];
+    req.system = Some("rules\n\nproject".into());
+    req.system_blocks = vec![
+        SystemBlock {
+            text: "rules".into(),
+            cache_control: None,
+        },
+        SystemBlock {
+            text: "project".into(),
+            cache_control: marker(Some("1h")),
+        },
+    ];
+    // Before the 4-breakpoint cap, which has its own tests.
+    let v = wire(&req);
+    let eph = json!({"type": "ephemeral"});
+    let eph_1h = json!({"type": "ephemeral", "ttl": "1h"});
+    assert_eq!(v["tools"][0].get("cache_control"), None);
+    assert_eq!(v["tools"][1]["cache_control"], eph_1h);
+    assert_eq!(v["system"][0].get("cache_control"), None);
+    assert_eq!(v["system"][1]["cache_control"], eph_1h);
+    assert_eq!(v["messages"][0]["content"][0]["cache_control"], eph_1h);
+    assert_eq!(v["messages"][0]["content"][1].get("cache_control"), None);
+    assert_eq!(v["messages"][1]["content"][0]["cache_control"], eph);
+    assert_eq!(
+        v["messages"][2]["content"][0]["cache_control"],
+        json!({"type": "ephemeral", "ttl": "5m"})
+    );
+    assert_eq!(v.to_string().matches("cache_control").count(), 5);
+}
+
+// Defeat: a lone marked text collapsing to a plain string and losing its marker.
+#[test]
+fn a_marked_lone_text_block_keeps_the_block_form() {
+    let req = request(vec![blocks(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "hi".into(),
+            cache_control: marker(Some("1h")),
+        }],
+    )]);
+    assert_eq!(
+        wire(&req)["messages"][0]["content"],
+        json!([{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "1h"}}])
+    );
+}
+
+// Defeat: a marker on a text block lost when `arrange` merges same-role turns.
+#[test]
+fn markers_survive_merging_of_consecutive_user_messages() {
+    let req = request(vec![
+        blocks(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "a".into(),
+                cache_control: marker(None),
+            }],
+        ),
+        text(Role::User, "b"),
+    ]);
+    let v = wire(&req);
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        v["messages"][0]["content"][0]["cache_control"],
+        json!({"type": "ephemeral"})
+    );
+}
+
+// Defeat: an edited system prompt shipped as the client's old blocks.
+#[test]
+fn stale_system_blocks_are_not_sent_after_the_system_text_was_edited() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.system = Some("old".into());
+    req.system_blocks = vec![SystemBlock {
+        text: "old".into(),
+        cache_control: marker(Some("1h")),
+    }];
+    req.system = Some("injected\n\nold".into());
+    let v = wire(&req);
+    assert_eq!(v["system"], json!("injected\n\nold"));
+}
+
+// Defeat: the identity block marked, moved, or the client's marker lost behind it.
+#[test]
+fn with_a_preamble_the_identity_block_stays_first_and_unmarked() {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.system = Some("Be brief.".into());
+    req.system_blocks = vec![SystemBlock {
+        text: "Be brief.".into(),
+        cache_control: marker(Some("1h")),
+    }];
+    let v = sent(&req, Some("IDENTITY"));
+    assert_eq!(v["system"][0], json!({"type": "text", "text": "IDENTITY"}));
+    assert_eq!(
+        v["system"][1],
+        json!({"type": "text", "text": "Be brief.", "cache_control": {"type": "ephemeral", "ttl": "1h"}})
+    );
+}
+
+// Defeat: auto breakpoints added over the client's own placement.
+#[test]
+fn a_request_without_markers_gets_default_breakpoints_and_one_with_markers_gets_none_extra() {
+    let mut req = with_tools(request(vec![text(Role::User, "hi")]));
+    req.system = Some("sys".into());
+    let v = sent(&req, None);
+    assert_eq!(v.to_string().matches("cache_control").count(), 3);
+    assert!(v["tools"][1]["cache_control"].is_object());
+    assert!(v["tools"][0].get("cache_control").is_none());
+
+    req.tools[0].cache_control = marker(None);
+    let v = sent(&req, None);
+    assert_eq!(v.to_string().matches("cache_control").count(), 1);
 }
 
 // ── images inside tool results ────────────────────────────────────────────────
@@ -594,6 +775,7 @@ fn result_with_image(id: &str, content: &str, media_type: &str, data: ImageData)
             data,
         }],
         is_error: false,
+        cache_control: None,
     }
 }
 
@@ -627,6 +809,7 @@ fn tool_result_images_stay_inside_the_result_in_anthropic_shape() {
                     },
                 ],
                 is_error: false,
+                cache_control: None,
             }],
         ),
     ]);

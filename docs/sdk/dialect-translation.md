@@ -142,7 +142,36 @@ minimum; counting it turned a 2-token prompt into ~2000 billed tokens.
 | assistant text beside tool calls | kept as a leading text block | kept as `content` beside `tool_calls` | |
 | parallel tool results | one user turn of `tool_result` blocks in call order | one `tool` message each, behind its call | a call without a result gets an error result; an orphan result becomes text |
 | images | `image_url` to Anthropic `source` (base64 or URL) | to `image_url` (data URL when inline) | in a tool result: kept inside the Anthropic `tool_result`; to an OpenAI upstream, the `tool` message carries the text and the images follow in a labelled `user` message (Chat Completions tool messages are text only) |
+| `cache_control` | not sent (no field) | passed through verbatim, `ttl` included, on system blocks, text / image / `tool_use` / `tool_result` blocks and custom tools | an OpenAI-format upstream never receives it; see "Prompt caching" |
 | Codex / Kiro | n/a | n/a | `tool_choice`, `stop`, `top_p` and the parallel limit are not forwarded |
+
+### Prompt caching
+
+Anthropic caches a prompt prefix up to each `cache_control` breakpoint. The gateway handles it
+in three steps, all on requests sent to an Anthropic-format provider (`anthropic`, `claude-code`).
+
+- **Passthrough.** The Anthropic ingress keeps `cache_control` on system blocks, text, image,
+  `tool_use` and `tool_result` blocks and custom tool definitions. `ttl` (`5m`, `1h`) is
+  forwarded verbatim. A marker whose `type` is not `ephemeral` is ignored. System prompts the
+  gateway edits (global prompt, memories, relay block) gain their own unmarked block in front, so
+  the client's breakpoint stays on the block it chose. If the system text was replaced instead,
+  the client's blocks are dropped and the string is sent.
+- **Default breakpoints.** Only when the request carries no marker anywhere, the gateway marks
+  the last custom tool, the last system block and the last markable block of the last message
+  (never `thinking` / `redacted_thinking`). A client that sets any marker is trusted and gets
+  nothing added. This is fixed behaviour with no configuration. The `claude-code` identity block
+  stays the first system block and is never marked.
+- **Limit.** Anthropic accepts at most 4 breakpoints. When a request has more, the last 4 (in
+  tools, system, messages order) are kept.
+
+`cache_control` never changes the response-cache key or the session-affinity digest. The
+affinity digest is exposed to providers as `ConversationRequest::cache_key` (a SHA-256 digest,
+never the client's own session id), for providers that take a cache key of their own.
+
+Each request row records `cache_read_tokens` and `cache_write_tokens` as the provider reported
+them (absent when it reported none) and the console shows them. Whether the upstream really
+serves a prompt from its cache is proved only by `cache_read_tokens > 0` on a live response; the
+tests only show that the markers reach the upstream request.
 
 ### Kiro history limit
 

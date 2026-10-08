@@ -162,5 +162,3 @@ apps/console/playwright-report/
 # OMP session config, não versionar
 /.omp/config.yml
 apps/console/e2e/.data/
-references/
-omp-session-*.html

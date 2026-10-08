@@ -4,7 +4,6 @@
   import { formatNumber, formatDate } from '$lib/format.js';
   import Meter from './Meter.svelte';
   import Badge from './Badge.svelte';
-  import UsageWindows from './UsageWindows.svelte';
 
   /**
    * Renders an account's plan credits honestly: a real meter when the
@@ -34,22 +33,9 @@
 
   const reported = $derived(account.credits_source === 'reported' && account.credits_used != null && account.credits_limit != null);
   const unavailable = $derived(account.credits_source === 'unavailable');
-  const windows = $derived(account.credits_source === 'reported' ? (account.usage_windows ?? []) : []);
 </script>
 
-{#if windows.length > 0}
-  <div class="limits" data-state="windows" data-variant={variant}>
-    {#if variant === 'panel'}
-      <div class="limits-head"><span>{m.plan_limits_title()}</span>{#if account.credits_plan}<span class="plan-name">{account.credits_plan}</span>{/if}</div>
-    {/if}
-    <UsageWindows {windows} />
-    {#if variant === 'panel' && account.credits_checked_at}
-      <div class="limits-foot"><span class="checked-at">{m.credits_last_checked({ time: checkedAgo(account.credits_checked_at) })}</span></div>
-    {:else if variant === 'compact' && account.credits_plan}
-      <span class="compact-plan mono">{account.credits_plan}</span>
-    {/if}
-  </div>
-{:else if reported}
+{#if reported}
   <div class="limits" data-state="reported" data-variant={variant}>
     {#if variant === 'panel'}
       <div class="limits-head"><span>{m.plan_limits_title()}</span>{#if account.credits_plan}<span class="plan-name">{account.credits_plan}</span>{/if}</div>

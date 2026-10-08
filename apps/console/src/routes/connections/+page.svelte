@@ -5,7 +5,7 @@
   import { Badge, StatusDot, EmptyState, Button, Select, Spinner, CopyButton, Meter, Stat } from '$lib/components/index.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatTime, formatRelativeTime } from '$lib/format.js';
-  import { Dialog, AlertDialog } from 'bits-ui';
+  import { Dialog } from 'bits-ui';
   import { PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { toast } from 'svelte-sonner';
 
@@ -37,58 +37,6 @@
     if (Math.abs(hours) < 24) return formatRelativeTime(hours, 'hour');
     return formatRelativeTime(Math.round(hours / 24), 'day');
   }
-
-  let pendingDelete = $state<ConnectionSummary | null>(null);
-  let deleting = $state(false);
-
-  async function confirmDelete() {
-    if (!pendingDelete) return;
-    deleting = true;
-    try {
-      await api.deleteConnection(pendingDelete.id);
-      toast.success(m.connection_deleted());
-      pendingDelete = null;
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      deleting = false;
-    }
-  }
-
-  // Models chips: show a few entries, the rest go into the tooltip.
-  const MODEL_CHIPS = 3;
-  const isPattern = (id: string) => /[*?]/.test(id);
-
-  let syncingId = $state<string | null>(null);
-
-  async function syncModels(conn: ConnectionSummary) {
-    syncingId = conn.id;
-    try {
-      const result = await api.syncConnectionModels(conn.id);
-      toast.success(m.connection_models_synced({ count: result.count }));
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      syncingId = null;
-    }
-  }
-  let resettingId = $state<string | null>(null);
-
-  async function resetCooldown(conn: ConnectionSummary) {
-    resettingId = conn.id;
-    try {
-      await api.resetConnectionCooldown(conn.id);
-      toast.success(m.connection_cooldown_reset({ id: conn.id }));
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      resettingId = null;
-    }
-  }
-
 
   let dialogOpen = $state(false);
   let provider = $state('openai-compat');
@@ -270,7 +218,6 @@
           <th scope="col">{m.connection_models()}</th>
           <th scope="col">{m.connection_active_requests()}</th>
           <th scope="col">{m.connection_cooldown()}</th>
-          <th scope="col"><span class="sr-only">{m.connection_actions()}</span></th>
         </tr>
       </thead>
       <tbody>
@@ -284,20 +231,7 @@
                 <Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()} />
               </div>
             </td>
-            <td class="models-cell">
-              {#if conn.models.length === 0}
-                {m.common_none()}
-              {:else}
-                <div class="model-chips" title={conn.models.join('\n')}>
-                  {#each conn.models.slice(0, MODEL_CHIPS) as id (id)}
-                    <span class="model-chip" class:pattern={isPattern(id)}>{id}</span>
-                  {/each}
-                  {#if conn.models.length > MODEL_CHIPS}
-                    <span class="hint">{m.connection_models_more({ n: conn.models.length - MODEL_CHIPS })}</span>
-                  {/if}
-                </div>
-              {/if}
-            </td>
+            <td>{conn.model_count}</td>
             <td class="concurrency-cell">
               <Meter
                 value={conn.active_requests}
@@ -316,64 +250,12 @@
                 {m.common_none()}
               {/if}
             </td>
-            <td class="actions-cell">
-              <div class="row-actions">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onclick={() => syncModels(conn)}
-                  disabled={syncingId === conn.id}
-                  ariaLabel={`${m.connection_sync_models()} ${conn.id}`}
-                >
-                  <RefreshCwIcon size={14} aria-hidden="true" />
-                  {m.connection_sync_models()}
-                </Button>
-                {#if conn.status === 'cooldown' || conn.status === 'circuit_open' || conn.cooldown_until}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onclick={() => resetCooldown(conn)}
-                    disabled={resettingId === conn.id}
-                    ariaLabel={`${m.connection_reset_cooldown()} ${conn.id}`}
-                  >
-                    <RefreshCwIcon size={14} aria-hidden="true" />
-                    {m.connection_reset_cooldown()}
-                  </Button>
-                {/if}
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onclick={() => (pendingDelete = conn)}
-                  ariaLabel={`${m.connection_delete()} ${conn.id}`}
-                >{m.connection_delete()}</Button>
-              </div>
-            </td>
           </tr>
         {/each}
       </tbody>
     </table>
   {/if}
 </div>
-
-<AlertDialog.Root open={pendingDelete !== null} onOpenChange={(v) => { if (!v) pendingDelete = null; }}>
-  <AlertDialog.Portal>
-    <AlertDialog.Overlay class="dialog-overlay" />
-    <AlertDialog.Content class="dialog-content">
-      <div class="confirm">
-        <AlertDialog.Title class="dialog-title">{m.connection_delete_title()}</AlertDialog.Title>
-        <AlertDialog.Description class="confirm-desc">
-          {m.connection_delete_confirm({ id: pendingDelete?.id ?? '' })}
-        </AlertDialog.Description>
-        <div class="confirm-footer">
-          <AlertDialog.Cancel class="confirm-btn outline">{m.common_cancel()}</AlertDialog.Cancel>
-          <button type="button" class="confirm-btn danger" disabled={deleting} onclick={confirmDelete}>
-            {m.connection_delete()}
-          </button>
-        </div>
-      </div>
-    </AlertDialog.Content>
-  </AlertDialog.Portal>
-</AlertDialog.Root>
 
 <Dialog.Root bind:open={dialogOpen} onOpenChange={(v) => { if (!v) step = 'form'; }}>
   <Dialog.Portal>
@@ -633,95 +515,5 @@
   @keyframes slideIn {
     from { opacity: 0; transform: translate(-50%, -48%); }
     to { opacity: 1; transform: translate(-50%, -50%); }
-  }
-
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-
-  .actions-cell {
-    text-align: right;
-  }
-
-  .row-actions {
-    display: inline-flex;
-    gap: 6px;
-    justify-content: flex-end;
-  }
-
-  .models-cell {
-    max-width: 22rem;
-  }
-
-  .model-chips {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .model-chip {
-    font-family: monospace;
-    font-size: 0.75rem;
-    padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-elevated);
-    color: var(--text-1);
-    white-space: nowrap;
-  }
-
-  .model-chip.pattern {
-    border-style: dashed;
-    color: var(--text-3);
-  }
-
-  .confirm {
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  :global(.confirm-desc) {
-    font-size: 0.875rem;
-    color: var(--text-2);
-    margin: 0;
-  }
-
-  .confirm-footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  :global(.confirm-btn) {
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 0.8125rem;
-    font-weight: 500;
-    padding: 0.4375rem 0.875rem;
-    border: 1px solid transparent;
-  }
-
-  :global(.confirm-btn.outline) {
-    background: transparent;
-    color: var(--text-2);
-    border-color: var(--border-strong);
-  }
-
-  :global(.confirm-btn.danger) {
-    background: var(--danger);
-    color: #fff;
-  }
-
-  :global(.confirm-btn:disabled) {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
 </style>

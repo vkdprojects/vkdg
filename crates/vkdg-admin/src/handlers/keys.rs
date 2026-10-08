@@ -5,7 +5,7 @@
 
 use crate::{
     error::{AdminError, AdminErrorResponse},
-    handlers::{response as resp, session::get_session},
+    handlers::session::get_session,
     router::AdminState,
 };
 use axum::{
@@ -115,6 +115,10 @@ struct KeyListResponse {
     total: usize,
 }
 
+fn unauthorized() -> Response {
+    AdminErrorResponse(StatusCode::UNAUTHORIZED, AdminError::unauthorized()).into_response()
+}
+
 fn invalid(message: impl Into<String>) -> Response {
     AdminErrorResponse(
         StatusCode::BAD_REQUEST,
@@ -133,7 +137,7 @@ fn store_failure(e: &vkdg_governance::KeyStoreError) -> Response {
 
 pub async fn list_keys(State(state): State<AdminState>, headers: HeaderMap) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     match state.key_store.list() {
         Ok(keys) => {
@@ -166,7 +170,7 @@ pub async fn create_key(
     Json(body): Json<CreateKeyBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     let name = body.name.trim();
     if name.is_empty() {
@@ -217,7 +221,6 @@ pub async fn create_key(
 
 /// Body of `PATCH /admin/v1/keys/{id}`. Absent fields are unchanged; `null`
 /// clears an optional limit.
-#[allow(clippy::option_option)] // intentional: None = absent, Some(None) = explicit null (patch semantics)
 #[derive(Deserialize, Default)]
 pub struct UpdateKeyBody {
     pub name: Option<String>,
@@ -234,13 +237,16 @@ pub struct UpdateKeyBody {
 }
 
 /// Distinguishes an absent field (`None`) from an explicit `null` (`Some(None)`).
-#[allow(clippy::option_option)] // intentional: return type encodes absent vs explicit null
 fn present<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
     Option::<T>::deserialize(d).map(Some)
+}
+
+fn not_found(id: &str) -> Response {
+    AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(id)).into_response()
 }
 
 pub async fn update_key(
@@ -250,7 +256,7 @@ pub async fn update_key(
     Json(body): Json<UpdateKeyBody>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     if body.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
         return invalid("name must not be empty");
@@ -284,7 +290,7 @@ pub async fn update_key(
     };
     match state.key_store.update(&VirtualKeyId(id.clone()), patch) {
         Ok(Some(key)) => Json(KeySummary::from(&key)).into_response(),
-        Ok(None) => resp::not_found(&id),
+        Ok(None) => not_found(&id),
         Err(e) => store_failure(&e),
     }
 }
@@ -297,7 +303,7 @@ pub async fn regenerate_key(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     match state.key_store.regenerate(&VirtualKeyId(id.clone())) {
         Ok(Some((key, raw))) => Json(CreatedKeyResponse {
@@ -305,21 +311,26 @@ pub async fn regenerate_key(
             summary: KeySummary::from(&key),
         })
         .into_response(),
-        Ok(None) => resp::not_found(&id),
+        Ok(None) => not_found(&id),
         Err(e) => store_failure(&e),
     }
 }
-#[allow(clippy::needless_pass_by_value)] // helper called with owned values from axum extractors
-fn set_disabled(state: AdminState, headers: HeaderMap, id: String, disabled: bool) -> Response {
+
+async fn set_disabled(
+    state: AdminState,
+    headers: HeaderMap,
+    id: String,
+    disabled: bool,
+) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     match state
         .key_store
         .set_disabled(&VirtualKeyId(id.clone()), disabled)
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => resp::not_found(&id),
+        Ok(false) => not_found(&id),
         Err(e) => store_failure(&e),
     }
 }
@@ -330,7 +341,7 @@ pub async fn disable_key(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    set_disabled(state, headers, id, true)
+    set_disabled(state, headers, id, true).await
 }
 
 /// `POST /admin/v1/keys/{id}/enable`: undoes a disable. Never un-revokes.
@@ -339,7 +350,7 @@ pub async fn enable_key(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    set_disabled(state, headers, id, false)
+    set_disabled(state, headers, id, false).await
 }
 
 pub async fn revoke_key(
@@ -348,11 +359,13 @@ pub async fn revoke_key(
     Path(id): Path<String>,
 ) -> Response {
     if get_session(&state, &headers).is_none() {
-        return resp::unauthorized();
+        return unauthorized();
     }
     match state.key_store.revoke(&VirtualKeyId(id.clone())) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => resp::not_found(&id),
+        Ok(false) => {
+            AdminErrorResponse(StatusCode::NOT_FOUND, AdminError::not_found(&id)).into_response()
+        }
         Err(e) => store_failure(&e),
     }
 }
@@ -381,8 +394,6 @@ mod tests {
             connection_tester: None,
             catalog: None,
             logins: None,
-            gateway_store: None,
-            config_tx: None,
         }
     }
 

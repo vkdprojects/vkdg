@@ -18,9 +18,7 @@ pub use admission::AdmissionGuard;
 pub use app_state::{AppState, PipelineState};
 pub use auth::{require_api_key, ClientIdentity, DataAuth};
 pub use dedup::DedupTable;
-pub use frontdoor::{
-    extract_vkdg_overrides, read_body, resolve_client_ip, FrontDoor, ServerConfig,
-};
+pub use frontdoor::{extract_vkdg_overrides, resolve_client_ip, FrontDoor, ServerConfig};
 pub use server::{mcp_discovery, serve};
 pub use sse::with_termination_guard;
 pub use upstream::HttpClient;

@@ -17,7 +17,8 @@ fn temp_root(tag: &str) -> PathBuf {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
     ));
     fs::create_dir_all(&root).expect("temp root");
     root
@@ -29,13 +30,10 @@ fn component() -> Vec<u8> {
 
 fn sha256_of(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()
-        .fold(String::new(), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn wasm_manifest(name: &str, checksum: &str) -> RegistryManifest {

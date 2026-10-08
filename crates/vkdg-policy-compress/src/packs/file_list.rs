@@ -13,7 +13,7 @@ use crate::FilterPack;
 pub struct FileListPack;
 
 impl FilterPack for FileListPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:file-list"
     }
 
@@ -21,7 +21,7 @@ impl FilterPack for FileListPack {
         ContentClass::FileList
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses file listings; keeps first 30 paths and summarises the rest"
     }
 
@@ -33,7 +33,7 @@ impl FilterPack for FileListPack {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() > 30 {
             let total = lines.len();
-            let mut out: Vec<String> = lines[..30].iter().map(|s| (*s).to_string()).collect();
+            let mut out: Vec<String> = lines[..30].iter().map(|s| s.to_string()).collect();
             out.push(format!("... [{} more entries]...", total - 30));
             out.join("\n")
         } else {

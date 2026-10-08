@@ -1,8 +1,8 @@
 //! Cache plugin infrastructure for VKDG.
 //!
-//! The `CacheBackend` trait is the extension point -- any backend (SQLite, Redis,
-//! semantic vector) implements it. The gateway calls `lookup()` before the
-//! provider and `store()` after. Bypass rules (multi-turn, tool calls,
+//! The CacheBackend trait is the extension point -- any backend (SQLite, Redis,
+//! semantic vector) implements it. The gateway calls lookup() before the
+//! provider and store() after. Bypass rules (multi-turn, tool calls,
 //! x-vkdg-cache: none header) are enforced by the gateway core, not here.
 
 pub mod backend;

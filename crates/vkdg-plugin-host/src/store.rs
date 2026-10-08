@@ -113,7 +113,7 @@ impl PluginStore {
                         .map_err(|e| format!("read {}: {e}", path.display()))
                         .and_then(|b| crate::WasmPluginInstance::from_bytes(&b, &manifest))
                         .map(|i| crate::WasmAuth::new(std::sync::Arc::new(i), &manifest));
-                    Some((p.manifest.name, loaded))
+                    Some((p.manifest.name.clone(), loaded))
                 }
             })
             .collect()
@@ -223,8 +223,8 @@ impl PluginStore {
             return Ok(Vec::new());
         }
         let mut found = Vec::new();
-        for entry in fs::read_dir(&self.root).map_err(|e| io(&e))? {
-            let dir = entry.map_err(|e| io(&e))?.path();
+        for entry in fs::read_dir(&self.root).map_err(io)? {
+            let dir = entry.map_err(io)?.path();
             let manifest_path = dir.join(MANIFEST_FILE);
             if !dir.is_dir() || !manifest_path.is_file() {
                 continue;
@@ -235,7 +235,7 @@ impl PluginStore {
             // A manifest that no longer validates is reported, not hidden: the
             // operator needs to know an installed plugin will not load.
             let parsed = fs::read_to_string(&manifest_path)
-                .map_err(|e| io(&e))
+                .map_err(io)
                 .and_then(|yaml| {
                     RegistryManifest::from_yaml(&yaml).map_err(|e| {
                         StoreError::Manifest(format!("{}: {e}", manifest_path.display()))
@@ -255,7 +255,7 @@ impl PluginStore {
         if !manifest_path.is_file() {
             return Ok(None);
         }
-        let yaml = fs::read_to_string(&manifest_path).map_err(|e| io(&e))?;
+        let yaml = fs::read_to_string(&manifest_path).map_err(io)?;
         let manifest =
             RegistryManifest::from_yaml(&yaml).map_err(|e| StoreError::Manifest(e.to_string()))?;
         Ok(Some(InstalledPlugin { manifest, dir }))
@@ -320,15 +320,15 @@ impl PluginStore {
         };
 
         let dir = self.root.join(&manifest.name);
-        fs::create_dir_all(&dir).map_err(|e| io(&e))?;
+        fs::create_dir_all(&dir).map_err(io)?;
         if let Some(bytes) = bytes {
-            fs::write(dir.join(WASM_FILE), bytes).map_err(|e| io(&e))?;
+            fs::write(dir.join(WASM_FILE), bytes).map_err(io)?;
         }
         // Written last: a directory without a manifest is an incomplete install
         // and `list` skips it.
         let yaml =
             serde_yaml::to_string(manifest).map_err(|e| StoreError::Manifest(e.to_string()))?;
-        fs::write(dir.join(MANIFEST_FILE), yaml).map_err(|e| io(&e))?;
+        fs::write(dir.join(MANIFEST_FILE), yaml).map_err(io)?;
 
         Ok(InstalledPlugin {
             manifest: manifest.clone(),
@@ -342,26 +342,22 @@ impl PluginStore {
         if !dir.join(MANIFEST_FILE).is_file() {
             return Err(StoreError::NotInstalled(name.to_owned()));
         }
-        fs::remove_dir_all(&dir).map_err(|e| io(&e))
+        fs::remove_dir_all(&dir).map_err(io)
     }
 }
 
-fn io(e: &std::io::Error) -> StoreError {
+fn io(e: std::io::Error) -> StoreError {
     StoreError::Io(e.to_string())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()
-        .fold(String::new(), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`.
-#[allow(clippy::needless_pass_by_value)] // OsString owner needed for .into() and pattern matching
 fn default_root(
     plugins_dir: Option<std::ffi::OsString>,
     accounts_db: Option<std::ffi::OsString>,

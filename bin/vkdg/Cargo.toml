@@ -14,7 +14,6 @@ vkdg-http        = { workspace = true }
 vkdg-observe     = { workspace = true }
 vkdg-cli         = { workspace = true }
 vkdg-connections = { workspace = true }
-rusqlite               = { workspace = true }
 vkdg-routing     = { workspace = true }
 vkdg-combos      = { workspace = true }
 vkdg-ingress-anthropic = { workspace = true }

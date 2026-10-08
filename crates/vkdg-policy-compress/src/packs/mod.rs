@@ -1,4 +1,4 @@
-//! Pack module — built-in `FilterPack` implementations.
+//! Pack module — built-in FilterPack implementations.
 //!
 //! Each sub-module handles one content class. Import the individual types to
 //! register custom subsets, or call `PackRegistry::with_all_defaults()` for

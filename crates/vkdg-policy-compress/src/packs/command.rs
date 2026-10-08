@@ -15,7 +15,7 @@ use crate::FilterPack;
 pub struct CommandOutputPack;
 
 impl FilterPack for CommandOutputPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:command-output"
     }
 
@@ -23,7 +23,7 @@ impl FilterPack for CommandOutputPack {
         ContentClass::CommandOutput
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses shell command output; keeps first/last 25 lines for long outputs"
     }
 
@@ -37,9 +37,9 @@ impl FilterPack for CommandOutputPack {
         lines.dedup_by(|a, b| a.trim().is_empty() && b.trim().is_empty());
         // Truncate if > 50 lines: keep first 25 + last 25
         if lines.len() > 50 {
-            let mut out: Vec<String> = lines[..25].iter().map(|s| (*s).to_string()).collect();
+            let mut out: Vec<String> = lines[..25].iter().map(|s| s.to_string()).collect();
             out.push("... [truncated] ...".to_string());
-            out.extend(lines[lines.len() - 25..].iter().map(|s| (*s).to_string()));
+            out.extend(lines[lines.len() - 25..].iter().map(|s| s.to_string()));
             out.join("\n")
         } else {
             lines.join("\n")

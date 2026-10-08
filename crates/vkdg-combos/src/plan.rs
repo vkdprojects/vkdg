@@ -50,7 +50,7 @@ pub struct CachePolicy {
     pub ttl_secs: Option<u32>,
     /// Bypass cache for multi-turn conversations (>1 assistant turn in history)
     pub bypass_multiturn: bool,
-    /// Bypass cache when messages contain `tool_calls` or tool results
+    /// Bypass cache when messages contain tool_calls or tool results
     pub bypass_tool_calls: bool,
 }
 

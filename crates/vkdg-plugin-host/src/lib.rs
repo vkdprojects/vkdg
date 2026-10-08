@@ -358,7 +358,7 @@ impl PluginChain {
 
 /// Owns the plugin registry and loaded WASM instances.
 ///
-/// `NativeRust` plugins are registered directly via `registry.register`.
+/// NativeRust plugins are registered directly via `registry.register`.
 /// WASM plugins go through `install_wasm` which validates the binary before
 /// adding it to the registry, enabling atomic rollback on failure.
 pub struct PluginHost {
@@ -386,7 +386,7 @@ impl PluginHost {
     ) -> Result<(), String> {
         match &manifest.kind {
             PluginKind::Wasm { .. } => {}
-            PluginKind::NativeRust => return Err("manifest kind must be Wasm".to_string()),
+            _ => return Err("manifest kind must be Wasm".to_string()),
         }
         // Load and validate first — no state mutation until this succeeds.
         let instance = WasmPluginInstance::load(wasm_path, &manifest)?;

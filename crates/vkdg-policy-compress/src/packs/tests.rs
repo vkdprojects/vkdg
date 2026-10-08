@@ -14,7 +14,7 @@ use crate::FilterPack;
 pub struct TestOutputPack;
 
 impl FilterPack for TestOutputPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:test-output"
     }
 
@@ -22,7 +22,7 @@ impl FilterPack for TestOutputPack {
         ContentClass::TestOutput
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses test output; keeps PASS/FAIL/error/summary lines (max 30)"
     }
 
@@ -46,7 +46,7 @@ impl FilterPack for TestOutputPack {
                     || l.contains("=====")
             })
             .take(30)
-            .map(|s| (*s).to_string())
+            .map(|s| s.to_string())
             .collect::<Vec<_>>()
             .join("\n")
     }

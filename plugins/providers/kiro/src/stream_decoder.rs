@@ -1,4 +1,4 @@
-//! Kiro stream decoder: AWS `EventStream` framing + Kiro event mapping.
+//! Kiro stream decoder: AWS EventStream framing + Kiro event mapping.
 
 use bytes::Bytes;
 use vkdg_operations::ConversationEvent;
@@ -25,7 +25,7 @@ impl ConversationStreamDecoder for KiroStreamDecoder {
         for frame in self.parser.feed(&chunk) {
             match frame {
                 Ok(frame) => self.events.on_frame(&frame, &mut out),
-                Err(err) => self.events.on_frame_error(&err, &mut out),
+                Err(err) => self.events.on_frame_error(err, &mut out),
             }
         }
         out
@@ -35,12 +35,8 @@ impl ConversationStreamDecoder for KiroStreamDecoder {
         let mut out = Vec::new();
         match self.parser.finish() {
             Ok(()) => self.events.finish(&mut out),
-            Err(err) => self.events.on_frame_error(&err, &mut out),
+            Err(err) => self.events.on_frame_error(err, &mut out),
         }
         out
-    }
-
-    fn context_usage_pct(&self) -> Option<f64> {
-        self.events.context_usage_pct()
     }
 }

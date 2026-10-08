@@ -4,37 +4,12 @@
 //! [`ConversationEvent`]s into wire bytes for the dialect the client spoke.
 //! This is the only place a dialect is written, so every ingress and every
 //! provider that needs protocol translation emits the same bytes.
-//!
-//! Wire objects are `Serialize` structs, not `json!` maps: serde keeps field
-//! order, which is the order the dialects document and clients' fixtures expect.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::{json, Value};
 
-use serde::Serialize;
-use vkdg_core::ApiType;
+use crate::{ConversationEvent, StopReason, StreamContext, StreamEncoder, UsageCount};
 
-use crate::error_encode::{protocol_error_frame, stream_error_frame};
-use crate::stop_wire::{anthropic_stop_reason, openai_finish_reason};
-use crate::tool_id::ToolIdMint;
-use crate::usage::{AnthropicUsage, OpenAiUsage, UsageTally};
-use crate::{ConversationEvent, StopReason, StreamContext, StreamEncoder};
-
-const OUT_OF_ORDER: &str = "tool call fragments arrived out of order";
-
-fn write_sse<T: Serialize>(out: &mut Vec<u8>, event: Option<&str>, data: &T) {
-    if let Some(event) = event {
-        out.extend_from_slice(b"event: ");
-        out.extend_from_slice(event.as_bytes());
-        out.push(b'\n');
-    }
-    out.extend_from_slice(b"data: ");
-    // Wire structs hold strings and integers only; serialization cannot fail.
-    let _ = serde_json::to_writer(&mut *out, data);
-    out.extend_from_slice(b"\n\n");
-}
-
-// ── Anthropic Messages ────────────────────────────────────────────────────────
-
+/// Content block kinds an Anthropic stream can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockKind {
     Text,
@@ -52,104 +27,71 @@ struct OpenBlock {
     wire_index: u32,
 }
 
-#[derive(Serialize)]
-struct MessageStart<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    message: MessageObject<'a>,
+fn sse(event: &str, data: &Value) -> Vec<u8> {
+    format!("event: {event}\ndata: {data}\n\n").into_bytes()
 }
 
-#[derive(Serialize)]
-struct MessageObject<'a> {
-    id: &'a str,
-    #[serde(rename = "type")]
-    kind: &'static str,
-    role: &'static str,
-    model: &'a str,
-    content: [(); 0],
-    stop_reason: Option<&'static str>,
-    stop_sequence: Option<&'static str>,
-    usage: AnthropicUsage,
+fn stop_reason_anthropic(reason: &StopReason) -> &'static str {
+    match reason {
+        StopReason::EndTurn | StopReason::Cancelled => "end_turn",
+        StopReason::MaxTokens => "max_tokens",
+        StopReason::ToolUse => "tool_use",
+        StopReason::StopSequence => "stop_sequence",
+    }
 }
 
-#[derive(Serialize)]
-struct BlockStart<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    index: u32,
-    content_block: ContentBlock<'a>,
+fn stop_reason_openai(reason: &StopReason) -> &'static str {
+    match reason {
+        StopReason::EndTurn | StopReason::Cancelled | StopReason::StopSequence => "stop",
+        StopReason::MaxTokens => "length",
+        StopReason::ToolUse => "tool_calls",
+    }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ContentBlock<'a> {
-    Text {
-        text: &'static str,
-    },
-    Thinking {
-        thinking: &'static str,
-    },
-    ToolUse {
-        id: &'a str,
-        name: &'a str,
-        input: Empty,
-    },
+/// Token counts gathered from [`ConversationEvent::Usage`].
+#[derive(Debug, Default, Clone, Copy)]
+struct Usage {
+    input: u32,
+    output: u32,
+    cache_read: u32,
+    cache_creation: u32,
 }
 
-#[derive(Serialize)]
-struct Empty {}
+impl Usage {
+    fn update(
+        &mut self,
+        input: &UsageCount,
+        output: &UsageCount,
+        cache_read: &UsageCount,
+        cache_creation: &UsageCount,
+    ) {
+        self.input = input.value();
+        self.output = output.value();
+        self.cache_read = cache_read.value();
+        self.cache_creation = cache_creation.value();
+    }
 
-#[derive(Serialize)]
-struct BlockDelta<'a> {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    index: u32,
-    delta: DeltaPayload<'a>,
+    fn to_anthropic(self) -> Value {
+        let mut usage = json!({ "input_tokens": self.input, "output_tokens": self.output });
+        // Anthropic omits the cache fields entirely when a provider reports none.
+        if self.cache_read > 0 {
+            usage["cache_read_input_tokens"] = json!(self.cache_read);
+        }
+        if self.cache_creation > 0 {
+            usage["cache_creation_input_tokens"] = json!(self.cache_creation);
+        }
+        usage
+    }
 }
 
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-#[allow(clippy::enum_variant_names)] // `text_delta` etc. are the wire names
-enum DeltaPayload<'a> {
-    TextDelta { text: &'a str },
-    ThinkingDelta { thinking: &'a str },
-    InputJsonDelta { partial_json: &'a str },
-}
-
-#[derive(Serialize)]
-struct BlockStop {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    index: u32,
-}
-
-#[derive(Serialize)]
-struct MessageDelta {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    delta: StopPayload,
-    usage: AnthropicUsage,
-}
-
-#[derive(Serialize)]
-struct StopPayload {
-    stop_reason: &'static str,
-    stop_sequence: Option<&'static str>,
-}
-
-#[derive(Serialize)]
-struct MessageStop {
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
+// ── Anthropic Messages ────────────────────────────────────────────────────────
 
 /// Encodes an Anthropic Messages SSE stream.
 ///
 /// Guarantees a well-formed stream: `message_start` carries a real message
 /// object, every delta sits inside a `content_block_start`/`content_block_stop`
 /// pair with sequential wire indices, and the stream always terminates with
-/// `message_delta` + `message_stop`, or with an `error` event after a failure,
-/// even when the provider sends no stop event.
+/// `message_delta` + `message_stop` — even when the provider sends no stop event.
 #[derive(Debug)]
 pub struct AnthropicStreamEncoder {
     message_id: String,
@@ -157,10 +99,8 @@ pub struct AnthropicStreamEncoder {
     started: bool,
     open: Option<OpenBlock>,
     next_wire_index: u32,
-    /// Source indices of tool calls already opened; a call opens once.
-    tool_calls_seen: Vec<u32>,
-    ids: ToolIdMint,
-    usage: UsageTally,
+    usage: Usage,
+    stop_reason: StopReason,
     terminated: bool,
 }
 
@@ -172,58 +112,58 @@ impl AnthropicStreamEncoder {
             started: false,
             open: None,
             next_wire_index: 0,
-            tool_calls_seen: Vec::new(),
-            ids: ToolIdMint::new("toolu_", &ctx.request_id.0.to_string()),
-            usage: UsageTally::default(),
+            usage: Usage::default(),
+            stop_reason: StopReason::EndTurn,
             terminated: false,
         }
     }
 
-    fn ensure_started(&mut self, out: &mut Vec<u8>) {
+    fn start(&mut self, out: &mut Vec<u8>) {
         if self.started {
             return;
         }
         self.started = true;
-        let start = MessageStart {
-            kind: "message_start",
-            message: MessageObject {
-                id: &self.message_id,
-                kind: "message",
-                role: "assistant",
-                model: &self.model,
-                content: [],
-                stop_reason: None,
-                stop_sequence: None,
-                usage: self.usage.to_anthropic(),
-            },
-        };
-        write_sse(out, Some("message_start"), &start);
+        out.extend(sse(
+            "message_start",
+            &json!({
+                "type": "message_start",
+                "message": {
+                    "id": self.message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": self.model,
+                    "content": [],
+                    "stop_reason": Value::Null,
+                    "stop_sequence": Value::Null,
+                    "usage": self.usage.to_anthropic(),
+                },
+            }),
+        ));
     }
 
     fn close_block(&mut self, out: &mut Vec<u8>) {
         if let Some(block) = self.open.take() {
-            let stop = BlockStop {
-                kind: "content_block_stop",
-                index: block.wire_index,
-            };
-            write_sse(out, Some("content_block_stop"), &stop);
+            out.extend(sse(
+                "content_block_stop",
+                &json!({ "type": "content_block_stop", "index": block.wire_index }),
+            ));
         }
     }
 
-    /// Opens a block of `kind` for `source_index` unless it is the one already open.
+    /// Opens a block unless the wanted one is already open, closing any other first.
     fn open_block(
         &mut self,
         kind: BlockKind,
         source_index: u32,
-        content_block: ContentBlock<'_>,
+        content_block: Value,
         out: &mut Vec<u8>,
     ) -> u32 {
-        if let Some(open) = self.open {
-            if open.kind == kind && open.source_index == source_index {
-                return open.wire_index;
+        if let Some(block) = self.open {
+            if block.kind == kind && block.source_index == source_index {
+                return block.wire_index;
             }
-            self.close_block(out);
         }
+        self.close_block(out);
         let wire_index = self.next_wire_index;
         self.next_wire_index += 1;
         self.open = Some(OpenBlock {
@@ -231,124 +171,59 @@ impl AnthropicStreamEncoder {
             source_index,
             wire_index,
         });
-        let start = BlockStart {
-            kind: "content_block_start",
-            index: wire_index,
-            content_block,
-        };
-        write_sse(out, Some("content_block_start"), &start);
+        out.extend(sse(
+            "content_block_start",
+            &json!({
+                "type": "content_block_start",
+                "index": wire_index,
+                "content_block": content_block,
+            }),
+        ));
         wire_index
-    }
-
-    fn delta(out: &mut Vec<u8>, index: u32, delta: DeltaPayload<'_>) {
-        let frame = BlockDelta {
-            kind: "content_block_delta",
-            index,
-            delta,
-        };
-        write_sse(out, Some("content_block_delta"), &frame);
-    }
-
-    fn tool_fragment(
-        &mut self,
-        tool_use_id: &str,
-        name: &str,
-        input_delta: &str,
-        index: u32,
-        out: &mut Vec<u8>,
-    ) {
-        let continuing = self
-            .open
-            .is_some_and(|b| b.kind == BlockKind::ToolUse && b.source_index == index);
-        let wire_index = if continuing {
-            self.open.map_or(0, |b| b.wire_index)
-        } else if self.tool_calls_seen.contains(&index) || name.is_empty() {
-            // A fragment for a call that closed, or for one that never opened.
-            self.terminate_with(
-                &protocol_error_frame(&ApiType::AnthropicMessages, OUT_OF_ORDER),
-                out,
-            );
-            return;
-        } else {
-            self.tool_calls_seen.push(index);
-            let id = self.ids.id_for(tool_use_id);
-            self.open_block(
-                BlockKind::ToolUse,
-                index,
-                ContentBlock::ToolUse {
-                    id: &id,
-                    name,
-                    input: Empty {},
-                },
-                out,
-            )
-        };
-        if !input_delta.is_empty() {
-            Self::delta(
-                out,
-                wire_index,
-                DeltaPayload::InputJsonDelta {
-                    partial_json: input_delta,
-                },
-            );
-        }
-    }
-
-    fn terminate_with(&mut self, frame: &[u8], out: &mut Vec<u8>) {
-        self.ensure_started(out);
-        out.extend_from_slice(frame);
-        self.terminated = true;
-    }
-
-    fn complete(&mut self, reason: &StopReason, out: &mut Vec<u8>) {
-        self.ensure_started(out);
-        self.close_block(out);
-        let delta = MessageDelta {
-            kind: "message_delta",
-            delta: StopPayload {
-                stop_reason: anthropic_stop_reason(reason),
-                stop_sequence: None,
-            },
-            usage: self.usage.to_anthropic(),
-        };
-        write_sse(out, Some("message_delta"), &delta);
-        write_sse(
-            out,
-            Some("message_stop"),
-            &MessageStop {
-                kind: "message_stop",
-            },
-        );
-        self.terminated = true;
     }
 }
 
 impl StreamEncoder for AnthropicStreamEncoder {
-    fn encode_into(&mut self, event: &ConversationEvent, out: &mut Vec<u8>) {
+    fn encode(&mut self, event: &ConversationEvent) -> Vec<u8> {
+        let mut out = Vec::new();
         if self.terminated {
-            return;
+            return out;
         }
         match event {
-            ConversationEvent::Started { .. } => self.ensure_started(out),
+            ConversationEvent::Started { .. } => self.start(&mut out),
             ConversationEvent::OutputDelta { delta, index } => {
-                self.ensure_started(out);
-                let wire = self.open_block(
+                self.start(&mut out);
+                let wire_index = self.open_block(
                     BlockKind::Text,
                     *index,
-                    ContentBlock::Text { text: "" },
-                    out,
+                    json!({ "type": "text", "text": "" }),
+                    &mut out,
                 );
-                Self::delta(out, wire, DeltaPayload::TextDelta { text: delta });
+                out.extend(sse(
+                    "content_block_delta",
+                    &json!({
+                        "type": "content_block_delta",
+                        "index": wire_index,
+                        "delta": { "type": "text_delta", "text": delta },
+                    }),
+                ));
             }
             ConversationEvent::ReasoningDelta { delta, index } => {
-                self.ensure_started(out);
-                let wire = self.open_block(
+                self.start(&mut out);
+                let wire_index = self.open_block(
                     BlockKind::Thinking,
                     *index,
-                    ContentBlock::Thinking { thinking: "" },
-                    out,
+                    json!({ "type": "thinking", "thinking": "" }),
+                    &mut out,
                 );
-                Self::delta(out, wire, DeltaPayload::ThinkingDelta { thinking: delta });
+                out.extend(sse(
+                    "content_block_delta",
+                    &json!({
+                        "type": "content_block_delta",
+                        "index": wire_index,
+                        "delta": { "type": "thinking_delta", "thinking": delta },
+                    }),
+                ));
             }
             ConversationEvent::ToolCallDelta {
                 tool_use_id,
@@ -356,15 +231,31 @@ impl StreamEncoder for AnthropicStreamEncoder {
                 input_delta,
                 index,
             } => {
-                self.ensure_started(out);
-                self.tool_fragment(tool_use_id, name, input_delta, *index, out);
+                self.start(&mut out);
+                let wire_index = self.open_block(
+                    BlockKind::ToolUse,
+                    *index,
+                    json!({ "type": "tool_use", "id": tool_use_id, "name": name, "input": {} }),
+                    &mut out,
+                );
+                // The opening fragment carries the name and no input yet.
+                if !input_delta.is_empty() {
+                    out.extend(sse(
+                        "content_block_delta",
+                        &json!({
+                            "type": "content_block_delta",
+                            "index": wire_index,
+                            "delta": { "type": "input_json_delta", "partial_json": input_delta },
+                        }),
+                    ));
+                }
             }
             ConversationEvent::ToolCallEnd { index } => {
                 if self
                     .open
                     .is_some_and(|b| b.kind == BlockKind::ToolUse && b.source_index == *index)
                 {
-                    self.close_block(out);
+                    self.close_block(&mut out);
                 }
             }
             ConversationEvent::Usage {
@@ -372,102 +263,71 @@ impl StreamEncoder for AnthropicStreamEncoder {
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
-            } => self.usage.update(
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-            ),
-            ConversationEvent::Completed { stop_reason } => self.complete(stop_reason, out),
+            } => {
+                // Usage arriving before the first delta belongs in message_start.
+                self.usage.update(
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                );
+            }
+            ConversationEvent::Completed { stop_reason } => {
+                self.stop_reason = stop_reason.clone();
+                out.extend(self.finish());
+            }
             ConversationEvent::Failed { error } => {
-                let frame = stream_error_frame(&ApiType::AnthropicMessages, error);
-                self.terminate_with(&frame, out);
+                self.terminated = true;
+                out.extend(sse(
+                    "error",
+                    &json!({
+                        "type": "error",
+                        "error": { "type": "api_error", "message": error.to_string() },
+                    }),
+                ));
             }
         }
+        out
     }
 
-    fn finish_into(&mut self, out: &mut Vec<u8>) {
+    fn finish(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
         if self.terminated {
-            return;
+            return out;
         }
-        // A stream that ends after a tool call without a stop event is a tool turn.
-        let reason = if self.tool_calls_seen.is_empty() {
-            StopReason::EndTurn
-        } else {
-            StopReason::ToolUse
-        };
-        self.complete(&reason, out);
+        self.terminated = true;
+        self.start(&mut out);
+        self.close_block(&mut out);
+        out.extend(sse(
+            "message_delta",
+            &json!({
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": stop_reason_anthropic(&self.stop_reason),
+                    "stop_sequence": Value::Null,
+                },
+                // Final, complete usage: `message_start` went out before the
+                // provider reported any, so this is where input and cache counts
+                // reach the client (and the gateway's own meter).
+                "usage": self.usage.to_anthropic(),
+            }),
+        ));
+        out.extend(sse("message_stop", &json!({ "type": "message_stop" })));
+        out
     }
 }
 
 // ── OpenAI Chat Completions ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
-struct Chunk<'a> {
-    id: &'a str,
-    object: &'static str,
-    created: u64,
-    model: &'a str,
-    choices: Vec<Choice<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<OpenAiUsage>,
-}
-
-#[derive(Serialize)]
-struct Choice<'a> {
-    index: u32,
-    delta: Delta<'a>,
-    finish_reason: Option<&'static str>,
-}
-
-#[derive(Serialize, Default)]
-struct Delta<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    role: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_content: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_calls: Option<[ToolCallChunk<'a>; 1]>,
-}
-
-#[derive(Serialize)]
-struct ToolCallChunk<'a> {
-    index: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<&'a str>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    kind: Option<&'static str>,
-    function: FunctionChunk<'a>,
-}
-
-#[derive(Serialize)]
-struct FunctionChunk<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    name: Option<&'a str>,
-    arguments: &'a str,
-}
-
-/// A tool call as the `OpenAI` client sees it.
-#[derive(Debug)]
-struct OpenAiToolCall {
-    source_index: u32,
-    closed: bool,
-}
-
-/// Encodes an `OpenAI` Chat Completions chunk stream, ending with a usage
-/// chunk (when any count is known) and `[DONE]`.
+/// Encodes an OpenAI Chat Completions chunk stream, terminated by `[DONE]`.
 #[derive(Debug)]
 pub struct OpenAiStreamEncoder {
     id: String,
     model: String,
     created: u64,
-    started: bool,
-    /// Calls in wire order: the position is the wire `index`.
-    calls: Vec<OpenAiToolCall>,
-    ids: ToolIdMint,
-    usage: UsageTally,
+    /// Wire index per source tool-call index, in the order calls appear.
+    tool_indices: Vec<u32>,
+    usage: Usage,
     terminated: bool,
 }
 
@@ -476,150 +336,56 @@ impl OpenAiStreamEncoder {
         Self {
             id: format!("chatcmpl-{}", ctx.request_id.0),
             model: ctx.model.to_owned(),
-            created: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
-            started: false,
-            calls: Vec::new(),
-            ids: ToolIdMint::new("call_", &ctx.request_id.0.to_string()),
-            usage: UsageTally::default(),
+            created: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            tool_indices: Vec::new(),
+            usage: Usage::default(),
             terminated: false,
         }
     }
 
-    fn chunk(&self, out: &mut Vec<u8>, delta: Delta<'_>, finish: Option<&'static str>) {
-        let chunk = Chunk {
-            id: &self.id,
-            object: "chat.completion.chunk",
-            created: self.created,
-            model: &self.model,
-            choices: vec![Choice {
-                index: 0,
-                delta,
-                finish_reason: finish,
-            }],
-            usage: None,
-        };
-        write_sse(out, None, &chunk);
+    fn chunk(&self, choices: Value) -> Vec<u8> {
+        let body = json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": choices,
+        });
+        format!("data: {body}\n\n").into_bytes()
     }
 
-    fn ensure_started(&mut self, out: &mut Vec<u8>) {
-        if self.started {
-            return;
-        }
-        self.started = true;
-        self.chunk(
-            out,
-            Delta {
-                role: Some("assistant"),
-                content: Some(""),
-                ..Delta::default()
-            },
-            None,
-        );
+    fn delta(&self, delta: Value) -> Vec<u8> {
+        self.chunk(json!([{ "index": 0, "delta": delta, "finish_reason": Value::Null }]))
     }
 
-    fn tool_fragment(
-        &mut self,
-        tool_use_id: &str,
-        name: &str,
-        input_delta: &str,
-        index: u32,
-        out: &mut Vec<u8>,
-    ) {
-        let known = self.calls.iter().position(|c| c.source_index == index);
-        let (wire, opening, id) = match known {
-            Some(pos) if !self.calls[pos].closed => (pos, false, None),
-            // A fragment for a call that closed, or for one that never opened.
-            Some(_) => return self.fail(out),
-            None if name.is_empty() => return self.fail(out),
+    /// Stable wire index for a source tool-call index, assigned on first use.
+    fn tool_index(&mut self, source_index: u32) -> usize {
+        match self.tool_indices.iter().position(|i| *i == source_index) {
+            Some(pos) => pos,
             None => {
-                self.calls.push(OpenAiToolCall {
-                    source_index: index,
-                    closed: false,
-                });
-                (
-                    self.calls.len() - 1,
-                    true,
-                    Some(self.ids.id_for(tool_use_id)),
-                )
+                self.tool_indices.push(source_index);
+                self.tool_indices.len() - 1
             }
-        };
-        let wire = u32::try_from(wire).unwrap_or(u32::MAX);
-        let call = ToolCallChunk {
-            index: wire,
-            id: id.as_deref(),
-            kind: opening.then_some("function"),
-            function: FunctionChunk {
-                name: opening.then_some(name),
-                arguments: input_delta,
-            },
-        };
-        self.chunk(
-            out,
-            Delta {
-                tool_calls: Some([call]),
-                ..Delta::default()
-            },
-            None,
-        );
-    }
-
-    fn fail(&mut self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&protocol_error_frame(
-            &ApiType::OpenAiChatCompletions,
-            OUT_OF_ORDER,
-        ));
-        self.terminated = true;
-    }
-
-    fn complete(&mut self, reason: &StopReason, out: &mut Vec<u8>) {
-        self.ensure_started(out);
-        self.chunk(out, Delta::default(), Some(openai_finish_reason(reason)));
-        if self.usage.is_known() {
-            let chunk = Chunk {
-                id: &self.id,
-                object: "chat.completion.chunk",
-                created: self.created,
-                model: &self.model,
-                choices: Vec::new(),
-                usage: Some(self.usage.to_openai()),
-            };
-            write_sse(out, None, &chunk);
         }
-        out.extend_from_slice(b"data: [DONE]\n\n");
-        self.terminated = true;
     }
 }
 
 impl StreamEncoder for OpenAiStreamEncoder {
-    fn encode_into(&mut self, event: &ConversationEvent, out: &mut Vec<u8>) {
+    fn encode(&mut self, event: &ConversationEvent) -> Vec<u8> {
         if self.terminated {
-            return;
+            return Vec::new();
         }
         match event {
-            ConversationEvent::Started { .. } => self.ensure_started(out),
-            ConversationEvent::OutputDelta { delta, .. } => {
-                self.ensure_started(out);
-                self.chunk(
-                    out,
-                    Delta {
-                        content: Some(delta),
-                        ..Delta::default()
-                    },
-                    None,
-                );
+            ConversationEvent::Started { .. } => {
+                self.delta(json!({ "role": "assistant", "content": "" }))
             }
+            ConversationEvent::OutputDelta { delta, .. } => self.delta(json!({ "content": delta })),
+            // OpenAI carries reasoning in its own field, never in `content`.
             ConversationEvent::ReasoningDelta { delta, .. } => {
-                self.ensure_started(out);
-                self.chunk(
-                    out,
-                    Delta {
-                        reasoning_content: Some(delta),
-                        ..Delta::default()
-                    },
-                    None,
-                );
+                self.delta(json!({ "reasoning_content": delta }))
             }
             ConversationEvent::ToolCallDelta {
                 tool_use_id,
@@ -627,45 +393,160 @@ impl StreamEncoder for OpenAiStreamEncoder {
                 input_delta,
                 index,
             } => {
-                self.ensure_started(out);
-                self.tool_fragment(tool_use_id, name, input_delta, *index, out);
-            }
-            ConversationEvent::ToolCallEnd { index } => {
-                if let Some(call) = self.calls.iter_mut().find(|c| c.source_index == *index) {
-                    call.closed = true;
+                let wire_index = self.tool_index(*index);
+                let mut call = json!({ "index": wire_index });
+                // Identify the call once; later fragments carry arguments only.
+                if !name.is_empty() {
+                    call["id"] = json!(tool_use_id);
+                    call["type"] = json!("function");
+                    call["function"] = json!({ "name": name, "arguments": input_delta });
+                } else {
+                    call["function"] = json!({ "arguments": input_delta });
                 }
+                self.delta(json!({ "tool_calls": [call] }))
             }
+            // OpenAI has no per-call terminator: arguments simply stop arriving.
+            ConversationEvent::ToolCallEnd { .. } => Vec::new(),
             ConversationEvent::Usage {
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
-            } => self.usage.update(
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-            ),
-            ConversationEvent::Completed { stop_reason } => self.complete(stop_reason, out),
-            ConversationEvent::Failed { error } => {
-                out.extend_from_slice(&stream_error_frame(&ApiType::OpenAiChatCompletions, error));
+            } => {
+                self.usage.update(
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
+                );
+                Vec::new()
+            }
+            ConversationEvent::Completed { stop_reason } => {
+                let mut out = self.chunk(json!([{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": stop_reason_openai(stop_reason),
+                }]));
                 self.terminated = true;
+                out.extend(self.usage_chunk());
+                out.extend_from_slice(b"data: [DONE]\n\n");
+                out
+            }
+            ConversationEvent::Failed { error } => {
+                self.terminated = true;
+                let body = json!({
+                    "error": { "type": "api_error", "message": error.to_string() },
+                });
+                let mut out = format!("data: {body}\n\n").into_bytes();
+                out.extend_from_slice(b"data: [DONE]\n\n");
+                out
             }
         }
     }
 
-    fn finish_into(&mut self, out: &mut Vec<u8>) {
+    fn finish(&mut self) -> Vec<u8> {
         if self.terminated {
-            return;
+            return Vec::new();
         }
-        let reason = if self.calls.is_empty() {
-            StopReason::EndTurn
-        } else {
-            StopReason::ToolUse
-        };
-        self.complete(&reason, out);
+        self.terminated = true;
+        // No upstream stop event: close with `stop` so the client is not left hanging.
+        let mut out = self.chunk(json!([{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop",
+        }]));
+        out.extend(self.usage_chunk());
+        out.extend_from_slice(b"data: [DONE]\n\n");
+        out
+    }
+}
+
+impl OpenAiStreamEncoder {
+    /// Usage-only chunk; omitted when the provider reported nothing.
+    fn usage_chunk(&self) -> Vec<u8> {
+        if self.usage.input == 0 && self.usage.output == 0 {
+            return Vec::new();
+        }
+        let mut usage = json!({
+            "prompt_tokens": self.usage.input,
+            "completion_tokens": self.usage.output,
+            "total_tokens": self.usage.input + self.usage.output,
+        });
+        if self.usage.cache_read > 0 {
+            usage["prompt_tokens_details"] = json!({ "cached_tokens": self.usage.cache_read });
+        }
+        let body = json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [],
+            "usage": usage,
+        });
+        format!("data: {body}\n\n").into_bytes()
     }
 }
 
 #[cfg(test)]
-mod tests;
+mod usage_tests {
+    use super::*;
+    use crate::{ConversationEvent, StreamContext, StreamEncoder, UsageCount};
+
+    fn usage_event() -> ConversationEvent {
+        ConversationEvent::Usage {
+            input_tokens: UsageCount::Estimated(500),
+            output_tokens: UsageCount::Reported(3),
+            cache_read_tokens: UsageCount::Reported(40),
+            cache_creation_tokens: UsageCount::Unknown,
+        }
+    }
+
+    fn sse_json(bytes: &[u8], event_type: &str) -> serde_json::Value {
+        let text = String::from_utf8_lossy(bytes);
+        text.lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .find(|v| {
+                v["type"] == event_type
+                    || (event_type == "usage"
+                        && v.get("usage").is_some()
+                        && v["choices"].as_array().is_some_and(Vec::is_empty))
+            })
+            .unwrap_or_else(|| panic!("no {event_type} in {text}"))
+    }
+
+    // Found live: Kiro key usage recorded input 0. message_start goes out before
+    // any usage is known, and message_delta carried output only, so the
+    // decoder's input count never reached the client or the meter.
+    #[test]
+    fn anthropic_message_delta_carries_the_full_final_usage() {
+        let rid = vkdg_core::RequestId::new();
+        let mut enc = AnthropicStreamEncoder::new(&StreamContext {
+            model: "m",
+            request_id: &rid,
+        });
+        let mut out = enc.encode(&usage_event());
+        out.extend(enc.finish());
+        let delta = sse_json(&out, "message_delta");
+        assert_eq!(delta["usage"]["input_tokens"], 500, "{delta}");
+        assert_eq!(delta["usage"]["output_tokens"], 3, "{delta}");
+        assert_eq!(delta["usage"]["cache_read_input_tokens"], 40, "{delta}");
+    }
+
+    #[test]
+    fn openai_final_usage_chunk_carries_prompt_tokens() {
+        let rid = vkdg_core::RequestId::new();
+        let mut enc = OpenAiStreamEncoder::new(&StreamContext {
+            model: "m",
+            request_id: &rid,
+        });
+        let mut out = enc.encode(&usage_event());
+        out.extend(enc.finish());
+        let chunk = sse_json(&out, "usage");
+        assert!(
+            chunk["usage"]["prompt_tokens"].as_u64().unwrap() >= 500,
+            "{chunk}"
+        );
+        assert_eq!(chunk["usage"]["completion_tokens"], 3, "{chunk}");
+    }
+}

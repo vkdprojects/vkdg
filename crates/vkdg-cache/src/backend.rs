@@ -1,4 +1,4 @@
-//! `CacheBackend` trait -- the extension point for all cache plugins.
+//! CacheBackend trait -- the extension point for all cache plugins.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

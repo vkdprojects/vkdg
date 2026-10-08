@@ -1,4 +1,4 @@
-//! SQLite-backed `JobStore` implementation using WAL mode.
+//! SQLite-backed JobStore implementation using WAL mode.
 //!
 //! Uses a single `Arc<Mutex<Connection>>` writer; WAL allows concurrent readers
 //! while this single writer serializes all mutations safely.
@@ -168,7 +168,7 @@ impl JobStore for SqliteJobStore {
                 )
                 .map_err(|e| anyhow!("sqlite update: {e}"))?;
             if rows == 0 {
-                Err(anyhow!("job {job_id} not found"))
+                Err(anyhow!("job {} not found", job_id))
             } else {
                 Ok(())
             }
@@ -198,7 +198,7 @@ mod tests {
         }
     }
 
-    /// Plausible defect: `create()` silently overwrites existing `job_id`.
+    /// Plausible defect: create() silently overwrites existing job_id.
     #[tokio::test]
     async fn create_and_get_job() {
         let store = SqliteJobStore::in_memory().unwrap();
@@ -232,7 +232,7 @@ mod tests {
         );
     }
 
-    /// Plausible defect: state update overwrites record with wrong `job_id`.
+    /// Plausible defect: state update overwrites record with wrong job_id.
     #[tokio::test]
     async fn update_state_persists() {
         let store = SqliteJobStore::in_memory().unwrap();
@@ -244,7 +244,7 @@ mod tests {
         assert!(matches!(fetched.state, JobState::Running));
     }
 
-    /// Plausible defect: `get()` panics or errors on missing row instead of Ok(None).
+    /// Plausible defect: get() panics or errors on missing row instead of Ok(None).
     #[tokio::test]
     async fn job_not_found() {
         let store = SqliteJobStore::in_memory().unwrap();
@@ -252,7 +252,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// Plausible defect: `in_memory()` tries to access filesystem and fails in CI.
+    /// Plausible defect: in_memory() tries to access filesystem and fails in CI.
     #[tokio::test]
     async fn in_memory_store_no_filesystem() {
         // Must succeed without touching any path on disk.

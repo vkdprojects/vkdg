@@ -9,14 +9,13 @@
 //! | `builder-id`   | AWS Builder ID device code               | AWS SSO OIDC token grant    |
 //! | `idc`          | IAM Identity Center device code          | AWS SSO OIDC token grant    |
 //! | `social`       | Google/GitHub via the Kiro auth service  | Kiro `/refreshToken`        |
-//! | `external_idp` | imported org (Entra) refresh token       | org `IdP` form-encoded grant  |
+//! | `external_idp` | imported org (Entra) refresh token       | org IdP form-encoded grant  |
 //! | `api_key`      | long-lived key, nothing to refresh       | none                        |
 //!
-//! Only `IdC` accounts need a `profileArn`; discovery is best-effort and never
+//! Only IdC accounts need a `profileArn`; discovery is best-effort and never
 //! blocks a login.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -75,7 +74,7 @@ fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
-fn http_err(e: &reqwest::Error) -> ProviderError {
+fn http_err(e: reqwest::Error) -> ProviderError {
     ProviderError::Http(e.to_string())
 }
 
@@ -118,7 +117,7 @@ async fn json_post_status(url: &str, body: &Value) -> Result<(u16, Value), Provi
         .json(body)
         .send()
         .await
-        .map_err(|e| http_err(&e))?;
+        .map_err(http_err)?;
     let status = resp.status().as_u16();
     // Error bodies are JSON too (AWS uses `__type`), so parse either way.
     let value = resp.json::<Value>().await.unwrap_or(Value::Null);
@@ -163,7 +162,7 @@ fn str_field(value: &Value, key: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The error code in an AWS SSO OIDC or `OAuth2` response body.
+/// The error code in an AWS SSO OIDC or OAuth2 response body.
 fn error_code(value: &Value) -> String {
     for key in ["error", "__type", "status"] {
         if let Some(code) = str_field(value, key) {
@@ -177,12 +176,7 @@ fn error_code(value: &Value) -> String {
 /// Short, stable account label for a credential we cannot name otherwise.
 fn fingerprint(secret: &str) -> String {
     let digest = Sha256::digest(secret.as_bytes());
-    digest[..4]
-        .iter()
-        .fold(String::with_capacity(8), |mut s, b| {
-            write!(s, "{b:02x}").expect("infallible");
-            s
-        })
+    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ── AWS SSO OIDC: client registration, device code, token ─────────────────────
@@ -196,7 +190,7 @@ struct RegisteredClient {
 
 /// Registers a public client with AWS SSO OIDC.
 ///
-/// `issuer_url` is omitted for `IdC` tenants: a fixed issuer makes their device
+/// `issuer_url` is omitted for IdC tenants: a fixed issuer makes their device
 /// authorization fail with `invalid_request`.
 async fn register_client(
     region: &str,
@@ -339,7 +333,7 @@ fn carry_over(extra: &HashMap<String, String>, keys: &[&str]) -> HashMap<String,
         .collect()
 }
 
-/// AWS SSO OIDC refresh (Builder ID and `IdC`).
+/// AWS SSO OIDC refresh (Builder ID and IdC).
 ///
 /// A registered client secret can expire or be revoked server-side while the
 /// refresh token is still valid, so one failure triggers a client
@@ -430,7 +424,7 @@ async fn refresh_social(
     })
 }
 
-/// Organization `IdP` refresh (Entra "Your organization" logins).
+/// Organization IdP refresh (Entra "Your organization" logins).
 ///
 /// A public-client, form-encoded `refresh_token` grant against the org's own
 /// token endpoint: no client secret, and never an AWS endpoint.
@@ -460,7 +454,7 @@ async fn refresh_external_idp(
         .form(&form)
         .send()
         .await
-        .map_err(|e| http_err(&e))?;
+        .map_err(http_err)?;
     let status = resp.status().as_u16();
     let value = resp.json::<Value>().await.unwrap_or(Value::Null);
     if !(200..300).contains(&status) {
@@ -834,7 +828,9 @@ async fn start_social_device_login(
         return Err(ProviderError::Http(format!(
             "kiro social device authorization failed: {}",
             // This service reports validation failures in `message`.
-            str_field(&value, "message").unwrap_or_else(|| error_code(&value))
+            str_field(&value, "message")
+                .map(|m| m.to_owned())
+                .unwrap_or_else(|| error_code(&value))
         )));
     }
 
@@ -1019,7 +1015,7 @@ mod tests {
         ] {
             match refresh_failure("kiro refresh", status, &body) {
                 ProviderError::TokenRefresh(msg) => {
-                    assert!(msg.contains(&status.to_string()), "{msg}");
+                    assert!(msg.contains(&status.to_string()), "{msg}")
                 }
                 other => panic!("{status}: expected TokenRefresh, got {other:?}"),
             }

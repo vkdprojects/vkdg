@@ -5,11 +5,10 @@
   import { ExternalLink, PlusIcon, XIcon, RefreshCwIcon } from 'lucide-svelte';
   import { Dialog } from 'bits-ui';
   import { api } from '$lib/api.js';
-  import type { Account, ConnectionStatus, ConnectionSummary, OAuthProvider } from '$lib/api.js';
+  import type { Account, ConnectionStatus, ConnectionSummary, ConnectionTestResult, OAuthProvider } from '$lib/api.js';
   import { m } from '$lib/paraglide/messages.js';
   import { formatDateTime, formatTime } from '$lib/format.js';
   import { AccountCredits, Badge, Button, CopyButton, EmptyState, Select, Spinner, StatusDot } from '$lib/components/index.js';
-  import AccountRouting from '../../accounts/AccountRouting.svelte';
   import ConnectAccountModal from '../../accounts/ConnectAccountModal.svelte';
   import { toast } from 'svelte-sonner';
 
@@ -23,6 +22,21 @@
   let connectOpen = $state(false);
   let connectAccountId = $state<string | null>(null);
   let deleting = $state<string | null>(null);
+
+  // ── Connection test ──────────────────────────────────────────────────────────
+  let testing = $state<string | null>(null);
+  let testResults = $state<Record<string, ConnectionTestResult>>({});
+
+  async function testConn(connId: string) {
+    testing = connId;
+    try {
+      testResults[connId] = await api.testConnection(connId);
+    } catch (e) {
+      testResults[connId] = { latency_ms: 0, ok: false, error: (e as Error).message };
+    } finally {
+      testing = null;
+    }
+  }
 
   // ── Connection YAML wizard ───────────────────────────────────────────────────
   let dialogOpen = $state(false);
@@ -206,7 +220,11 @@
             <header class="account-head"><div><span class="eyebrow">{m.provider_account()}</span><h3>{a.label}</h3><span class="mono account-id">{a.id}</span>{#if a.credits_user_ref && duplicateUserRefs.has(a.id)}<div class="dup-warning"><Badge status="degraded" label={m.account_duplicate_user()} /> <span>{m.account_duplicate_user_desc()}</span></div>{/if}</div><div class="account-actions"><Badge status={a.status === 'active' ? 'healthy' : 'degraded'} label={a.status === 'active' ? m.acct_status_active() : m.acct_status_needs_login()} /><Button variant={a.status === 'needs_login' ? 'primary' : 'outline'} size="sm" onclick={() => connect(a.id)}>{m.acct_reauth()}</Button><Button variant="danger" size="sm" disabled={deleting === a.id} onclick={() => deleteAccount(a)}>{m.acct_delete()}</Button></div></header>
             <dl class="account-facts"><div><dt>{m.acct_expires()}</dt><dd>{a.expires_at ? formatDateTime(a.expires_at) : m.acct_never()}</dd></div><div><dt>{m.acct_refresh_token()}</dt><dd>{a.has_refresh_token ? m.common_yes() : m.common_no()}</dd></div><div><dt>{m.account_revocation_reason()}</dt><dd>{a.revoked_reason ?? m.common_none()}</dd></div></dl>
             <AccountCredits account={a} />
-            <div class="connections-block"><AccountRouting account={a} connections={connectionsForAccount(a)} onchanged={load} /></div>
+            <div class="connections-block"><h4>{m.account_connections()}</h4>
+              {#if connectionsForAccount(a).length === 0}<p class="muted-note">{m.account_connections_unassigned()}</p>{:else}
+                <div class="table-wrap"><table><thead><tr><th>{m.connection_id()}</th><th>{m.connection_status()}</th><th>{m.connection_models()}</th><th>{m.gateway_concurrency()}</th><th>{m.connection_cooldown()}</th><th>{m.connection_failures_heading()}</th><th><span class="sr-only">{m.connection_test()}</span></th></tr></thead><tbody>{#each connectionsForAccount(a) as conn (conn.id)}<tr><td class="mono">{conn.id}</td><td><div class="status-cell"><StatusDot status={conn.status}/><Badge status={conn.status} label={(statusLabels[conn.status] ?? m.connection_status_unknown)()}/></div></td><td class="mono">{conn.model_count}</td><td class="mono">{conn.active_requests} / {conn.max_concurrent}</td><td>{conn.cooldown_until ? cooldownRemaining(conn.cooldown_until) : m.common_none()}</td><td class="mono">{conn.failure_count ?? 0}</td><td class="test-cell">{#if testResults[conn.id]}<span class="test-badge" class:ok={testResults[conn.id].ok} class:err={!testResults[conn.id].ok}>{testResults[conn.id].ok ? `✓ ${testResults[conn.id].latency_ms}ms` : '✗'}</span>{/if}<Button size="sm" variant="outline" disabled={testing === conn.id} onclick={() => testConn(conn.id)}>{#if testing === conn.id}<Spinner size="sm" />{:else}{m.connection_test()}{/if}</Button></td></tr>{/each}</tbody></table></div>
+              {/if}
+            </div>
           </article>
         {/each}
       </div>
@@ -304,8 +322,10 @@
   .header-actions { display: flex; gap: 8px; }
   .section-title { font-size: 1rem; font-weight: 600; color: var(--text-1); margin: 0; }
   .refresh-note { color: var(--text-3); font-size: 0.75rem; margin: 0 0 0.75rem; }
+  .muted-note { color: var(--text-3); font-size: 0.875rem; }
   .mono { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; }
   .status-cell { display: flex; align-items: center; gap: 6px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .accounts-stack { display: grid; gap: 16px; }
   .account-panel { border: 1px solid var(--border); background: var(--bg-surface); }
   .account-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
@@ -320,7 +340,8 @@
   .account-facts dd { margin: 4px 0 0; color: var(--text-1); font-size: var(--text-sm); }
 
   .dup-warning { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--text-xs); color: var(--warning); }
-  .connections-block { padding: 14px 16px; }
+  .connections-block h4 { margin: 0; padding: 10px 16px; color: var(--text-2); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: .06em; }
+  .connections-block .muted-note { padding: 0 16px 14px; }
   .table-wrap { overflow-x: auto; }
   .unassigned { margin-top: 24px; border: 1px solid var(--border); background: var(--bg-surface); }
   .unassigned .section-header { padding: 12px 15px 0; }
@@ -343,4 +364,8 @@
   .yaml-code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.8125rem; line-height: 1.5; margin: 0; white-space: pre; overflow-x: auto; }
   .yaml-env-note { font-size: 0.8125rem; color: var(--text-3); margin: 0; }
   .yaml-env-note code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+  .test-cell { text-align: right; white-space: nowrap; display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .test-badge { border-radius: 9999px; font-size: 0.75rem; font-weight: 500; padding: 2px 8px; }
+  .test-badge.ok { background: color-mix(in oklch, var(--success) 15%, transparent); color: var(--success); }
+  .test-badge.err { background: color-mix(in oklch, var(--danger) 15%, transparent); color: var(--danger); }
 </style>

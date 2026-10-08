@@ -45,20 +45,14 @@ pub trait ConversationStreamDecoder: Send {
     fn finish(&mut self) -> Vec<ConversationEvent> {
         Vec::new()
     }
-
-    /// Kiro-specific: percentage of context window used, if the provider reported it.
-    /// Default is `None` (most providers do not report this).
-    fn context_usage_pct(&self) -> Option<f64> {
-        None
-    }
 }
 
 /// Every provider adapter must implement this trait.
 ///
 /// # Implementation
 /// - `id()` must be globally unique and stable (used as registry key and in configs)
-/// - `prepare()` is called once per request on the hot path — no allocations beyond `HeaderMap` + body serialization
-/// - Never call upstream from `prepare()`; that is the pipeline's job
+/// - `prepare()` is called once per request on the hot path — no allocations beyond HeaderMap + body serialization
+/// - Never call upstream from prepare(); that is the pipeline's job
 pub trait ProviderAdapter: Send + Sync {
     /// Stable identifier: "anthropic", "openai", "gemini", "groq", etc.
     fn id(&self) -> &str;
@@ -96,38 +90,11 @@ pub trait ProviderAdapter: Send + Sync {
         None
     }
 
-    /// Live model discovery. Return `Some(self)` when the plugin implements
-    /// [`ModelCatalog`](crate::ModelCatalog); `None` means the provider cannot
-    /// enumerate models and connections keep their declared patterns.
-    fn model_catalog(&self) -> Option<&dyn crate::ModelCatalog> {
-        None
-    }
-
     /// List prices per model, specific patterns first. Empty (the default)
     /// means the provider bills some other way (subscription, free tier) and
     /// its requests have no per-token cost, shown as unknown rather than $0.
     fn prices(&self) -> &[vkdg_core::pricing::ModelPrice] {
         &[]
-    }
-
-    /// Model patterns for the connection created automatically when an account
-    /// of this provider is connected (`claude-*`, `gpt-*`, exact ids). Choose
-    /// patterns that only this provider serves: the router round-robins across
-    /// every connection whose patterns match, so `*` would also receive other
-    /// providers' models. The default `*` is for plugins that do not say.
-    /// Return an empty list when the provider cannot serve requests yet: no
-    /// connection is created and the operator adds one by hand.
-    fn default_models(&self) -> Vec<String> {
-        vec!["*".to_owned()]
-    }
-
-    /// The dialect this provider's conversation responses use for `config`.
-    /// Declared, the gateway translates responses (stream and not) to the
-    /// client's dialect when they differ, and passes bytes through untouched when
-    /// they match. `None` (the default) never translates: right for providers that
-    /// speak another protocol and decode it themselves ([`Self::stream_decoder`]).
-    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
-        None
     }
 
     /// Metadata for the admin console UI. Defaults work for any plugin that

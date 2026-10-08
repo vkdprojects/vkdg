@@ -1,18 +1,14 @@
-//! Shared helpers for `OpenAI` Chat Completions wire format.
+//! Shared helpers for OpenAI Chat Completions wire format.
 //!
-//! All OpenAI-compatible providers (Groq, Together, Fireworks, `DeepSeek`,
+//! All OpenAI-compatible providers (Groq, Together, Fireworks, DeepSeek,
 //! Mistral, Gemini) delegate here instead of duplicating conversion logic.
-
-mod messages;
 
 use bytes::Bytes;
 use http::HeaderMap;
 use serde_json::{json, Map, Value};
 use vkdg_connections::{ConnectionConfig, Credential, ProviderKind};
-use vkdg_operations::{ConversationRequest, Operation, ToolChoice};
+use vkdg_operations::{ContentBlock, ConversationRequest, MessageContent, Operation, Role};
 
-use self::messages::chat_messages;
-use crate::sampling_json::insert_f32;
 use crate::{PreparedRequest, ProviderAdapter, ProviderError};
 
 // ── Public helpers ────────────────────────────────────────────────────────────
@@ -33,53 +29,34 @@ pub fn bearer_headers(token: &str) -> HeaderMap {
     h
 }
 
-/// Which field carries the output limit. `OpenAI` itself deprecated `max_tokens`
-/// and its reasoning models reject it; compatible servers still expect it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenLimitField {
-    /// `max_tokens`, what compatible servers expect.
-    MaxTokens,
-    /// `max_completion_tokens`, what api.openai.com takes for every current model.
-    MaxCompletionTokens,
-}
-
-/// Serialize a `ConversationRequest` to `OpenAI` Chat Completions JSON for a
-/// compatible server (`max_tokens`).
+/// Serialize a `ConversationRequest` to OpenAI Chat Completions JSON.
 pub fn chat_completions_body(req: &ConversationRequest, model: &str) -> Bytes {
-    chat_completions_body_with(req, model, TokenLimitField::MaxTokens)
-}
+    let mut messages: Vec<Value> = Vec::new();
 
-/// Like [`chat_completions_body`], with the output limit under `limit`. Exactly
-/// one limit field is ever sent.
-///
-/// Tool history is repaired to what `OpenAI` validates (see
-/// [`crate::turns::arrange`]). Tool policy fields are sent only with tools:
-/// `tool_choice`, and `parallel_tool_calls: false` for a client that forbade
-/// parallel calls. `stream` adds `stream_options.include_usage` so the final
-/// chunk carries the usage the gateway meters.
-pub fn chat_completions_body_with(
-    req: &ConversationRequest,
-    model: &str,
-    limit: TokenLimitField,
-) -> Bytes {
+    if let Some(sys) = &req.system {
+        messages.push(json!({ "role": "system", "content": sys }));
+    }
+
+    for m in &req.messages {
+        messages.push(match m.role {
+            Role::System => json!({ "role": "system", "content": content_to_value(&m.content) }),
+            Role::User => json!({ "role": "user", "content": content_to_value(&m.content) }),
+            Role::Assistant => assistant_message(&m.content),
+            Role::Tool => {
+                let (id, text) = tool_result(&m.content);
+                json!({ "role": "tool", "tool_call_id": id, "content": text })
+            }
+        });
+    }
+
     let mut body = Map::new();
     body.insert("model".into(), Value::String(model.into()));
-    body.insert("messages".into(), Value::Array(chat_messages(req)));
+    body.insert("messages".into(), Value::Array(messages));
     if let Some(v) = req.max_tokens {
-        let key = match limit {
-            TokenLimitField::MaxTokens => "max_tokens",
-            TokenLimitField::MaxCompletionTokens => "max_completion_tokens",
-        };
-        body.insert(key.into(), json!(v));
+        body.insert("max_tokens".into(), json!(v));
     }
     if let Some(v) = req.temperature {
-        insert_f32(&mut body, "temperature", v);
-    }
-    if let Some(v) = req.top_p {
-        insert_f32(&mut body, "top_p", v);
-    }
-    if !req.stop_sequences.is_empty() {
-        body.insert("stop".into(), json!(req.stop_sequences));
+        body.insert("temperature".into(), json!(v));
     }
     if req.stream {
         body.insert("stream".into(), Value::Bool(true));
@@ -103,25 +80,9 @@ pub fn chat_completions_body_with(
                     .collect(),
             ),
         );
-        if let Some(choice) = &req.tool_choice {
-            body.insert("tool_choice".into(), tool_choice_wire(choice));
-        }
-        if req.disable_parallel_tool_use {
-            body.insert("parallel_tool_calls".into(), Value::Bool(false));
-        }
     }
 
-    // A `Value` tree always serializes; the empty fallback only satisfies the type.
     Bytes::from(serde_json::to_vec(&Value::Object(body)).unwrap_or_default())
-}
-
-fn tool_choice_wire(choice: &ToolChoice) -> Value {
-    match choice {
-        ToolChoice::Auto => json!("auto"),
-        ToolChoice::Required => json!("required"),
-        ToolChoice::Disabled => json!("none"),
-        ToolChoice::Named(name) => json!({ "type": "function", "function": { "name": name } }),
-    }
 }
 
 // ── Generic adapter ───────────────────────────────────────────────────────────
@@ -166,7 +127,6 @@ impl OpenAiCompatAdapter {
     }
 
     /// Builder method: set visual metadata for the admin console.
-    #[must_use]
     pub const fn with_meta(
         mut self,
         icon_char: char,
@@ -190,10 +150,6 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         self.display_name
     }
 
-    fn wire_format(&self, _config: &ConnectionConfig) -> Option<vkdg_operations::WireFormat> {
-        Some(vkdg_operations::WireFormat::OpenAiChat)
-    }
-
     fn prepare(
         &self,
         operation: &Operation,
@@ -201,8 +157,9 @@ impl ProviderAdapter for OpenAiCompatAdapter {
         credential: &Credential,
     ) -> Result<PreparedRequest, ProviderError> {
         let token = credential.token.as_str();
-        let Operation::Conversation(req) = operation else {
-            return Err(ProviderError::UnsupportedOperation);
+        let req = match operation {
+            Operation::Conversation(r) => r,
+            _ => return Err(ProviderError::UnsupportedOperation),
         };
         let base = match &config.provider {
             ProviderKind::Custom { base_url } => base_url.as_str(),
@@ -232,5 +189,61 @@ impl ProviderAdapter for OpenAiCompatAdapter {
     }
 }
 
-#[cfg(test)]
-mod tests;
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+fn content_to_value(content: &MessageContent) -> Value {
+    match content {
+        MessageContent::Text(t) => Value::String(t.clone()),
+        MessageContent::Blocks(blocks) => {
+            let parts: Vec<Value> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+                    _ => None,
+                })
+                .collect();
+            if parts.is_empty() {
+                Value::Null
+            } else {
+                Value::Array(parts)
+            }
+        }
+    }
+}
+
+fn assistant_message(content: &MessageContent) -> Value {
+    if let MessageContent::Blocks(blocks) = content {
+        let calls: Vec<Value> = blocks.iter().filter_map(|b| match b {
+            ContentBlock::ToolUse { id, name, input } => Some(json!({
+                "id": id, "type": "function",
+                "function": { "name": name, "arguments": serde_json::to_string(input).unwrap_or_default() }
+            })),
+            _ => None,
+        }).collect();
+        if !calls.is_empty() {
+            return json!({ "role": "assistant", "content": Value::Null, "tool_calls": calls });
+        }
+    }
+    json!({ "role": "assistant", "content": content_to_value(content) })
+}
+
+fn tool_result(content: &MessageContent) -> (String, String) {
+    if let MessageContent::Blocks(blocks) = content {
+        for b in blocks {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content: text,
+            } = b
+            {
+                return (tool_use_id.clone(), text.clone());
+            }
+        }
+    }
+    (
+        String::new(),
+        match content {
+            MessageContent::Text(t) => t.clone(),
+            _ => String::new(),
+        },
+    )
+}

@@ -127,7 +127,7 @@ impl InMemoryArtifactStore {
             owner_tenant,
             mime_type,
             size_bytes: data.len() as u64,
-            expires_at: Utc::now() + Duration::seconds(i64::try_from(ttl_secs).unwrap_or(i64::MAX)),
+            expires_at: Utc::now() + Duration::seconds(ttl_secs as i64),
             created_at: Utc::now(),
         };
         self.inner
@@ -204,7 +204,7 @@ mod tests {
         Bytes::from(vec![0u8; n])
     }
 
-    /// Plausible defect: `get()` returns different bytes than what was stored.
+    /// Plausible defect: get() returns different bytes than what was stored.
     #[tokio::test]
     async fn store_and_retrieve() {
         let s = store();
@@ -271,7 +271,7 @@ mod tests {
         );
     }
 
-    /// Plausible defect: `purge_expired` keeps expired entries or removes live ones.
+    /// Plausible defect: purge_expired keeps expired entries or removes live ones.
     #[tokio::test]
     async fn purge_removes_expired() {
         let s = store();
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(removed, 1, "exactly one expired artifact must be purged");
     }
 
-    /// Plausible defect: `get()` panics or errors instead of returning `NotFound`.
+    /// Plausible defect: get() panics or errors instead of returning NotFound.
     #[tokio::test]
     async fn handle_not_found() {
         let s = store();

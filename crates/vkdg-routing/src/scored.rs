@@ -14,7 +14,7 @@ pub struct ScoredStrategy {
 
 #[async_trait]
 impl Strategy for ScoredStrategy {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "scored"
     }
 

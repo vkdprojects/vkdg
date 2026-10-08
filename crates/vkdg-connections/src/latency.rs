@@ -35,13 +35,11 @@ impl EwmaLatency {
     }
 
     pub fn record(&mut self, latency_ms: u32) {
-        #[allow(clippy::cast_precision_loss)]
-        // u32→f32 for EWMA latency; precision loss acceptable for metrics
         let l = latency_ms as f32;
         if self.sample_count == 0 {
             self.ewma_ms = l;
         } else {
-            self.ewma_ms = (1.0 - self.alpha).mul_add(self.ewma_ms, self.alpha * l);
+            self.ewma_ms = self.alpha * l + (1.0 - self.alpha) * self.ewma_ms;
         }
         self.sample_count += 1;
     }
@@ -50,8 +48,6 @@ impl EwmaLatency {
         if self.sample_count == 0 {
             None
         } else {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            // f32 EWMA clamped to [0,∞); truncation to u32 is intentional
             Some(self.ewma_ms as u32)
         }
     }
@@ -164,7 +160,7 @@ mod tests {
         }
         let p50 = t.p50_ms(&conn).await.unwrap();
         assert!(
-            (i64::from(p50) - 100).abs() < 10,
+            (p50 as i64 - 100).abs() < 10,
             "EWMA must converge to ~100ms after 30 samples, got {p50}"
         );
     }

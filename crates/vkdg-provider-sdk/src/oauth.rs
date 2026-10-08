@@ -32,7 +32,7 @@ pub type LoginState = HashMap<String, String>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OAuthFlow {
-    /// Standard `authorization_code` with PKCE (S256).
+    /// Standard authorization_code with PKCE (S256).
     AuthorizationCodePkce,
     /// Device authorization grant (RFC 8628).
     DeviceCode,
@@ -44,11 +44,11 @@ pub enum OAuthFlow {
 #[derive(Debug, Clone)]
 pub struct OAuthConfig {
     pub flow: OAuthFlow,
-    /// Authorization endpoint (None for `device_code` flows that skip it).
+    /// Authorization endpoint (None for device_code flows that skip it).
     pub authorize_url: Option<String>,
     /// Token endpoint — used for exchange AND refresh.
     pub token_url: String,
-    /// Public `client_id`.
+    /// Public client_id.
     pub client_id: String,
     pub scopes: Vec<String>,
     /// Redirect URI for PKCE flows.
@@ -302,10 +302,10 @@ mod tests {
     }
 
     impl ProviderAdapter for Scripted {
-        fn id(&self) -> &'static str {
+        fn id(&self) -> &str {
             "scripted"
         }
-        fn display_name(&self) -> &'static str {
+        fn display_name(&self) -> &str {
             "Scripted"
         }
         fn prepare(

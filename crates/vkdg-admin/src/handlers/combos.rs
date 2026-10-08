@@ -69,7 +69,7 @@ pub struct ComboBody {
 }
 
 impl ComboBody {
-    fn into_combo(self, id: &str) -> Combo {
+    fn into_combo(self, id: String) -> Combo {
         Combo {
             id: id.trim().to_owned(),
             match_patterns: self
@@ -174,11 +174,11 @@ pub async fn create_combo(
         Err(r) => return *r,
     };
     let id = body.id.clone();
-    let combo = body.into_combo(&id);
+    let combo = body.into_combo(id.clone());
     if let Some(r) = unknown_target(&state, &combo) {
         return r;
     }
-    match svc.create(&combo) {
+    match svc.create(combo) {
         Ok(c) => (StatusCode::CREATED, Json(ComboSummary::from(&c))).into_response(),
         Err(e) => combo_err(e, &id),
     }
@@ -194,7 +194,7 @@ pub async fn update_combo(
         Ok(s) => s,
         Err(r) => return *r,
     };
-    let combo = body.into_combo(&id);
+    let combo = body.into_combo(id.clone());
     if let Some(r) = unknown_target(&state, &combo) {
         return r;
     }
@@ -264,8 +264,6 @@ mod tests {
             connection_tester: None,
             catalog: Some(catalog),
             logins: None,
-            gateway_store: None,
-            config_tx: None,
         }
     }
 

@@ -14,7 +14,7 @@
 //!   body_contains: null  # optional; check body contains this string
 //! ```
 //!
-//! Sends the request to `VKDG_BASE_URL` (default: <http://127.0.0.1:8080>).
+//! Sends the request to VKDG_BASE_URL (default: http://127.0.0.1:8080).
 //! Pass `self_test: true` (or `--self-test` on the CLI) to start an in-process
 //! mock gateway instead.
 
@@ -123,14 +123,14 @@ pub async fn run(fixture_path: &str, base_url: Option<&str>, self_test: bool) ->
     };
 
     let fixture_text = std::fs::read_to_string(fixture_path)
-        .map_err(|e| anyhow::anyhow!("cannot read fixture '{fixture_path}': {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cannot read fixture '{}': {}", fixture_path, e))?;
     let fixture: Fixture = serde_yaml::from_str(&fixture_text)
-        .map_err(|e| anyhow::anyhow!("invalid fixture YAML: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("invalid fixture YAML: {}", e))?;
 
     let url = format!("{}{}", base, fixture.request.path);
     let client = reqwest::Client::new();
     let method = reqwest::Method::from_bytes(fixture.request.method.as_bytes())
-        .map_err(|e| anyhow::anyhow!("invalid method: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("invalid method: {}", e))?;
 
     let mut req = client.request(method, &url);
     for (k, v) in &fixture.request.headers {
@@ -148,12 +148,12 @@ pub async fn run(fixture_path: &str, base_url: Option<&str>, self_test: bool) ->
     let resp = req
         .send()
         .await
-        .map_err(|e| anyhow::anyhow!("request failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("request failed: {}", e))?;
 
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap_or_default();
 
-    println!("Status: {status}");
+    println!("Status: {}", status);
     println!(
         "Body: {}",
         if body.len() > 500 {
@@ -167,13 +167,17 @@ pub async fn run(fixture_path: &str, base_url: Option<&str>, self_test: bool) ->
         if let Some(exp_status) = expected.status {
             anyhow::ensure!(
                 status == exp_status,
-                "status mismatch: expected {exp_status}, got {status}"
+                "status mismatch: expected {}, got {}",
+                exp_status,
+                status
             );
         }
         if let Some(contains) = &expected.body_contains {
             anyhow::ensure!(
                 body.contains(contains.as_str()),
-                "body does not contain '{contains}'\nBody: {body}"
+                "body does not contain '{}'\nBody: {}",
+                contains,
+                body
             );
         }
     }

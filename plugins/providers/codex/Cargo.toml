@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 vkdg-provider-sdk = { workspace = true }
-vkdg-config      = { workspace = true }
 vkdg-connections  = { workspace = true }
 vkdg-operations   = { workspace = true }
 bytes             = { workspace = true }

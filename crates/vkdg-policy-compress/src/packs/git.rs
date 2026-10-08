@@ -19,7 +19,7 @@ use crate::FilterPack;
 pub struct GitStatusPack;
 
 impl FilterPack for GitStatusPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:git-status"
     }
 
@@ -27,7 +27,7 @@ impl FilterPack for GitStatusPack {
         ContentClass::GitStatus
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses git status; keeps branch + first 10 changed files"
     }
 
@@ -47,10 +47,10 @@ impl FilterPack for GitStatusPack {
             {
                 file_count += 1;
                 if file_count <= 10 {
-                    kept.push((*line).to_string());
+                    kept.push(line.to_string());
                 }
             } else {
-                kept.push((*line).to_string());
+                kept.push(line.to_string());
             }
         }
         if file_count > 10 {
@@ -67,7 +67,7 @@ impl FilterPack for GitStatusPack {
 pub struct GitLogPack;
 
 impl FilterPack for GitLogPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:git-log"
     }
 
@@ -75,7 +75,7 @@ impl FilterPack for GitLogPack {
         ContentClass::GitLog
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Compresses git log; keeps first 20 commits and summarises the rest"
     }
 
@@ -87,7 +87,7 @@ impl FilterPack for GitLogPack {
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() > 20 {
             let total = lines.len();
-            let mut out: Vec<String> = lines[..20].iter().map(|s| (*s).to_string()).collect();
+            let mut out: Vec<String> = lines[..20].iter().map(|s| s.to_string()).collect();
             out.push(format!("... ({} more commits)", total - 20));
             out.join("\n")
         } else {

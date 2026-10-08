@@ -13,7 +13,7 @@ use crate::FilterPack;
 pub struct GenericPack;
 
 impl FilterPack for GenericPack {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "rtk:generic"
     }
 
@@ -21,7 +21,7 @@ impl FilterPack for GenericPack {
         ContentClass::Generic
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Fallback filter; deduplicates consecutive blank lines only"
     }
 

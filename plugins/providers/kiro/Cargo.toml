@@ -21,7 +21,7 @@ reqwest           = { workspace = true }
 
 [dev-dependencies]
 aws-smithy-eventstream = "=0.61.4"
-aws-smithy-types       = "=1.8.1"
+aws-smithy-types       = "=1.9.0"
 
 [lib]
 doctest = false

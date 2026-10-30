@@ -34,7 +34,7 @@ vkdg-provider-sdk = { workspace = true }
 vkdg-provider-kiro = { workspace = true }
 vkdg-provider-codex = { workspace = true }
 aws-smithy-eventstream = "=0.61.4"
-aws-smithy-types = "=1.8.1"
+aws-smithy-types = "=1.9.0"
 
 [lints]
 workspace = true

@@ -240,6 +240,205 @@ fn thinking_budget_is_added_on_top_of_a_max_tokens_that_would_not_fit_it() {
     }
 }
 
+/// Like [`wire`], for a specific upstream model id.
+fn wire_for(req: &ConversationRequest, model: &str) -> Value {
+    Value::Object(body_map(req, model, None))
+}
+
+fn effort_request(effort: &str, max_tokens: Option<u32>) -> ConversationRequest {
+    let mut req = request(vec![text(Role::User, "hi")]);
+    req.max_tokens = max_tokens;
+    req.thinking = Some(ThinkingRequest {
+        budget_tokens: None,
+        effort: Some(effort.into()),
+    });
+    req
+}
+
+// Defeat: an effort-only request (OpenAI `reasoning_effort`) always becoming the
+// 1024 minimum budget, so low and high think the same. The budgets are the
+// documented mapping: low 4096, medium 16384, high 32768; `minimal` counts as low
+// and the effort is case-insensitive.
+#[test]
+fn effort_only_request_gets_a_budget_that_grows_with_the_effort() {
+    let cases = [
+        ("minimal", 4096),
+        ("low", 4096),
+        ("LOW", 4096),
+        ("medium", 16_384),
+        ("high", 32_768),
+    ];
+    for (effort, want) in cases {
+        let v = wire(&effort_request(effort, Some(100_000)));
+        assert_eq!(
+            v["thinking"],
+            json!({"type": "enabled", "budget_tokens": want}),
+            "{effort}"
+        );
+        assert_eq!(v["max_tokens"], json!(100_000), "{effort}");
+    }
+}
+
+// Defeat: xhigh/max collapsing to the `high` budget, or a budget that eats the
+// whole output allowance of a client that asked for a large `max_tokens`.
+// 32768 is the floor; with room, the budget grows to 3/4 of `max_tokens`.
+#[test]
+fn xhigh_and_max_take_at_least_the_high_budget_and_grow_to_fit() {
+    for effort in ["xhigh", "max"] {
+        let small = wire(&effort_request(effort, Some(8000)));
+        assert_eq!(
+            small["thinking"]["budget_tokens"],
+            json!(32_768),
+            "{effort}"
+        );
+        assert_eq!(small["max_tokens"], json!(8000 + 32_768), "{effort}");
+
+        let roomy = wire(&effort_request(effort, Some(128_000)));
+        assert_eq!(
+            roomy["thinking"]["budget_tokens"],
+            json!(96_000),
+            "{effort}"
+        );
+        assert_eq!(roomy["max_tokens"], json!(128_000), "{effort}");
+    }
+}
+
+// Defeat: the effort overriding a budget the client set explicitly.
+#[test]
+fn an_explicit_budget_wins_over_the_effort_for_the_budget() {
+    let mut req = effort_request("high", Some(10_000));
+    req.thinking = Some(ThinkingRequest {
+        budget_tokens: Some(2000),
+        effort: Some("high".into()),
+    });
+    let v = wire(&req);
+    assert_eq!(v["thinking"]["budget_tokens"], json!(2000));
+    assert_eq!(v["max_tokens"], json!(10_000));
+}
+
+// Defeat: `reasoning_effort: "none"` still turning thinking on at the minimum
+// budget. Models that cannot turn thinking off get the lowest effort instead.
+#[test]
+fn effort_none_sends_no_thinking_and_the_lowest_effort_where_supported() {
+    for effort in ["none", "off", " None "] {
+        let v = wire_for(&effort_request(effort, Some(4000)), "claude-sonnet-4-5");
+        assert!(v.get("thinking").is_none(), "{effort}");
+        assert!(v.get("output_config").is_none(), "{effort}");
+
+        let v = wire_for(&effort_request(effort, Some(4000)), "claude-opus-5-5");
+        assert!(v.get("thinking").is_none(), "{effort}");
+        assert_eq!(v["output_config"], json!({"effort": "low"}), "{effort}");
+    }
+}
+
+// Defeat: sending `thinking: enabled` + `budget_tokens` to a model that answers
+// 400 to it (Opus 4.7/4.8, every Claude 5), or sending adaptive to a model that
+// does not know it (Sonnet/Opus 4.5). Adaptive models get `adaptive` and the
+// effort as `output_config.effort`; no budget, and `max_tokens` is not inflated.
+#[test]
+fn adaptive_only_models_get_adaptive_thinking_and_the_effort_upstream() {
+    let models = [
+        "claude-opus-5-5",
+        "claude-opus-5.5",
+        "claude-opus-5",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-2",
+        "claude-mythos-5-1",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+    ];
+    for model in models {
+        let v = wire_for(&effort_request("low", Some(4000)), model);
+        assert_eq!(
+            v["thinking"],
+            json!({"type": "adaptive", "display": "summarized"}),
+            "{model}"
+        );
+        assert_eq!(v["output_config"], json!({"effort": "low"}), "{model}");
+        assert_eq!(v["max_tokens"], json!(4000), "{model}");
+    }
+    let v = wire_for(&effort_request("max", Some(4000)), "claude-opus-5-5");
+    assert_eq!(v["output_config"], json!({"effort": "max"}));
+    let v = wire_for(&effort_request("xhigh", Some(4000)), "claude-opus-4-7");
+    assert_eq!(v["output_config"], json!({"effort": "xhigh"}));
+}
+
+// Defeat: an Anthropic client's `enabled` budget sent as-is to a model that
+// rejects it; the budget becomes the effort it stands for (>=32k high, >=16k
+// medium, else low) so the request is served instead of refused.
+#[test]
+fn a_budget_only_request_to_an_adaptive_model_becomes_an_effort() {
+    for (budget, want) in [
+        (1024, "low"),
+        (8000, "low"),
+        (16_000, "medium"),
+        (32_000, "high"),
+    ] {
+        let mut req = request(vec![text(Role::User, "hi")]);
+        req.thinking = Some(thinking(Some(budget)));
+        let v = wire_for(&req, "claude-opus-5-5");
+        assert_eq!(
+            v["thinking"],
+            json!({"type": "adaptive", "display": "summarized"}),
+            "{budget}"
+        );
+        assert_eq!(v["output_config"], json!({"effort": want}), "{budget}");
+    }
+}
+
+// Defeat: sending `output_config.effort` to models that do not accept it (Sonnet
+// 4.5, Haiku 4.5: 400), dropping it where it works next to a budget (Opus 4.5,
+// 4.6, Sonnet 4.6), or sending a level the model lacks (`xhigh`: only Opus 4.7+
+// and Claude 5; `max`: not Opus 4.5), which Anthropic refuses.
+#[test]
+fn effort_goes_upstream_only_where_the_model_accepts_that_level() {
+    let cases = [
+        // (model, requested, expected effort on the wire)
+        ("claude-sonnet-4-5", "high", None),
+        ("claude-haiku-4-5-20251001", "high", None),
+        ("claude-opus-4-5-20251101", "medium", Some("medium")),
+        ("claude-opus-4-5-20251101", "xhigh", Some("high")),
+        ("claude-opus-4-5-20251101", "max", Some("high")),
+        ("claude-opus-4-6", "max", Some("max")),
+        ("claude-opus-4-6", "xhigh", Some("high")),
+        ("claude-sonnet-4-6", "low", Some("low")),
+        ("claude-opus-5-5-20261101", "xhigh", Some("xhigh")),
+    ];
+    for (model, effort, want) in cases {
+        let v = wire_for(&effort_request(effort, Some(100_000)), model);
+        let got = v.get("output_config").map(|c| c["effort"].clone());
+        assert_eq!(got, want.map(|w| json!(w)), "{model} {effort}");
+    }
+    // Opus 4.5 takes the budget too: effort sets the posture, the budget the depth.
+    let v = wire_for(
+        &effort_request("high", Some(100_000)),
+        "claude-opus-4-5-20251101",
+    );
+    assert_eq!(
+        v["thinking"],
+        json!({"type": "enabled", "budget_tokens": 32_768})
+    );
+}
+
+// Defeat: a client that asked for no thinking at all getting an effort, or a
+// client effort lost because a forced tool / unsigned tool history made the
+// gateway drop `thinking` (effort works with or without thinking).
+#[test]
+fn effort_survives_dropped_thinking_and_is_absent_without_a_request() {
+    let plain = request(vec![text(Role::User, "hi")]);
+    assert!(wire_for(&plain, "claude-opus-5-5")
+        .get("output_config")
+        .is_none());
+
+    let mut forced = with_tools(effort_request("high", Some(4000)));
+    forced.tool_choice = Some(ToolChoice::Required);
+    let v = wire_for(&forced, "claude-opus-5-5");
+    assert!(v.get("thinking").is_none());
+    assert_eq!(v["output_config"], json!({"effort": "high"}));
+}
+
 // Defeat: sending thinking together with a forced tool (Anthropic: 400 "thinking
 // may not be enabled when tool_choice forces tool use"); or dropping thinking
 // for the choices that allow it.

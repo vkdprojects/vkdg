@@ -575,18 +575,47 @@ mod body_tests {
         assert!(body_with_thinking(None).get("thinking").is_none());
     }
 
-    // An OpenAI-style effort has no budget; Anthropic's minimum budget keeps the
-    // request valid instead of sending `thinking` without `budget_tokens`.
+    // An OpenAI-style effort has no budget; it maps to the budget of its level
+    // (high 32768) instead of always the 1024 minimum, so `low` and `high` differ.
     #[test]
-    fn effort_without_budget_uses_the_minimum_budget() {
-        let v = body_with_thinking(Some(vkdg_operations::ThinkingRequest {
-            budget_tokens: None,
-            effort: Some("high".into()),
-        }));
+    fn effort_without_budget_maps_to_the_budget_of_its_level() {
+        for (effort, budget) in [("low", 4096), ("high", 32_768)] {
+            let v = body_with_thinking(Some(vkdg_operations::ThinkingRequest {
+                budget_tokens: None,
+                effort: Some(effort.into()),
+            }));
+            assert_eq!(
+                v["thinking"],
+                json!({ "type": "enabled", "budget_tokens": budget }),
+                "{effort}"
+            );
+        }
+    }
+
+    // The subscription path serves Claude 5: there the depth control is
+    // `output_config.effort` next to adaptive thinking, not a budget.
+    #[test]
+    fn effort_reaches_claude_five_as_output_config() {
+        let req = ConversationRequest {
+            model: "claude-opus-5.5".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: MessageContent::Text("hi".into()),
+            }],
+            max_tokens: Some(4000),
+            thinking: Some(vkdg_operations::ThinkingRequest {
+                budget_tokens: None,
+                effort: Some("low".into()),
+            }),
+            ..Default::default()
+        };
+        let v: Value = serde_json::from_slice(&build_body(&req)).unwrap();
+        assert_eq!(v["model"], "claude-opus-5-5");
         assert_eq!(
             v["thinking"],
-            json!({ "type": "enabled", "budget_tokens": 1024 })
+            json!({ "type": "adaptive", "display": "summarized" })
         );
+        assert_eq!(v["output_config"], json!({ "effort": "low" }));
     }
 
     // Defeat: the identity gate lost when the new tool/limit fields are present,

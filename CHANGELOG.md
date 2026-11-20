@@ -45,6 +45,15 @@ Versioning: [Semantic Versioning](https://semver.org/).
   window with remaining percent and reset time.
 
 ### Fixed
+- **Anthropic reasoning depth ignored:** an effort-only request (OpenAI `reasoning_effort`)
+  always became a 1024-token thinking budget, and `output_config.effort` was never sent, so
+  `low` and `high` thought the same. Effort now maps to a budget (low 4096, medium 16384, high
+  32768, `xhigh`/`max` up to 3/4 of `max_tokens`; an explicit client budget still wins) and is
+  sent as `output_config.effort` to models that accept it (Opus 4.5+, Sonnet 4.6+, Claude 5;
+  levels a model lacks fall back to the next lower one). Models that refuse `budget_tokens`
+  (Opus 4.7+, every Claude 5) get `thinking: {type: adaptive}` with the effort, and a client
+  budget is read as the effort it stands for. `none`/`off` sends no thinking (lowest effort on
+  models that always think).
 - **Codex model sync failed with "no models in catalog for provider 'codex'":** syncing a Codex
   account read only the admin-managed `provider_catalog` table, which is empty unless someone
   filled it by hand. OAuth (ChatGPT) accounts now ask

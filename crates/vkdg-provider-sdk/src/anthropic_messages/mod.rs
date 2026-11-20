@@ -59,6 +59,7 @@ fn body_map(
     let tool_choice = effective_tool_choice(req);
     let sampling = thinking::sampling(
         req,
+        model,
         thinking::forces_tool(tool_choice),
         thinking::continues_tool_turn_without_thinking(&conversation.turns),
     );
@@ -116,6 +117,9 @@ fn body_map(
     }
     if let Some(thinking) = sampling.thinking {
         body.insert("thinking".into(), thinking);
+    }
+    if let Some(effort) = sampling.effort {
+        body.insert("output_config".into(), json!({ "effort": effort }));
     }
 
     body
